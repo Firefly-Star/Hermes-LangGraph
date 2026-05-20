@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.agent_pool/
+.agent_pool.test_backup/
+test/
+*.pyc
+.env
+test_tool_output.txt
+.vscode/
+*.egg-info/
