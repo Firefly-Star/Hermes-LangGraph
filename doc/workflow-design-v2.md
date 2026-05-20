@@ -14,7 +14,7 @@ requests (2.33.0)
 ┌──────────────────────────────────────────────────────────────────┐
 │                        workflow.py                                │
 │   LangGraph StateGraph + TypedDict state                          │
-│   + AgentPool (agent/conversation/context/logger/checkpoint)      │
+│   + AgentRuntime (agent/conversation/context/logger/checkpoint)      │
 │                                                                    │
 │   ┌────────┐  ┌──────────┐  ┌──────┐  ┌──────┐  ┌──────┐        │
 │   │ Master │  │ Reviewer │  │  PM  │  │ Dev  │  │  QA  │        │
@@ -38,23 +38,10 @@ requests (2.33.0)
 
 ```python
 class WorkflowState(TypedDict):
-    # 阶段控制
     phase: str              # 当前阶段名
-    step_index: int         # 步进循环的当前位置
-    loop_count: int         # 审查循环/对齐循环计数
-    conv_seq: int           # 对话序列号，flush 后递增
-
-    # 产出的文档
-    pm_doc_approved: bool   # PM 方案是否已通过
-    dev_plan_approved: bool # Dev 计划是否已通过
-    qa_plan_approved: bool  # QA 计划是否已通过
-
-    # 执行结果缓存
-    dev_results: dict       # {step_id: summary}
-    qa_results: dict        # {step_id: summary}
-    bug_loop_count: int     # QA 发现 bug 后的 fix 循环次数
 ```
 
+> 当前仅实现骨架阶段控制。后续迭代会逐步扩展字段（审查计数、执行索引等）。
 > 持久化数据全部走 ContextManager（background / phase / contexts），
 > WorkflowState 只存运行时需要快速判断的字段。
 
@@ -78,11 +65,13 @@ class WorkflowState(TypedDict):
 
 ```
 [pre_flight_clarify]
-  → 环境检查 + 用户确认 scope
-  → 写入 background（项目信息、tech stack、acceptance criteria）
-  → 写入 5 条原则到 background
-  → phase = "pm_write_doc"
+  → 交互式需求澄清（无限循环）
+  → 用户输入 CONFIRMED 或 Master 回复 ## 确认时退出
+  → 退出前通知 Master 阶段结束
+  → phase = "done"
 ```
+
+> 当前 Phase 0 仅做需求澄清，不写 background。后续阶段会补充环境检查和原则注入。
 
 ### Phase 1: PM 出方案（含 HTML 原型）
 
@@ -338,5 +327,5 @@ def get_qa_test_scope(pool, round_number):
 
 | 文件 | 说明 |
 |:-----|:------|
-| `workflow.py` | 主入口：定义 LangGraph 图 + AgentPool 初始化 + 运行 |
+| `workflow.py` | 主入口：定义 LangGraph 图 + AgentRuntime 初始化 + 运行 |
 | `workflow-design-v2.md` | 本文档 |

@@ -33,6 +33,8 @@ def call_agent(runtime, agent: str, conversation: str, prompt: str,
     print(f"  → 调 {agent}/{conversation}... ", end="", flush=True)
     t0 = time.time()
 
+    print(f"\n──── Request ────\n{prompt}\n──── Response ────")
+
     if stream:
         print(flush=True)
         text_parts = []

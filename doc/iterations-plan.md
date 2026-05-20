@@ -30,12 +30,15 @@
 
 新增节点：1 个（`pre_flight_clarify`）
 
+变更：`checkpoint.wait()` 新增 `end_word` 参数支持多行输入；`runtime_config.json` 新增 `input_end_word` 配置项
+
 验收：输入需求 → Master 回应 → 输入 CONFIRMED 结束。
 
 功能：
-- 循环等用户输入
-- Master 回应的内容显示给用户
-- 用户输入 CONFIRMED 时写入 background 并结束
+- 无限循环，通过 `input_end_word`（默认 EOF）支持多行输入
+- Master 回应的内容通过 SSE 流式显示给用户
+- 用户输入 CONFIRMED 或 Master 回复 `## 确认` 时结束
+- 退出前通知 Master 阶段结束，避免遗留疑问悬空
 
 ---
 

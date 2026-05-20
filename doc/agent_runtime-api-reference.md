@@ -187,11 +187,12 @@
 ### `__init__(agent_mgr, logger, config, pool_dir)`
 - **参数：** `agent_mgr` — AgentManager 实例，`logger` — Logger 实例，`config` — Config 实例，`pool_dir` — 数据目录
 
-### `call(agent, conversation, input_text, timeout=None) -> CallResult`
+### `call(agent, conversation, input_text, timeout=None, stream_callback=None) -> CallResult`
 向指定 agent 的指定对话发送消息。
+- **参数：** `stream_callback` — 可选，传此参数时启用 SSE 流式接收，每收到一个文本块调用 `callback(chunk)`
 - **行为：**
   1. 从 registry 读取 port/api_key
-  2. POST `/v1/responses` 到 Gateway
+  2. POST `/v1/responses` 到 Gateway（传 `stream_callback` 时流式读取）
   3. 超时自动重试（最多 `max_retry + 1` 次）
   4. 成功后提取 output_text、记录日志、追踪 conversation
   5. 失败后记录错误日志
@@ -350,7 +351,8 @@ DEFAULTS = {
 
 人工检查点——暂停工作流，等待用户输入。
 
-### `wait(title, content, prompt="确认无误请按 Enter 继续，或输入修改意见：") -> CheckpointResult`
+### `wait(title, content, prompt="确认无误请按 Enter 继续，或输入修改意见：", end_word=None) -> CheckpointResult`
+- **参数：** `end_word` — 可选，传入时进入多行输入模式，持续读取直到 end_word 单独一行出现
 - **行为：**
   1. 打印分隔线 `=====`
   2. 打印 `【title】`
@@ -361,6 +363,7 @@ DEFAULTS = {
   - 空输入 → `action="continue", message=""`
   - 输入 `"reject"` 或 `"退回"` → `action="reject", message=""`
   - 其他 → `action="modify", message=用户输入`
+  - 多行模式：累积到 end_word 后合并，按以上规则解析
 - **边界情况：**
   - 非交互式终端（无 stdin）→ `input()` 抛出 `EOFError`
   - 输入仅为空白字符 → 视为 continue
@@ -378,13 +381,20 @@ DEFAULTS = {
   ```json
   {
     "pool_dir": ".agent_runtime",
-    "hermes_home": "C:/Users/温学周/AppData/Local/hermes"
+    "hermes_home": "C:/Users/温学周/AppData/Local/hermes",
+    "call_timeout": 120,
+    "max_retry": 3,
+    "max_plan_loop": 5,
+    "max_bug_loop": 5,
+    "input_end_word": "EOF"
   }
   ```
 - **默认值：**
   - `pool_dir` = `".agent_runtime"`（当前工作目录下）
   - `hermes_home` = 自动检测（依次检查 `~/AppData/Local/hermes`、`C:\Users\温学周\AppData\Local\hermes`、`C:\Program Files\hermes`）
+  - 其他配置项走 Config 的 DEFAULTS，不传则使用默认值
 - **行为：** 创建 `pool_dir` 目录，实例化 Config、Logger、AgentManager、ContextManager、ConversationManager、Checkpoint
+- **注意：** runtime_config.json 中可包含任意工作流级配置项（如 `max_plan_loop`、`input_end_word`），AgentRuntime 会透传给 Config 模块，由 workflow.py 按需读取
 
 ### `_load_config(config_path)`（静态方法）
 读取 JSON 配置文件。

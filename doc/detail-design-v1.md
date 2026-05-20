@@ -4,7 +4,7 @@
 
 ```
 <workspace>/
-└── .agent_pool/
+└── .agent_runtime/
     ├── registry.json         # Agent 管理 —— AgentManager
     ├── context.json          # 状态 & 上下文 —— ContextManager
     ├── config.json           # 配置 —— Config
@@ -239,7 +239,7 @@ call(agent, conv, input)
 |:-----|:-------|:---------|
 | `wait` | 打印 title + content | 不修改任何持久化数据 |
 | | 打印 prompt | |
-| | 读取 stdin 直到用户输入 | |
+| | 读取 stdin — 支持单行（直接 Enter）或多行（end_word 结束） | |
 | | 解析输入 → 返回结构化结果 | |
 
 ### 输入解析规则
@@ -248,11 +248,12 @@ call(agent, conv, input)
 用户输入空行（直接按 Enter）  →  action="continue", message=""
 用户输入修改意见             →  action="modify",   message="用户输入的文字"
 用户输入 "reject" / "退回"   →  action="reject",   message="" 或用户的附言
+多行输入（传 end_word 时）    →  累积到 end_word 出现后合并，按以上规则解析
 ```
 
 ---
 
-## 8. AgentPool 顶层编排
+## 8. AgentRuntime 顶层编排
 
 ### 各函数边界
 
@@ -265,7 +266,7 @@ call(agent, conv, input)
 ### 模块间引用关系
 
 ```
-AgentPool
+AgentRuntime
 ├── self.agents        = AgentManager(registry_path)
 ├── self.conversations = ConversationManager(registry_path, self.agents, self.logger, self.config)
 ├── self.logger        = Logger(calls_path, events_path)

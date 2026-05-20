@@ -3,7 +3,7 @@
 ## 模块总览
 
 ```
-AgentPool（顶层编排）
+AgentRuntime（顶层编排）
 ├── AgentManager         # Agent 管理
 ├── ConversationManager  # 对话管理
 ├── Logger               # 日志
@@ -89,6 +89,7 @@ class CallResult:
     output_tokens: int
     latency_ms: int
     error: str | None       # "超时" | "gateway未运行" | "格式错误" | None
+    raw_data: dict | None   # Hermes 返回的完整 JSON（含工具调用等）
 
 
 class ConversationManager:
@@ -98,9 +99,12 @@ class ConversationManager:
         conversation: str,
         input_text: str,
         timeout: int = 120,
+        stream_callback: callable = None,
     ) -> CallResult
         """
         向指定 Agent 的指定对话发送消息。
+        如果传 stream_callback，则通过 SSE 流式接收回复，
+        每收到一个文本块就调 callback(chunk)，最终返回完整的 CallResult。
         内部自动处理重试（最多 retry 次）。
         自动计算耗时、记录日志。
         """
@@ -249,8 +253,6 @@ class Config:
         "max_retry": 3,
         "max_plan_loop": 5,
         "max_bug_loop": 5,
-        "git_user_name": "Hermes Agent",
-        "git_user_email": "agent@hermes.local",
     }
 
     def set(self, key: str, value) -> None
@@ -276,19 +278,22 @@ class Checkpoint:
         title: str,
         content: str,
         prompt: str = "确认无误请按 Enter 继续，或输入修改意见：",
+        end_word: str = None,
     ) -> CheckpointResult
         """
         暂停工作流，打印信息，等待用户输入。
+        如果传 end_word（如 "EOF"），进入多行输入模式，
+        持续读取直到 end_word 单独一行出现。
         """
 ```
 
 ---
 
-## 7. AgentPool — 顶层编排
+## 7. AgentRuntime — 顶层编排
 
 ```python
-class AgentPool:
-    def __init__(self):
+class AgentRuntime:
+    def __init__(self, config_path: str = None):
         self.agents: AgentManager
         self.conversations: ConversationManager
         self.logger: Logger
@@ -296,7 +301,7 @@ class AgentPool:
         self.config: Config
         self.checkpoint: Checkpoint
 
-    def __enter__(self) -> AgentPool
+    def __enter__(self) -> AgentRuntime
         """上下文管理器入口。"""
 
     def __exit__(self, ...)
