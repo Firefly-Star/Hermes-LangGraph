@@ -281,17 +281,21 @@ class ConversationManager:
         self._registry_path = os.path.join(pool_dir, "registry.json")
 
     def call(self, agent: str, conversation: str, input_text: str,
-             timeout: int = None) -> CallResult:
+             timeout: int = None, stream_callback: callable = None) -> CallResult:
         cfg = self._agents.get_config(agent)
         if not cfg:
             return CallResult(False, "", error=f"agent {agent} 不存在")
         if cfg["status"] != "running":
             return CallResult(False, "", error=f"{agent} gateway 未运行")
         timeout = timeout or self._config.get("call_timeout")
-        max_retry = self._config.get("max_retry")
         port = cfg["port"]
         api_key = cfg.get("api_key", "kaguya")
         t0 = time.time()
+
+        if stream_callback:
+            return self._call_stream(agent, conversation, input_text, port, api_key, timeout, stream_callback, t0)
+
+        max_retry = self._config.get("max_retry")
         last_error = None
         for attempt in range(1 + max_retry):
             try:
@@ -363,6 +367,67 @@ class ConversationManager:
             if conversation not in convs:
                 convs.append(conversation)
                 _write_json(self._registry_path, data)
+
+    def _call_stream(self, agent, conversation, input_text, port, api_key, timeout, callback, t0):
+        """流式调用 Hermes Gateway。timeout 只约束连接和首块到达时间。"""
+        try:
+            resp = requests.post(
+                f"http://127.0.0.1:{port}/v1/responses",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={"input": input_text, "conversation": conversation, "stream": True},
+                stream=True, timeout=(timeout, None),
+            )
+        except Exception as e:
+            return CallResult(False, "", error=f"连接失败: {e}", latency_ms=int((time.time() - t0) * 1000))
+        if resp.status_code != 200:
+            latency = int((time.time() - t0) * 1000)
+            return CallResult(False, "", error=f"HTTP {resp.status_code}", latency_ms=latency)
+
+        text_parts = []
+        raw_data = None
+        error_msg = None
+
+        for line in resp.iter_lines(decode_unicode=True):
+            if not line or not line.startswith("data: "):
+                continue
+            try:
+                data = json.loads(line[6:])
+            except json.JSONDecodeError:
+                continue
+            et = data.get("type")
+
+            if et == "response.output_text.delta":
+                txt = data.get("delta", "")
+                if txt:
+                    text_parts.append(txt)
+                    callback(txt)
+            elif et == "response.completed":
+                raw_data = data.get("response", {})
+                break
+            elif et == "response.error":
+                error_msg = data.get("error", {}).get("message", "流式错误")
+                break
+
+        latency = int((time.time() - t0) * 1000)
+
+        if raw_data:
+            full_text = "".join(text_parts)
+            usage = raw_data.get("usage", {})
+            self._logger.log_call(
+                agent=agent, conversation=conversation,
+                input_text=input_text, output_text=full_text,
+                input_tokens=usage.get("input_tokens", 0),
+                output_tokens=usage.get("output_tokens", 0),
+                latency_ms=latency, success=True,
+            )
+            self._track_conversation(agent, conversation)
+            return CallResult(
+                True, full_text,
+                usage.get("input_tokens", 0), usage.get("output_tokens", 0),
+                latency, raw_data=raw_data,
+            )
+
+        return CallResult(False, "", error=error_msg or "流式响应未完成", latency_ms=latency)
 
 
 # ============================================================

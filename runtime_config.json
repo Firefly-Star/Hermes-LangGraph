@@ -1,4 +1,8 @@
 {
   "pool_dir": ".agent_runtime",
-  "hermes_home": "C:/Users/温学周/AppData/Local/hermes"
+  "hermes_home": "C:/Users/温学周/AppData/Local/hermes",
+  "call_timeout": 120,
+  "max_retry": 3,
+  "max_plan_loop": 5,
+  "max_bug_loop": 5
 }
