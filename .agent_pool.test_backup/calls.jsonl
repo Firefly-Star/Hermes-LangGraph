@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-19T15:15:56", "agent": "dev", "conversation": "plan-1", "input_text": "出方案", "input_length": 3, "output_text": "方案", "output_length": 2, "latency_ms": 500, "input_tokens": 100, "output_tokens": 50, "total_tokens": 150, "success": true, "error": null}

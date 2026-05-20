@@ -1,0 +1,86 @@
+{
+  "project_info": {
+    "project_name": "测试项目",
+    "tech_stack": "Flask"
+  },
+  "current_phase": "plan",
+  "plans": {
+    "顶层规划": {
+      "parent": null,
+      "items": [
+        {
+          "id": "step_1",
+          "title": "出方案",
+          "status": "completed"
+        },
+        {
+          "id": "step_2",
+          "title": "实现",
+          "status": "in_progress"
+        }
+      ]
+    }
+  },
+  "current_position": {
+    "plan_id": "顶层规划",
+    "item_id": "step_2"
+  },
+  "contexts": {
+    "approved_plan": "1.注册 2.文章 CRUD"
+  },
+  "completed_steps": [
+    "clarify_done"
+  ],
+  "background": {
+    "project_name": "博客系统",
+    "tech_stack": "Flask"
+  },
+  "phase": {
+    "title": "顶层规划",
+    "status": "wip",
+    "children": [
+      {
+        "title": "PM 出需求",
+        "status": "done",
+        "children": []
+      },
+      {
+        "title": "后端实现",
+        "status": "wip",
+        "children": [
+          {
+            "title": "用户模型",
+            "status": "done",
+            "children": []
+          },
+          {
+            "title": "文章 CRUD",
+            "status": "wip",
+            "children": [
+              {
+                "title": "写 model",
+                "status": "done",
+                "children": []
+              },
+              {
+                "title": "写 route",
+                "status": "in_progress",
+                "children": []
+              },
+              {
+                "title": "编译验证",
+                "status": "todo",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "title": "前端实现",
+        "status": "todo",
+        "children": []
+      }
+    ]
+  }
+}
