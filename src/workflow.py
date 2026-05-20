@@ -118,13 +118,22 @@ def _init_state() -> WorkflowState:
     return {"phase": "pre_flight"}
 
 
+def parse_args():
+    import argparse
+    p = argparse.ArgumentParser(description="AI Coding 工作流框架")
+    p.add_argument("--config", default=None,
+                   help="配置文件路径（默认: 项目根目录/runtime_config.json）")
+    return p.parse_args()
+
+
 def main():
     print("=" * 60)
     print("  AI Coding 工作流框架 — 骨架")
     print("=" * 60)
 
+    args = parse_args()
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    config_path = os.path.join(script_dir, "..", "runtime_config.json")
+    config_path = args.config or os.path.join(script_dir, "..", "runtime_config.json")
 
     print("\n[1/2] 初始化 AgentRuntime...")
     runtime = setup_runtime(config_path)
