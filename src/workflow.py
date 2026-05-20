@@ -20,6 +20,7 @@ def _conv_name(base: str) -> str:
 
 AGENT_CONFIGS = {
     "master": {"profile": "cg", "port": 8642},
+    "judge":  {"profile": "cg", "port": 8642},
     "pm":     {"profile": "pm", "port": 8643},
 }
 
@@ -46,29 +47,33 @@ def role_aware_prompt(role: str, upstream: str, upstream_doc: str,
 
 MASTER_SYSTEM_PROMPT = """
 ## 角色认知
-你是项目的 **Master 编排者**，负责串联 AI Coding 工作流的全部阶段。
-你的职责不是直接写代码，而是驱动各专业 agent 完成工作。
+你是项目的 **Master 分析师**。你只负责三件事：
+1. **需求澄清阶段** — 与用户直接对话，理解需求
+2. **审核与分析** — 被 workflow 引擎问到的时候，写审核标准、做判断
+3. **决策输出** — 被要求时，将澄清结果整理为正式文档
 
-## 工作流概述
-整个开发流程按以下阶段推进，每个阶段有对应的专业 agent：
-1. 需求澄清（你直接与用户对话）
-2. PM 出方案（pm agent 产出需求文档 + HTML 原型）
-3. Dev 出详细设计 + 实现计划（dev agent）
-4. Dev 分步编码实现（dev agent，每步审查）
-5. QA 出测试计划 + 执行测试（qa agent）
-6. 交付并获用户确认
+## 你不做什么
+你不直接调用或委托其他 agent。子 agent 的调度、什么时候调谁、传什么指令，
+除了明确指明以外，你不直接上手完成任何东西的产出。
+全部由 workflow 引擎处理。
 
-## 核心原则（你必须遵守）
-1. **Review 不可跳过** — 每个专业 agent 的输出必须审查，再小的改动也不能省略
+## 工作流阶段（供你了解全局，但你不负责驱动）
+1. 需求澄清 ← 你直接与用户对话
+2. PM 出方案（由 workflow 调 pm agent）
+3. Dev 出详细设计 + 实现（由 workflow 调 dev agent）
+4. QA 测试（由 workflow 调 qa agent）
+5. 交付
+
+## 核心原则
+1. **Review 不可跳过** — 每个专业 agent 的输出必须审查，再小也不能省
 2. **执行与验证分离** — 写代码的 agent 不能自己验证自己
-3. **每步可回滚** — 每次执行前提醒 agent 做 git commit
+3. **每步可回滚** — 执行前提醒做 git commit
 4. **约束反复注入** — 核心规则在每次委派时重述
 5. **UI 验证必须自动化** — 有 UI 就须有 Playwright 脚本
 
-## 工作方式
+## 当前阶段的工作方式
 - 当你不清楚用户需求时，列出你的疑问，用 `## 疑问` 标题
-- 当全部理解后，用 `## 确认` 标题告知用户可以进入下一阶段
-- 用户输入 CONFIRMED 表示他确认结束当前阶段
+- 当全部理解后，正常总结确认即可，无需特殊标记
 """
 
 
@@ -123,16 +128,20 @@ def setup_runtime(config_path: str = None) -> ap.AgentRuntime:
             if key in cfg:
                 runtime.config.set(key, cfg[key])
 
+    started_ports = set()
     for name, cfg in AGENT_CONFIGS.items():
         result = runtime.agents.create_agent(name, cfg["profile"], cfg["port"])
         if not result.success and "已存在" not in result.message:
             print(f"  [WARN] {name} 注册: {result.message}")
-        if result.status != "running":
-            sr = runtime.agents.run_gateway(name)
-            if not sr.success:
-                print(f"  [WARN] {name} gateway: {sr.message}")
-            else:
-                print(f"  {name} gateway 就绪")
+        port = cfg["port"]
+        if port not in started_ports:
+            if result.status != "running":
+                sr = runtime.agents.run_gateway(name)
+                if not sr.success:
+                    print(f"  [WARN] {name} gateway: {sr.message}")
+                else:
+                    print(f"  {name} gateway 就绪")
+            started_ports.add(port)
 
     runtime.logger.log_event("workflow_started")
 
@@ -148,17 +157,38 @@ def pre_flight_clarify(state: WorkflowState) -> dict:
     conv = _conv_name("clarify")
     end_word = runtime.config.get("input_end_word") or None
 
-    runtime.logger.log_event("phase_started", detail="需求澄清")
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    project_context_path = os.path.join(root, ".agent_runtime", "project_context.md")
 
+    runtime.logger.log_event("phase_started", detail="需求澄清")
     runtime.conversations.init_conversation("master", conv, MASTER_SYSTEM_PROMPT.strip())
 
+    def _judge_clarify(reply: str) -> str:
+        """判读 Master 回复是已确认还是有疑问。"""
+        judge_prompt = (
+            "你是一个流程裁判。以下是 Master 的回复。\n\n"
+            f"## Master 的回复\n{reply}\n\n"
+            "判定当前状态是以下哪一种：\n"
+            "A. 需求已明确，可以进入下一阶段\n"
+            "B. Master 有疑问需要用户继续回答\n\n"
+            "回复 A 或 B 即可，不要输出其他内容。"
+        )
+        result = call_agent(runtime, "judge", _conv_name("judge-clarify"), judge_prompt)
+        return result.strip()
+
     def _close_clarify(reason: str):
-        """通知 Master 澄清结束，然后写 context。"""
+        """通知 Master 写 project_context.md 并结束。"""
         call_agent(runtime, "master", conv,
-                   "用户已确认需求结束。如有遗留疑问，后续阶段中再提出。")
-        bg = f"（{reason}）"
+                   "需求澄清阶段已结束。\n"
+                   f"请将所有已确认的决策整理为完整的项目顶层决策记录，"
+                   f"写入文件 {project_context_path}。\n"
+                   "需包含：用户角色与权限、技术栈、功能范围、MVP 边界、"
+                   "约束条件、页面结构等所有被确认过的信息。\n"
+                   "勿包含对话中的口头语，只写正式的文档内容。\n"
+                   "后续所有 agent 将通过这个文件了解项目。")
         runtime.logger.log_event("clarification_done", detail=reason)
-        runtime.context.set_bg("clarification", bg)
+        runtime.context.set_bg("project_context_path", project_context_path)
+        runtime.context.set_bg("clarification", f"（{reason}）")
 
     round_num = 0
     while True:
@@ -180,12 +210,26 @@ def pre_flight_clarify(state: WorkflowState) -> dict:
 
         reply = call_agent(runtime, "master", conv, user_input)
 
-        if "## 确认" in reply:
-            runtime.logger.log_event("clarification_done", detail="Master 确认理解")
-            runtime.context.set_bg("clarification", reply)
-            return {"phase": "done"}
+        # 确认子循环：judge 判读 → 用户确认 → 修正 → 再 judge
+        while True:
+            judge = _judge_clarify(reply)
+            if judge != "A":
+                break  # Master 仍有疑问，回到外层让用户回答
 
-    return {"phase": "done"}
+            cp = runtime.checkpoint.wait(
+                f"需求澄清 — 第 {round_num} 轮 (确认)",
+                "Master 已确认理解需求。认可的话输入 CONFIRMED 进入下一阶段；不认可则说明哪里不对：",
+                prompt="输入内容后按 Enter：", end_word=end_word,
+            )
+            confirm_input = cp.message.strip()
+            if confirm_input.upper() == "CONFIRMED":
+                _close_clarify("用户确认 Master 理解正确")
+                return {"phase": "done"}
+
+            round_num += 1
+            reply = call_agent(runtime, "master", conv,
+                              f"用户认为你的理解有偏差，请重新理解需求：\n{confirm_input}")
+            # 继续子循环：再 judge → 再确认
 
 
 def pm_write_doc(state: WorkflowState) -> dict:
