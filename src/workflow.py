@@ -113,6 +113,10 @@ def setup_runtime(config_path: str = None) -> ap.AgentRuntime:
                 print(f"  {name} gateway 就绪")
 
     runtime.logger.log_event("workflow_started")
+
+    # 持久化 Master system prompt，供后续 flush 重建对话时注入
+    runtime.context.set_bg("master_principles", MASTER_SYSTEM_PROMPT.strip())
+
     return runtime
 
 
