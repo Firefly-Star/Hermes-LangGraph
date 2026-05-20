@@ -649,13 +649,26 @@ class Checkpoint:
     """人工检查点。"""
 
     def wait(self, title: str, content: str,
-             prompt: str = "确认无误请按 Enter 继续，或输入修改意见：") -> CheckpointResult:
+             prompt: str = "确认无误请按 Enter 继续，或输入修改意见：",
+             end_word: str = None) -> CheckpointResult:
         print(f"\n{'='*50}")
         print(f"【{title}】")
         print(f"{'='*50}")
         print(content)
         print(f"\n{prompt}", end=" ", flush=True)
-        user_input = input().strip()
+
+        if end_word:
+            print(f"（输入 {end_word} 结束多行输入）")
+            lines = []
+            while True:
+                line = input()
+                if line.strip() == end_word:
+                    break
+                lines.append(line)
+            user_input = "\n".join(lines).strip()
+        else:
+            user_input = input().strip()
+
         if not user_input:
             return CheckpointResult("continue", "")
         if user_input.lower() in ("reject", "退回"):

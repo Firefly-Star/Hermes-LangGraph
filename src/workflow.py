@@ -67,7 +67,8 @@ def setup_runtime(config_path: str = None) -> ap.AgentRuntime:
     # 将工作流级配置项写入 Config
     if config_path and os.path.exists(config_path):
         cfg = json.load(open(config_path, "r", encoding="utf-8"))
-        for key in ("call_timeout", "max_retry", "max_plan_loop", "max_bug_loop"):
+        for key in ("call_timeout", "max_retry", "max_plan_loop", "max_bug_loop",
+                     "input_end_word"):
             if key in cfg:
                 runtime.config.set(key, cfg[key])
 
@@ -86,30 +87,66 @@ def setup_runtime(config_path: str = None) -> ap.AgentRuntime:
     return runtime
 
 
-def master_hello(state: WorkflowState) -> dict:
-    """Master 打招呼，确认工作流框架就绪。"""
-    runtime = getattr(master_hello, "_runtime", None)
-    conv = _conv_name("master-hello")
+def pre_flight_clarify(state: WorkflowState) -> dict:
+    """Phase 0: 交互式需求澄清。"""
+    runtime = getattr(pre_flight_clarify, "_runtime", None)
+    conv = _conv_name("clarify")
+    end_word = runtime.config.get("input_end_word") or None
+
+    runtime.logger.log_event("phase_started", detail="需求澄清")
 
     runtime.conversations.init_conversation(
         "master", conv,
-        "你是项目的 Master 编排者。请用一句话确认你已就绪。"
+        "你现在是项目的 Master 编排者。请等待用户描述项目需求。\n"
+        "当用户描述完后，请总结你对项目的理解。\n"
+        "如果还有不清楚的地方，用 '## 疑问' 标题列出问题；\n"
+        "如果全部清楚了，用 '## 确认' 标题确认可以开始。"
     )
 
-    reply = call_agent(runtime, "master", conv,
-                       "请确认你已就绪，可以开始工作。")
-    runtime.logger.log_event("master_ready")
+    def _close_clarify(reason: str):
+        """通知 Master 澄清结束，然后写 context。"""
+        call_agent(runtime, "master", conv,
+                   "用户已确认需求结束。如有遗留疑问，后续阶段中再提出。")
+        bg = f"（{reason}）"
+        runtime.logger.log_event("clarification_done", detail=reason)
+        runtime.context.set_bg("clarification", bg)
+
+    round_num = 0
+    while True:
+        round_num += 1
+        hint = "请描述你的需求" if round_num == 1 \
+            else "请回答 Master 的疑问，或输入 CONFIRMED 直接开始："
+
+        cp = runtime.checkpoint.wait(
+            f"需求澄清 — 第 {round_num} 轮", hint,
+            prompt="输入内容后按 Enter：", end_word=end_word,
+        )
+        user_input = cp.message.strip()
+        if not user_input:
+            continue
+
+        if user_input.upper() == "CONFIRMED":
+            _close_clarify("用户直接确认")
+            return {"phase": "done"}
+
+        reply = call_agent(runtime, "master", conv, user_input)
+
+        if "## 确认" in reply:
+            runtime.logger.log_event("clarification_done", detail="Master 确认理解")
+            runtime.context.set_bg("clarification", reply)
+            return {"phase": "done"}
+
     return {"phase": "done"}
 
 
 def build_graph(runtime) -> StateGraph:
     """构建 LangGraph StateGraph。"""
-    master_hello._runtime = runtime
+    pre_flight_clarify._runtime = runtime
 
     graph = StateGraph(WorkflowState)
-    graph.add_node("master_hello", master_hello)
-    graph.set_entry_point("master_hello")
-    graph.add_edge("master_hello", END)
+    graph.add_node("pre_flight_clarify", pre_flight_clarify)
+    graph.set_entry_point("pre_flight_clarify")
+    graph.add_edge("pre_flight_clarify", END)
 
     return graph.compile(checkpointer=MemorySaver())
 
