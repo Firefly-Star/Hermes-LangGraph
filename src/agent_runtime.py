@@ -10,7 +10,7 @@ AgentRuntime — AI Coding 工作流框架
   ContextManager       — 状态、分层计划、上下文组装
   Config               — 配置读写
   Checkpoint           — 人工检查点
-  AgentPool            — 顶层编排，聚合全部模块
+  AgentRuntime          — 顶层编排，聚合全部模块
 """
 
 import json, os, time, subprocess, requests
@@ -201,7 +201,8 @@ class AgentManager:
         env["API_SERVER_PORT"] = str(cfg["port"])
         env["API_SERVER_ENABLED"] = "true"
         env["API_SERVER_KEY"] = cfg.get("api_key", "kaguya")
-        cmd = [HERMES_CLI, "--profile", cfg["profile"], "gateway", "run"]
+        hermes_cli = os.path.join(self._hermes_home, "hermes-agent", "venv", "Scripts", "hermes")
+        cmd = [hermes_cli, "--profile", cfg["profile"], "gateway", "run"]
         proc = subprocess.Popen(
             cmd, env=env,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -361,7 +362,7 @@ class ConversationManager:
             convs = cfg.setdefault("conversations", [])
             if conversation not in convs:
                 convs.append(conversation)
-                _write_json(REGISTRY_PATH, data)
+                _write_json(self._registry_path, data)
 
 
 # ============================================================
