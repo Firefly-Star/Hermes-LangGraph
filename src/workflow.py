@@ -188,7 +188,7 @@ def pre_flight_clarify(state: WorkflowState) -> dict:
                    "后续所有 agent 将通过这个文件了解项目。")
         runtime.logger.log_event("clarification_done", detail=reason)
         runtime.context.set_bg("project_context_path", project_context_path)
-        runtime.context.set_bg("clarification", f"（{reason}）")
+        runtime.context.set_bg("clarification", f"项目顶层决策文件：{project_context_path}")
 
     round_num = 0
     while True:
@@ -208,7 +208,10 @@ def pre_flight_clarify(state: WorkflowState) -> dict:
             _close_clarify("用户直接确认")
             return {"phase": "done"}
 
-        reply = call_agent(runtime, "master", conv, user_input)
+        reply = call_agent(runtime, "master", conv, 
+                           f'''{user_input}
+                           不要产出任何东西，说出你的理解，如果有疑问就问就行。'''
+                           )
 
         # 确认子循环：judge 判读 → 用户确认 → 修正 → 再 judge
         while True:
