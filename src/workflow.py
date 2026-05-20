@@ -20,7 +20,29 @@ def _conv_name(base: str) -> str:
 
 AGENT_CONFIGS = {
     "master": {"profile": "cg", "port": 8642},
+    "pm":     {"profile": "pm", "port": 8643},
 }
+
+
+def role_aware_prompt(role: str, upstream: str, upstream_doc: str,
+                      deliverable: str, downstream: str,
+                      downstream_needs: str) -> str:
+    """角色上下文感知模板：让专业 agent 理解上下游关系。"""
+    return (
+        f"## 角色认知\n"
+        f"你的角色是 **{role}**。\n\n"
+        f"## 上游输入\n"
+        f"上游角色 **{upstream}** 提供了以下上下文：\n"
+        f"{upstream_doc}\n\n"
+        f"## 你的任务\n"
+        f"你需要产出 **{deliverable}**。\n\n"
+        f"## 下游需求\n"
+        f"下游角色 **{downstream}** 将使用你的产出做后续工作。\n"
+        f"他们需要从你的产出中获得：{downstream_needs}\n\n"
+        f"## 要求\n"
+        f"确保你的产出不是模板化的文字堆砌，而是真正能为下游提供 actionable 的信息。\n"
+        f"请具体、可操作，避免空泛描述。"
+    )
 
 MASTER_SYSTEM_PROMPT = """
 ## 角色认知
@@ -166,14 +188,80 @@ def pre_flight_clarify(state: WorkflowState) -> dict:
     return {"phase": "done"}
 
 
+def pm_write_doc(state: WorkflowState) -> dict:
+    """Phase 1: PM 产出 PRD.md + prototype.html。"""
+    runtime = getattr(pm_write_doc, "_runtime", None)
+    conv = _conv_name("pm-doc")
+    clarification = runtime.context.get_bg("clarification") or "（无上游澄清内容）"
+
+    runtime.logger.log_event("phase_started", detail="PM 出方案")
+    print(f"\n  ── PM 出方案 ──")
+
+    # Call 1 — PM 确认理解需求
+    call_agent(runtime, "pm", conv, role_aware_prompt(
+        role="PM",
+        upstream="用户",
+        upstream_doc=clarification,
+        deliverable="对项目需求的确认和理解",
+        downstream="Master 编排者",
+        downstream_needs="确认 PM 正确理解了项目范围和目标，如有疑问请列出",
+    ) + "\n\n请总结你对项目的理解。如果有不清楚的地方，列出你的疑问。理解清楚后，确认可以开始写 PRD。")
+
+    # Call 2 — PM 写 PRD
+    prd_text = call_agent(runtime, "pm", conv, role_aware_prompt(
+        role="PM",
+        upstream="用户",
+        upstream_doc=clarification,
+        deliverable="PRD.md 需求文档",
+        downstream="Dev（开发工程师）",
+        downstream_needs="清晰的功能列表、验收标准、页面结构描述、MVP 边界定义",
+    ) + "\n\n请输出 PRD.md 的完整内容，包含：项目概述、功能需求、MVP 范围、页面结构、验收标准。")
+
+    # Call 3 — PM 写 prototype
+    prototype_text = call_agent(runtime, "pm", conv, role_aware_prompt(
+        role="PM",
+        upstream="用户",
+        upstream_doc=clarification,
+        deliverable="prototype.html 静态原型文件",
+        downstream="Dev（开发工程师）",
+        downstream_needs="可直接在浏览器中打开运行的 HTML 原型，展示页面布局和核心交互",
+    ) + "\n\n请基于 PRD 生成一个完整的 prototype.html。要求：单文件自包含（CSS/JS 内嵌），可双击在浏览器中直接打开，包含核心交互和布局。")
+
+    # 写文件到 test/
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    output_dir = os.path.join(script_dir, "..", "test")
+    os.makedirs(output_dir, exist_ok=True)
+
+    prd_path = os.path.join(output_dir, "PRD.md")
+    with open(prd_path, "w", encoding="utf-8") as f:
+        f.write(prd_text)
+    print(f"  ✓ 已写入 {prd_path}")
+
+    proto_path = os.path.join(output_dir, "prototype.html")
+    with open(proto_path, "w", encoding="utf-8") as f:
+        f.write(prototype_text)
+    print(f"  ✓ 已写入 {proto_path}")
+
+    # 持久化到 context
+    runtime.context.set_ctx("pm_prd", prd_text)
+    runtime.context.set_ctx("pm_prototype", prototype_text)
+    runtime.context.set_phase_node(["PM 出方案"], "done")
+
+    runtime.logger.log_event("phase_completed", detail="PM 方案完成")
+    return {"phase": "done"}
+
+
 def build_graph(runtime) -> StateGraph:
     """构建 LangGraph StateGraph。"""
     pre_flight_clarify._runtime = runtime
+    pm_write_doc._runtime = runtime
 
     graph = StateGraph(WorkflowState)
     graph.add_node("pre_flight_clarify", pre_flight_clarify)
+    graph.add_node("pm_write_doc", pm_write_doc)
     graph.set_entry_point("pre_flight_clarify")
-    graph.add_edge("pre_flight_clarify", END)
+    graph.add_edge("pre_flight_clarify", "pm_write_doc")
+    graph.add_edge("pm_write_doc", END)
 
     return graph.compile(checkpointer=MemorySaver())
 
