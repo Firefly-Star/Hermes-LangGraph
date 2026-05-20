@@ -3,6 +3,7 @@ __pycache__/
 .pytest_cache/
 .agent_pool/
 .agent_pool.test_backup/
+.agent_runtime/
 test/
 *.pyc
 .env
