@@ -13,7 +13,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 # ── AgentPool ──────────────────────────────────────────
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import agent_pool as ap
+import agent_runtime as ap
 
 # ════════════════════════════════════════════════════════
 # 常量
@@ -105,11 +105,11 @@ def role_aware_prompt(
     )
 
 
-def call_agent(pool, agent: str, conversation: str, prompt: str, timeout: int = 180) -> str:
+def call_agent(runtime, agent: str, conversation: str, prompt: str, timeout: int = 180) -> str:
     """调用 agent 并返回文本结果。失败时抛异常。"""
     print(f"  → 调 {agent}/{conversation}... ", end="", flush=True)
     t0 = time.time()
-    result = pool.conversations.call(agent, conversation, prompt, timeout=timeout)
+    result = runtime.conversations.call(agent, conversation, prompt, timeout=timeout)
     elapsed = time.time() - t0
     if not result.success:
         print(f"❌ ({elapsed:.0f}s)")
@@ -127,7 +127,7 @@ def call_agent(pool, agent: str, conversation: str, prompt: str, timeout: int = 
     return result.text
 
 
-def write_criteria(pool, target_desc: str, conv_name: str) -> str:
+def write_criteria(runtime, target_desc: str, conv_name: str) -> str:
     """写审核标准 + 自检。返回标准文本。"""
     prompt = (
         f"请为以下内容制定可执行的审核标准：{target_desc}\n\n"
@@ -135,11 +135,11 @@ def write_criteria(pool, target_desc: str, conv_name: str) -> str:
         f"每一条格式：【标准】内容"
     )
     # 只用 call_agent 写标准，跳过自检（自检在主对话 self_check 中做）
-    result_text = call_agent(pool, "master", conv_name, prompt, timeout=120)
+    result_text = call_agent(runtime, "master", conv_name, prompt, timeout=120)
     return result_text
 
 
-def archive_review(pool, target: str, round_num: int, criteria: str, verdict: str, reason: str):
+def archive_review(runtime, target: str, round_num: int, criteria: str, verdict: str, reason: str):
     """审核结果存档。"""
     record = json.dumps({
         "target": target,
@@ -148,37 +148,37 @@ def archive_review(pool, target: str, round_num: int, criteria: str, verdict: st
         "verdict": verdict,
         "reason": reason,
     }, ensure_ascii=False)
-    pool.context.set_ctx(f"review_{target}_r{round_num}", record)
+    runtime.context.set_ctx(f"review_{target}_r{round_num}", record)
 
 
-def self_check(pool, action_summary: str) -> str:
+def self_check(runtime, action_summary: str) -> str:
     """Master 自省。在主对话内 inline 执行。"""
-    master_conv = pool.config.get("_master_conv") or "master-init-0"
+    master_conv = runtime.config.get("_master_conv") or "master-init-0"
     prompt = (
         f"你刚才执行的操作：{action_summary}\n\n"
         f"{SELF_CHECK_PROMPT}"
     )
-    result = pool.conversations.call("master", master_conv, prompt, timeout=60)
+    result = runtime.conversations.call("master", master_conv, prompt, timeout=60)
     return result.text if result.success else "SELF_CHECK_FAILED"
 
 
-def flush_master(pool, phase: str, seq: int) -> int:
+def flush_master(runtime, phase: str, seq: int) -> int:
     """刷新 Master 上下文。返回新 seq 并记录当前 conv 名。"""
-    pool.conversations.close_conversation("master", f"master-{phase}-{seq}")
+    runtime.conversations.close_conversation("master", f"master-{phase}-{seq}")
     keys = ["background", "phase"]
     for key in ["approved_pm_doc", "approved_dev_design", "approved_dev_plan", "qa_report"]:
-        if pool.context.get_ctx(key):
+        if runtime.context.get_ctx(key):
             keys.append(key)
-    injection = pool.context.build_injection(keys)
+    injection = runtime.context.build_injection(keys)
     if not injection.strip():
         injection = "会话已刷新。继续工作。"
     new_conv = f"master-{phase}-{seq + 1}"
-    pool.conversations.init_conversation("master", new_conv, injection)
-    pool.config.set("_master_conv", new_conv)   # ← 记录当前 conv 名
+    runtime.conversations.init_conversation("master", new_conv, injection)
+    runtime.config.set("_master_conv", new_conv)   # ← 记录当前 conv 名
     return seq + 1
 
 
-def handle_review_exhausted(pool, target_name: str, current_text: str, criteria: str) -> str:
+def handle_review_exhausted(runtime, target_name: str, current_text: str, criteria: str) -> str:
     """
     审核循环达上限时，让用户决定下一步。
     返回: "override" | "retry" | "abort"
@@ -188,7 +188,7 @@ def handle_review_exhausted(pool, target_name: str, current_text: str, criteria:
         f"最新内容：\n{current_text[:500]}\n\n"
         f"审核标准：\n{criteria[:500]}\n"
     )
-    result = pool.checkpoint.wait(
+    result = runtime.checkpoint.wait(
         f"审核循环达上限 — {target_name}",
         content,
         prompt="输入 'override' 强制通过 / 'retry' 再试一轮 / 'abort' 终止工作流："
@@ -203,37 +203,37 @@ def handle_review_exhausted(pool, target_name: str, current_text: str, criteria:
 
 
 # ════════════════════════════════════════════════════════
-# 初始化 AgentPool
+# 初始化 AgentRuntime
 # ════════════════════════════════════════════════════════
 
-def setup_pool() -> ap.AgentPool:
-    """初始化 AgentPool 并启动所有 Gateway。"""
-    pool = ap.AgentPool()
+def setup_runtime() -> ap.AgentRuntime:
+    """初始化 AgentRuntime 并启动所有 Gateway。"""
+    runtime = ap.AgentRuntime()
 
     # 写入原则
-    pool.context.set_bg("master_principles", PRINCIPLES)
+    runtime.context.set_bg("master_principles", PRINCIPLES)
 
     # 注册并启动各 agent
     for name, cfg in AGENT_CONFIGS.items():
-        result = pool.agents.create_agent(name, cfg["profile"], cfg["port"])
+        result = runtime.agents.create_agent(name, cfg["profile"], cfg["port"])
         if not result.success and "已存在" not in result.message:
             print(f"  [WARN] {name} 注册: {result.message}")
         if result.status != "running":
-            sr = pool.agents.run_gateway(name)
+            sr = runtime.agents.run_gateway(name)
             if not sr.success:
                 print(f"  [WARN] {name} gateway: {sr.message}")
             else:
                 print(f"  {name} gateway 就绪")
 
     # 初始化 Master 对话
-    pool.conversations.init_conversation(
+    runtime.conversations.init_conversation(
         "master", "master-init-0",
         "工作流已启动。等待进入 Phase 0: Pre-Flight / Clarification。"
     )
-    pool.config.set("_master_conv", "master-init-0")
+    runtime.config.set("_master_conv", "master-init-0")
 
-    pool.logger.log_event("workflow_started", detail="AgentPool initialized")
-    return pool
+    runtime.logger.log_event("workflow_started", detail="AgentPool initialized")
+    return runtime
 
 
 # ════════════════════════════════════════════════════════
@@ -261,14 +261,14 @@ def _init_state() -> WorkflowState:
 
 def pre_flight_clarify(state: WorkflowState) -> dict:
     """Phase 0: 和 Master 交互式澄清需求。"""
-    pool = getattr(pre_flight_clarify, "_pool", None)
-    if pool is None:
+    runtime = getattr(pre_flight_clarify, "_runtime", None)
+    if runtime is None:
         return state
 
-    pool.logger.log_event("phase_started", detail="Phase 0: 需求澄清")
+    runtime.logger.log_event("phase_started", detail="Phase 0: 需求澄清")
 
     # 第一步：告诉 Master 准备接需求
-    pool.conversations.init_conversation(
+    runtime.conversations.init_conversation(
         "master", "master-clarify",
         "你现在是项目的 Master 编排者。请等待用户描述项目需求。\n"
         "当用户描述完后，你需要做两件事：\n"
@@ -276,7 +276,7 @@ def pre_flight_clarify(state: WorkflowState) -> dict:
         "2. 如果还有不清楚的地方，用 '## 疑问' 标题列出问题；\n"
         "   如果全部清楚了，用 '## 确认' 标题确认可以开始。"
     )
-    pool.config.set("_master_conv", "master-clarify")
+    runtime.config.set("_master_conv", "master-clarify")
 
     # 循环：用户输入 → Master 回应 → 直到 CONFIRMED
     max_rounds = 5
@@ -287,7 +287,7 @@ def pre_flight_clarify(state: WorkflowState) -> dict:
         else:
             hint = "请回答 Master 的疑问，或输入 'CONFIRMED' 直接开始："
 
-        cp = pool.checkpoint.wait(
+        cp = runtime.checkpoint.wait(
             f"需求澄清 — 第 {round_num + 1} 轮",
             hint,
             prompt="输入内容后按 Enter："
@@ -298,32 +298,32 @@ def pre_flight_clarify(state: WorkflowState) -> dict:
 
         # 用户说 CONFIRMED → 跳过 Master，直接 proceed
         if user_input.upper() == "CONFIRMED":
-            pool.logger.log_event("clarification_done", detail="用户直接确认")
-            pool.context.set_bg("clarification", "（用户确认后直接开始）")
-            pool.context.set_bg("master_principles", PRINCIPLES)
+            runtime.logger.log_event("clarification_done", detail="用户直接确认")
+            runtime.context.set_bg("clarification", "（用户确认后直接开始）")
+            runtime.context.set_bg("master_principles", PRINCIPLES)
             return {"phase": "pm_write_doc", "conv_seq": 0,
                     "self_check_count": state.get("self_check_count", 0)}
 
         # 把用户输入发给 Master
-        result = pool.conversations.call("master", "master-clarify", user_input, timeout=120)
+        result = runtime.conversations.call("master", "master-clarify", user_input, timeout=120)
         reply = result.text if result.success else "（Master 无响应）"
         print(f"\n  Master 回应：{reply[:500]}")
 
         # 判断 Master 是否确认
         if "## 确认" in reply or "CONFIRMED" in reply.upper():
-            pool.logger.log_event("clarification_done", detail="Master 确认理解")
-            pool.context.set_bg("clarification", reply)
-            pool.context.set_bg("master_principles", PRINCIPLES)
+            runtime.logger.log_event("clarification_done", detail="Master 确认理解")
+            runtime.context.set_bg("clarification", reply)
+            runtime.context.set_bg("master_principles", PRINCIPLES)
             return {"phase": "pm_write_doc", "conv_seq": 0,
                     "self_check_count": state.get("self_check_count", 0)}
 
         # 否则继续循环（Master 有疑问）
-        pool.logger.log_event("clarification_round", detail=f"第{round_num + 1}轮有疑问")
+        runtime.logger.log_event("clarification_round", detail=f"第{round_num + 1}轮有疑问")
 
     # 超限后强制通过
-    pool.logger.log_event("clarification_done", detail="达到最大轮数，强制开始")
-    pool.context.set_bg("clarification", "（达到最大澄清轮数后强制开始）")
-    pool.context.set_bg("master_principles", PRINCIPLES)
+    runtime.logger.log_event("clarification_done", detail="达到最大轮数，强制开始")
+    runtime.context.set_bg("clarification", "（达到最大澄清轮数后强制开始）")
+    runtime.context.set_bg("master_principles", PRINCIPLES)
     return {"phase": "pm_write_doc", "conv_seq": 0,
             "self_check_count": state.get("self_check_count", 0)}
 
@@ -331,10 +331,10 @@ def pre_flight_clarify(state: WorkflowState) -> dict:
 # ── Phase 1: PM 出方案 ─────────────────────────────────
 
 def pm_write_doc(state: WorkflowState) -> dict:
-    pool = getattr(pm_write_doc, "_pool", None)
-    pool.logger.log_event("phase_started", detail="Phase 1a: PM 写方案")
+    runtime = getattr(pm_write_doc, "_runtime", None)
+    runtime.logger.log_event("phase_started", detail="Phase 1a: PM 写方案")
 
-    bg = pool.context.get_bg("clarification") or "（无澄清信息）"
+    bg = runtime.context.get_bg("clarification") or "（无澄清信息）"
     prompt = role_aware_prompt(
         role="PM（产品经理）",
         upstream="用户",
@@ -354,7 +354,7 @@ def pm_write_doc(state: WorkflowState) -> dict:
     # 如果是重入（审查没通过回来的），注入审查反馈
     lc = state.get("loop_count", 0)
     if lc > 0:
-        prev_review = pool.context.get_ctx(f"review_pm_doc_r{lc - 1}") or pool.context.get_ctx("review_pm_doc_r0")
+        prev_review = runtime.context.get_ctx(f"review_pm_doc_r{lc - 1}") or runtime.context.get_ctx("review_pm_doc_r0")
         if prev_review:
             prompt += (
                 f"\n\n## 上一轮审查反馈\n"
@@ -363,30 +363,30 @@ def pm_write_doc(state: WorkflowState) -> dict:
                 f"请根据反馈修改文件，不要重复说'文件已在磁盘上'。"
             )
 
-    text = call_agent(pool, "pm", "pm-doc", prompt)
-    pool.context.set_ctx("pm_doc", text)
-    pool.logger.log_event("pm_doc_written", detail=f"PM 文档长度: {len(text)}")
+    text = call_agent(runtime, "pm", "pm-doc", prompt)
+    runtime.context.set_ctx("pm_doc", text)
+    runtime.logger.log_event("pm_doc_written", detail=f"PM 文档长度: {len(text)}")
 
     # 自省
-    sc = self_check(pool, "Phase 1a: PM 写方案")
+    sc = self_check(runtime, "Phase 1a: PM 写方案")
     return {"loop_count": lc, "self_check_count": state.get("self_check_count", 0) + 1}
 
 
 def pm_write_criteria(state: WorkflowState) -> dict:
-    pool = getattr(pm_write_criteria, "_pool", None)
-    pool.logger.log_event("phase_started", detail="Phase 1b: PM 审核标准")
+    runtime = getattr(pm_write_criteria, "_runtime", None)
+    runtime.logger.log_event("phase_started", detail="Phase 1b: PM 审核标准")
 
-    criteria = write_criteria(pool, "PM 的产出（需求文档 + HTML 原型）", "pm-criteria")
-    pool.context.set_ctx("pm_review_criteria", criteria)
+    criteria = write_criteria(runtime, "PM 的产出（需求文档 + HTML 原型）", "pm-criteria")
+    runtime.context.set_ctx("pm_review_criteria", criteria)
     return {}
 
 
 def pm_review_doc(state: WorkflowState) -> dict:
-    pool = getattr(pm_review_doc, "_pool", None)
-    pool.logger.log_event("phase_started", detail="Phase 1c: 评审 PM 方案")
+    runtime = getattr(pm_review_doc, "_runtime", None)
+    runtime.logger.log_event("phase_started", detail="Phase 1c: 评审 PM 方案")
 
-    criteria = pool.context.get_ctx("pm_review_criteria") or "（无审核标准）"
-    pm_doc = pool.context.get_ctx("pm_doc") or "（无文档）"
+    criteria = runtime.context.get_ctx("pm_review_criteria") or "（无审核标准）"
+    pm_doc = runtime.context.get_ctx("pm_doc") or "（无文档）"
     prompt = (
         f"请按以下审核标准审查 PM 的产出：\n\n"
         f"【审核标准】\n{criteria}\n\n"
@@ -394,54 +394,54 @@ def pm_review_doc(state: WorkflowState) -> dict:
         f"请逐条判断通过/不通过，并给出理由。"
         f"最终结论：PASS 或 FAIL"
     )
-    text = call_agent(pool, "master", "review-pm-doc", prompt)
+    text = call_agent(runtime, "master", "review-pm-doc", prompt)
 
     # 判断结论
     is_pass = "PASS" in text.upper() and "FAIL" not in text.upper().split("PASS")[0] if "PASS" in text.upper() else False
     verdict = "pass" if is_pass else "fail"
-    archive_review(pool, "pm_doc", state.get("loop_count", 0), criteria, verdict, text)
+    archive_review(runtime, "pm_doc", state.get("loop_count", 0), criteria, verdict, text)
 
     if is_pass:
-        pool.context.set_ctx("approved_pm_doc", pm_doc)
-        pool.context.set_phase_node(["PM 方案评审"], "done")
-        pool.logger.log_event("pm_doc_approved")
-        sc = self_check(pool, "Phase 1c: PM 方案评审通过")
+        runtime.context.set_ctx("approved_pm_doc", pm_doc)
+        runtime.context.set_phase_node(["PM 方案评审"], "done")
+        runtime.logger.log_event("pm_doc_approved")
+        sc = self_check(runtime, "Phase 1c: PM 方案评审通过")
         return {"pm_doc_approved": True, "phase": "align_pm_dev", "loop_count": 0,
                 "self_check_count": state.get("self_check_count", 0) + 1}
     else:
         lc = state.get("loop_count", 0) + 1
         if lc >= MAX_REVIEW_LOOP:
-            decision = handle_review_exhausted(pool, "PM 方案评审", pm_doc, criteria)
+            decision = handle_review_exhausted(runtime, "PM 方案评审", pm_doc, criteria)
             if decision == "override":
-                pool.context.set_ctx("approved_pm_doc", pm_doc)
-                pool.context.set_phase_node(["PM 方案评审"], "done")
-                pool.logger.log_event("pm_doc_approved", detail="user override")
+                runtime.context.set_ctx("approved_pm_doc", pm_doc)
+                runtime.context.set_phase_node(["PM 方案评审"], "done")
+                runtime.logger.log_event("pm_doc_approved", detail="user override")
                 return {"pm_doc_approved": True, "phase": "align_pm_dev", "loop_count": 0}
             elif decision == "abort":
                 return {"phase": "done"}
-            pool.logger.log_event("pm_doc_rejected", detail=f"第{lc}次未通过，用户选择 retry")
+            runtime.logger.log_event("pm_doc_rejected", detail=f"第{lc}次未通过，用户选择 retry")
             return {"pm_doc_approved": False, "loop_count": 0}
 
 
 # ── Phase 2: Cross-Agent Alignment PM→Dev ─────────────
 
 def align_pm_dev(state: WorkflowState) -> dict:
-    pool = getattr(align_pm_dev, "_pool", None)
-    pool.logger.log_event("phase_started", detail="Phase 2: Align PM→Dev")
+    runtime = getattr(align_pm_dev, "_runtime", None)
+    runtime.logger.log_event("phase_started", detail="Phase 2: Align PM→Dev")
 
-    pm_doc = pool.context.get_ctx("approved_pm_doc") or "（无 PM 文档）"
+    pm_doc = runtime.context.get_ctx("approved_pm_doc") or "（无 PM 文档）"
     prompt = (
         f"你是 Dev。上游 PM 给你提供了以下方案文档：\n\n"
         f"{pm_doc}\n\n"
         f"请仔细阅读。然后列出你的问题和疑点——任何会影响你后续设计/实现的模糊之处。\n"
         f"如果没有问题，请回复 'NO_QUESTIONS'。"
     )
-    text = call_agent(pool, "dev", "align-pm-dev", prompt)
+    text = call_agent(runtime, "dev", "align-pm-dev", prompt)
 
     if "NO_QUESTIONS" in text.upper():
-        pool.context.set_phase_node(["PM→Dev 对齐"], "done")
-        pool.logger.log_event("alignment_pm_dev_done")
-        sc = self_check(pool, "Phase 2: PM→Dev 对齐完成，无问题")
+        runtime.context.set_phase_node(["PM→Dev 对齐"], "done")
+        runtime.logger.log_event("alignment_pm_dev_done")
+        sc = self_check(runtime, "Phase 2: PM→Dev 对齐完成，无问题")
         return {"phase": "dev_design", "loop_count": 0,
                 "self_check_count": state.get("self_check_count", 0) + 1}
     else:
@@ -450,29 +450,29 @@ def align_pm_dev(state: WorkflowState) -> dict:
             f"Dev 读了你的方案后提出了以下问题：\n\n{text}\n\n"
             f"请逐一解答。如果需要修改方案，直接给出修改后的版本。"
         )
-        answer = call_agent(pool, "pm", "align-pm-dev-answer", route_prompt)
-        pool.context.set_ctx("align_pm_dev_qa", f"Q: {text}\nA: {answer}")
+        answer = call_agent(runtime, "pm", "align-pm-dev-answer", route_prompt)
+        runtime.context.set_ctx("align_pm_dev_qa", f"Q: {text}\nA: {answer}")
         # 回到对齐循环（loop_count 防死循环）
         lc = state.get("loop_count", 0) + 1
         if lc >= MAX_REVIEW_LOOP:
-            decision = handle_review_exhausted(pool, "PM→Dev 对齐", text, "Dev 需理解 PM 方案")
+            decision = handle_review_exhausted(runtime, "PM→Dev 对齐", text, "Dev 需理解 PM 方案")
             if decision == "override":
-                pool.context.set_phase_node(["PM→Dev 对齐"], "done")
+                runtime.context.set_phase_node(["PM→Dev 对齐"], "done")
                 return {"phase": "dev_design", "loop_count": 0}
             elif decision == "abort":
                 return {"phase": "done"}
             return {"loop_count": 0}
-        pool.logger.log_event("alignment_pm_dev_cycle", detail=f"第{lc}轮")
+        runtime.logger.log_event("alignment_pm_dev_cycle", detail=f"第{lc}轮")
         return {"loop_count": lc}
 
 
 # ── Phase 3: Dev 出详细设计 ────────────────────────────
 
 def dev_design(state: WorkflowState) -> dict:
-    pool = getattr(dev_design, "_pool", None)
-    pool.logger.log_event("phase_started", detail="Phase 3a: Dev 出详细设计")
+    runtime = getattr(dev_design, "_runtime", None)
+    runtime.logger.log_event("phase_started", detail="Phase 3a: Dev 出详细设计")
 
-    pm_doc = pool.context.get_ctx("approved_pm_doc") or "（无 PM 文档）"
+    pm_doc = runtime.context.get_ctx("approved_pm_doc") or "（无 PM 文档）"
     prompt = role_aware_prompt(
         role="Dev（开发工程师）",
         upstream="PM",
@@ -492,7 +492,7 @@ def dev_design(state: WorkflowState) -> dict:
     # 重入时注入审查反馈
     lc = state.get("loop_count", 0)
     if lc > 0:
-        prev_review = pool.context.get_ctx(f"review_dev_design_r{lc - 1}") or pool.context.get_ctx("review_dev_design_r0")
+        prev_review = runtime.context.get_ctx(f"review_dev_design_r{lc - 1}") or runtime.context.get_ctx("review_dev_design_r0")
         if prev_review:
             prompt += (
                 f"\n\n## 上一轮审查反馈\n"
@@ -501,32 +501,32 @@ def dev_design(state: WorkflowState) -> dict:
                 f"请根据反馈修改设计文档。"
             )
 
-    text = call_agent(pool, "dev", "dev-design", prompt)
-    pool.context.set_ctx("dev_design", text)
-    pool.logger.log_event("dev_design_written", detail=f"设计文档长度: {len(text)}")
-    sc = self_check(pool, "Phase 3a: Dev 出详细设计")
+    text = call_agent(runtime, "dev", "dev-design", prompt)
+    runtime.context.set_ctx("dev_design", text)
+    runtime.logger.log_event("dev_design_written", detail=f"设计文档长度: {len(text)}")
+    sc = self_check(runtime, "Phase 3a: Dev 出详细设计")
     return {"loop_count": lc, "self_check_count": state.get("self_check_count", 0) + 1}
 
 
 def dev_design_criteria(state: WorkflowState) -> dict:
-    pool = getattr(dev_design_criteria, "_pool", None)
-    pool.logger.log_event("phase_started", detail="Phase 3b: Dev 设计审核标准")
+    runtime = getattr(dev_design_criteria, "_runtime", None)
+    runtime.logger.log_event("phase_started", detail="Phase 3b: Dev 设计审核标准")
 
     criteria = write_criteria(
-        pool,
+        runtime,
         "Dev 的详细设计文档（重点关注：函数边界是否清晰、模块内聚性、模块间耦合度、数据流完整性）",
         "dev-design-criteria",
     )
-    pool.context.set_ctx("dev_design_criteria", criteria)
+    runtime.context.set_ctx("dev_design_criteria", criteria)
     return {}
 
 
 def dev_design_review(state: WorkflowState) -> dict:
-    pool = getattr(dev_design_review, "_pool", None)
-    pool.logger.log_event("phase_started", detail="Phase 3c: 评审 Dev 详细设计")
+    runtime = getattr(dev_design_review, "_runtime", None)
+    runtime.logger.log_event("phase_started", detail="Phase 3c: 评审 Dev 详细设计")
 
-    criteria = pool.context.get_ctx("dev_design_criteria") or "（无审核标准）"
-    design = pool.context.get_ctx("dev_design") or "（无设计文档）"
+    criteria = runtime.context.get_ctx("dev_design_criteria") or "（无审核标准）"
+    design = runtime.context.get_ctx("dev_design") or "（无设计文档）"
     prompt = (
         f"请按以下审核标准审查 Dev 的详细设计：\n\n"
         f"【审核标准】\n{criteria}\n\n"
@@ -538,27 +538,27 @@ def dev_design_review(state: WorkflowState) -> dict:
         f"4. 数据流：数据链路是否完整闭环？\n\n"
         f"逐条判断。最终结论：PASS 或 FAIL"
     )
-    text = call_agent(pool, "master", "review-dev-design", prompt)
+    text = call_agent(runtime, "master", "review-dev-design", prompt)
 
     is_pass = "PASS" in text.upper() and ("FAIL" not in text.upper().split("PASS")[0] if "PASS" in text.upper() else False)
     verdict = "pass" if is_pass else "fail"
-    archive_review(pool, "dev_design", state.get("loop_count", 0), criteria, verdict, text)
+    archive_review(runtime, "dev_design", state.get("loop_count", 0), criteria, verdict, text)
 
     if is_pass:
-        pool.context.set_ctx("approved_dev_design", design)
-        pool.context.set_phase_node(["Dev 详细设计评审"], "done")
-        pool.logger.log_event("dev_design_approved")
-        sc = self_check(pool, "Phase 3c: Dev 详细设计评审通过")
+        runtime.context.set_ctx("approved_dev_design", design)
+        runtime.context.set_phase_node(["Dev 详细设计评审"], "done")
+        runtime.logger.log_event("dev_design_approved")
+        sc = self_check(runtime, "Phase 3c: Dev 详细设计评审通过")
         return {"dev_design_approved": True, "phase": "dev_plan", "loop_count": 0,
                 "self_check_count": state.get("self_check_count", 0) + 1}
     else:
         lc = state.get("loop_count", 0) + 1
         if lc >= MAX_REVIEW_LOOP:
-            decision = handle_review_exhausted(pool, "Dev 详细设计评审", design, criteria)
+            decision = handle_review_exhausted(runtime, "Dev 详细设计评审", design, criteria)
             if decision == "override":
-                pool.context.set_ctx("approved_dev_design", design)
-                pool.context.set_phase_node(["Dev 详细设计评审"], "done")
-                pool.logger.log_event("dev_design_approved", detail="user override")
+                runtime.context.set_ctx("approved_dev_design", design)
+                runtime.context.set_phase_node(["Dev 详细设计评审"], "done")
+                runtime.logger.log_event("dev_design_approved", detail="user override")
                 return {"dev_design_approved": True, "phase": "dev_plan", "loop_count": 0}
             elif decision == "abort":
                 return {"phase": "done"}
@@ -568,10 +568,10 @@ def dev_design_review(state: WorkflowState) -> dict:
 # ── Phase 4: Dev 出实现计划 ────────────────────────────
 
 def dev_plan(state: WorkflowState) -> dict:
-    pool = getattr(dev_plan, "_pool", None)
-    pool.logger.log_event("phase_started", detail="Phase 4a: Dev 出实现计划")
+    runtime = getattr(dev_plan, "_runtime", None)
+    runtime.logger.log_event("phase_started", detail="Phase 4a: Dev 出实现计划")
 
-    design = pool.context.get_ctx("approved_dev_design") or "（无设计文档）"
+    design = runtime.context.get_ctx("approved_dev_design") or "（无设计文档）"
     prompt = role_aware_prompt(
         role="Dev（开发工程师）",
         upstream="PM（需求）+ 自己的详细设计",
@@ -591,7 +591,7 @@ def dev_plan(state: WorkflowState) -> dict:
     # 重入时注入审查反馈
     lc = state.get("loop_count", 0)
     if lc > 0:
-        prev_review = pool.context.get_ctx(f"review_dev_plan_r{lc - 1}") or pool.context.get_ctx("review_dev_plan_r0")
+        prev_review = runtime.context.get_ctx(f"review_dev_plan_r{lc - 1}") or runtime.context.get_ctx("review_dev_plan_r0")
         if prev_review:
             prompt += (
                 f"\n\n## 上一轮审查反馈\n"
@@ -600,58 +600,58 @@ def dev_plan(state: WorkflowState) -> dict:
                 f"请根据反馈修改计划。"
             )
 
-    text = call_agent(pool, "dev", "dev-plan", prompt)
-    pool.context.set_ctx("dev_plan_text", text)
-    pool.logger.log_event("dev_plan_written")
-    sc = self_check(pool, "Phase 4a: Dev 出实现计划")
+    text = call_agent(runtime, "dev", "dev-plan", prompt)
+    runtime.context.set_ctx("dev_plan_text", text)
+    runtime.logger.log_event("dev_plan_written")
+    sc = self_check(runtime, "Phase 4a: Dev 出实现计划")
     return {"loop_count": lc, "step_index": 0,
             "self_check_count": state.get("self_check_count", 0) + 1}
 
 
 def dev_plan_criteria(state: WorkflowState) -> dict:
-    pool = getattr(dev_plan_criteria, "_pool", None)
+    runtime = getattr(dev_plan_criteria, "_runtime", None)
     criteria = write_criteria(
-        pool,
+        runtime,
         "Dev 的实现计划（每步是否可验证、粒度是否合适、文件清单是否完整）",
         "dev-plan-criteria",
     )
-    pool.context.set_ctx("dev_plan_criteria", criteria)
+    runtime.context.set_ctx("dev_plan_criteria", criteria)
     return {}
 
 
 def dev_plan_review(state: WorkflowState) -> dict:
-    pool = getattr(dev_plan_review, "_pool", None)
-    pool.logger.log_event("phase_started", detail="Phase 4c: 评审 Dev 实现计划")
+    runtime = getattr(dev_plan_review, "_runtime", None)
+    runtime.logger.log_event("phase_started", detail="Phase 4c: 评审 Dev 实现计划")
 
-    criteria = pool.context.get_ctx("dev_plan_criteria") or "（无审核标准）"
-    plan = pool.context.get_ctx("dev_plan_text") or "（无计划）"
+    criteria = runtime.context.get_ctx("dev_plan_criteria") or "（无审核标准）"
+    plan = runtime.context.get_ctx("dev_plan_text") or "（无计划）"
     prompt = (
         f"请按以下审核标准审查 Dev 的实现计划：\n\n"
         f"【审核标准】\n{criteria}\n\n"
         f"【待审查内容】\n{plan}\n\n"
         f"逐条判断。最终结论：PASS 或 FAIL"
     )
-    text = call_agent(pool, "master", "review-dev-plan", prompt)
+    text = call_agent(runtime, "master", "review-dev-plan", prompt)
 
     is_pass = "PASS" in text.upper() and ("FAIL" not in text.upper().split("PASS")[0] if "PASS" in text.upper() else False)
     verdict = "pass" if is_pass else "fail"
-    archive_review(pool, "dev_plan", state.get("loop_count", 0), criteria, verdict, text)
+    archive_review(runtime, "dev_plan", state.get("loop_count", 0), criteria, verdict, text)
 
     if is_pass:
-        pool.context.set_ctx("approved_dev_plan", plan)
-        pool.context.set_phase_node(["Dev 计划评审"], "done")
-        pool.logger.log_event("dev_plan_approved")
-        sc = self_check(pool, "Phase 4c: Dev 实现计划评审通过")
+        runtime.context.set_ctx("approved_dev_plan", plan)
+        runtime.context.set_phase_node(["Dev 计划评审"], "done")
+        runtime.logger.log_event("dev_plan_approved")
+        sc = self_check(runtime, "Phase 4c: Dev 实现计划评审通过")
         return {"dev_plan_approved": True, "phase": "dev_exec", "loop_count": 0, "step_index": 0,
                 "self_check_count": state.get("self_check_count", 0) + 1}
     else:
         lc = state.get("loop_count", 0) + 1
         if lc >= MAX_REVIEW_LOOP:
-            decision = handle_review_exhausted(pool, "Dev 实现计划评审", plan, criteria)
+            decision = handle_review_exhausted(runtime, "Dev 实现计划评审", plan, criteria)
             if decision == "override":
-                pool.context.set_ctx("approved_dev_plan", plan)
-                pool.context.set_phase_node(["Dev 计划评审"], "done")
-                pool.logger.log_event("dev_plan_approved", detail="user override")
+                runtime.context.set_ctx("approved_dev_plan", plan)
+                runtime.context.set_phase_node(["Dev 计划评审"], "done")
+                runtime.logger.log_event("dev_plan_approved", detail="user override")
                 return {"dev_plan_approved": True, "phase": "dev_exec", "loop_count": 0, "step_index": 0}
             elif decision == "abort":
                 return {"phase": "done"}
@@ -661,9 +661,9 @@ def dev_plan_review(state: WorkflowState) -> dict:
 # ── Phase 5: Dev 执行循环 ─────────────────────────────
 
 def dev_exec_step(state: WorkflowState) -> dict:
-    pool = getattr(dev_exec_step, "_pool", None)
+    runtime = getattr(dev_exec_step, "_runtime", None)
 
-    plan = pool.context.get_ctx("approved_dev_plan") or "（无计划）"
+    plan = runtime.context.get_ctx("approved_dev_plan") or "（无计划）"
     si = state.get("step_index", 0)
     prompt = (
         f"以下是已批准的实现计划：\n{plan}\n\n"
@@ -673,26 +673,26 @@ def dev_exec_step(state: WorkflowState) -> dict:
         f"2. 只做这一步，不要做后续步骤\n"
         f"3. 完成后报告做了什么"
     )
-    text = call_agent(pool, "dev", f"dev-impl-{si}", prompt, timeout=300)
-    pool.context.set_ctx(f"dev_step_{si}_result", text)
-    pool.logger.log_event("dev_step_done", detail=f"Step {si + 1} 完成")
+    text = call_agent(runtime, "dev", f"dev-impl-{si}", prompt, timeout=300)
+    runtime.context.set_ctx(f"dev_step_{si}_result", text)
+    runtime.logger.log_event("dev_step_done", detail=f"Step {si + 1} 完成")
 
     # 判断是否需要 flush：step + self_check 合计达到阈值
     updates = {"step_index": si + 1}
     total_ops = (si + 1) + state.get("self_check_count", 0)
     if total_ops > 0 and total_ops % 5 == 0:
         seq = state.get("conv_seq", 0)
-        new_seq = flush_master(pool, "dev_exec", seq)
-        pool.logger.log_event("master_flush", detail=f"dev_exec flush: seq {seq} → {new_seq}")
+        new_seq = flush_master(runtime, "dev_exec", seq)
+        runtime.logger.log_event("master_flush", detail=f"dev_exec flush: seq {seq} → {new_seq}")
         updates["conv_seq"] = new_seq
     return updates
 
 
 def dev_review_step(state: WorkflowState) -> dict:
-    pool = getattr(dev_review_step, "_pool", None)
+    runtime = getattr(dev_review_step, "_runtime", None)
     si = state.get("step_index", 0) - 1  # 上一步的结果
-    result = pool.context.get_ctx(f"dev_step_{si}_result") or "（无结果）"
-    plan = pool.context.get_ctx("approved_dev_plan") or "（无计划）"
+    result = runtime.context.get_ctx(f"dev_step_{si}_result") or "（无结果）"
+    plan = runtime.context.get_ctx("approved_dev_plan") or "（无计划）"
 
     prompt = (
         f"审查 Dev 第 {si + 1} 步的产出：\n\n"
@@ -701,22 +701,22 @@ def dev_review_step(state: WorkflowState) -> dict:
         f"判断：这个产出是否符合计划？代码是否可编译？功能是否完整？\n"
         f"最终结论：PASS 或 FAIL（附理由）"
     )
-    text = call_agent(pool, "master", f"review-dev-step-{si}", prompt)
+    text = call_agent(runtime, "master", f"review-dev-step-{si}", prompt)
 
     is_pass = "PASS" in text.upper() and ("FAIL" not in text.upper().split("PASS")[0] if "PASS" in text.upper() else False)
-    archive_review(pool, f"dev_step_{si}", 0, "（见审核标准记录）", "pass" if is_pass else "fail", text)
+    archive_review(runtime, f"dev_step_{si}", 0, "（见审核标准记录）", "pass" if is_pass else "fail", text)
 
     if not is_pass:
         result_msg = f"Dev 第 {si + 1} 步未通过审查，需要回滚重做"
-        pool.logger.log_event("dev_step_failed", detail=result_msg)
-        decision = handle_review_exhausted(pool, f"Dev 第 {si + 1} 步审查", result, "步骤需通过审查")
+        runtime.logger.log_event("dev_step_failed", detail=result_msg)
+        decision = handle_review_exhausted(runtime, f"Dev 第 {si + 1} 步审查", result, "步骤需通过审查")
         if decision == "override":
-            sc = self_check(pool, f"Phase 5: Dev 第 {si + 1} 步用户 override")
+            sc = self_check(runtime, f"Phase 5: Dev 第 {si + 1} 步用户 override")
             return {"self_check_count": state.get("self_check_count", 0) + 1}
         elif decision == "abort":
             return {"phase": "done"}
 
-    sc = self_check(pool, f"Phase 5: Dev 第 {si + 1} 步审查通过")
+    sc = self_check(runtime, f"Phase 5: Dev 第 {si + 1} 步审查通过")
     return {"self_check_count": state.get("self_check_count", 0) + 1}
 
 
@@ -727,8 +727,8 @@ def dev_exec_router(state: WorkflowState) -> str:
     si = state.get("step_index", 0)
 
     # 估算总步数：从 plan 文本中粗略估算
-    pool = getattr(dev_exec_step, "_pool", None)
-    plan_str = pool.context.get_ctx("approved_dev_plan") if pool else ""
+    runtime = getattr(dev_exec_step, "_runtime", None)
+    plan_str = runtime.context.get_ctx("approved_dev_plan") if runtime else ""
     # 按常见的 JSON 步骤条目数估算
     step_count = plan_str.lower().count('"step"') + plan_str.lower().count('"title"')
     total_steps = max(1, step_count // 2) if step_count > 0 else 5
@@ -741,17 +741,17 @@ def dev_exec_router(state: WorkflowState) -> str:
 # ── Phase 6: Cross-Agent Alignment Dev→QA ─────────────
 
 def align_dev_qa(state: WorkflowState) -> dict:
-    pool = getattr(align_dev_qa, "_pool", None)
-    pool.logger.log_event("phase_started", detail="Phase 6: Align Dev→QA")
+    runtime = getattr(align_dev_qa, "_runtime", None)
+    runtime.logger.log_event("phase_started", detail="Phase 6: Align Dev→QA")
 
-    design = pool.context.get_ctx("approved_dev_design") or "（无设计）"
+    design = runtime.context.get_ctx("approved_dev_design") or "（无设计）"
     dev_results = "\n".join(
         f"Step {k}: {v[:200]}"
-        for k, v in (pool.context.get_ctx(key) and {key: pool.context.get_ctx(key) for key in pool.context._data.get("contexts", {}) if key.startswith("dev_step_")} or {}).items()
+        for k, v in (runtime.context.get_ctx(key) and {key: runtime.context.get_ctx(key) for key in runtime.context._data.get("contexts", {}) if key.startswith("dev_step_")} or {}).items()
     )
 
     # 收集 dev 执行结果
-    ctx_data = pool.context._data.get("contexts", {})
+    ctx_data = runtime.context._data.get("contexts", {})
     dev_steps = {k: v for k, v in ctx_data.items() if k.startswith("dev_step_")}
     dev_summary = "\n".join(f"{k}: {v[:200]}" for k, v in sorted(dev_steps.items()))
 
@@ -762,12 +762,12 @@ def align_dev_qa(state: WorkflowState) -> dict:
         f"请仔细阅读。列出你在编写测试计划前需要 Dev 澄清的问题。\n"
         f"如果没有问题，请回复 'NO_QUESTIONS'。"
     )
-    text = call_agent(pool, "qa", "align-dev-qa", prompt)
+    text = call_agent(runtime, "qa", "align-dev-qa", prompt)
 
     if "NO_QUESTIONS" in text.upper():
-        pool.context.set_phase_node(["Dev→QA 对齐"], "done")
-        pool.logger.log_event("alignment_dev_qa_done")
-        sc = self_check(pool, "Phase 6: Dev→QA 对齐完成，无问题")
+        runtime.context.set_phase_node(["Dev→QA 对齐"], "done")
+        runtime.logger.log_event("alignment_dev_qa_done")
+        sc = self_check(runtime, "Phase 6: Dev→QA 对齐完成，无问题")
         return {"phase": "qa_plan", "loop_count": 0,
                 "self_check_count": state.get("self_check_count", 0) + 1}
     else:
@@ -775,29 +775,29 @@ def align_dev_qa(state: WorkflowState) -> dict:
             f"QA 读了你的实现后提出了以下问题：\n\n{text}\n\n"
             f"请逐一解答。"
         )
-        answer = call_agent(pool, "dev", "align-dev-qa-answer", route_prompt)
-        pool.context.set_ctx("align_dev_qa_record", f"Q: {text}\nA: {answer}")
+        answer = call_agent(runtime, "dev", "align-dev-qa-answer", route_prompt)
+        runtime.context.set_ctx("align_dev_qa_record", f"Q: {text}\nA: {answer}")
         lc = state.get("loop_count", 0) + 1
         if lc >= MAX_REVIEW_LOOP:
-            decision = handle_review_exhausted(pool, "Dev→QA 对齐", text, "QA 需理解 Dev 实现")
+            decision = handle_review_exhausted(runtime, "Dev→QA 对齐", text, "QA 需理解 Dev 实现")
             if decision == "override":
-                pool.context.set_phase_node(["Dev→QA 对齐"], "done")
+                runtime.context.set_phase_node(["Dev→QA 对齐"], "done")
                 return {"phase": "qa_plan", "loop_count": 0}
             elif decision == "abort":
                 return {"phase": "done"}
             return {"loop_count": 0}
-        pool.logger.log_event("alignment_dev_qa_cycle", detail=f"第{lc}轮")
+        runtime.logger.log_event("alignment_dev_qa_cycle", detail=f"第{lc}轮")
         return {"loop_count": lc}
 
 
 # ── Phase 7: QA 出测试计划 ────────────────────────────
 
 def qa_plan(state: WorkflowState) -> dict:
-    pool = getattr(qa_plan, "_pool", None)
-    pool.logger.log_event("phase_started", detail="Phase 7a: QA 出测试计划")
+    runtime = getattr(qa_plan, "_runtime", None)
+    runtime.logger.log_event("phase_started", detail="Phase 7a: QA 出测试计划")
 
-    pm_doc = pool.context.get_ctx("approved_pm_doc") or "（无方案）"
-    design = pool.context.get_ctx("approved_dev_design") or "（无设计）"
+    pm_doc = runtime.context.get_ctx("approved_pm_doc") or "（无方案）"
+    design = runtime.context.get_ctx("approved_dev_design") or "（无设计）"
     combined = f"## PM 方案\n{pm_doc[:500]}\n\n## Dev 设计\n{design[:1000]}"
 
     prompt = role_aware_prompt(
@@ -818,7 +818,7 @@ def qa_plan(state: WorkflowState) -> dict:
     # 重入时注入审查反馈
     lc = state.get("loop_count", 0)
     if lc > 0:
-        prev_review = pool.context.get_ctx(f"review_qa_plan_r{lc - 1}") or pool.context.get_ctx("review_qa_plan_r0")
+        prev_review = runtime.context.get_ctx(f"review_qa_plan_r{lc - 1}") or runtime.context.get_ctx("review_qa_plan_r0")
         if prev_review:
             prompt += (
                 f"\n\n## 上一轮审查反馈\n"
@@ -826,57 +826,57 @@ def qa_plan(state: WorkflowState) -> dict:
                 f"{prev_review[:1500]}\n\n"
                 f"请根据反馈修改测试计划。"
             )
-    text = call_agent(pool, "qa", "qa-plan", prompt, timeout=240)
-    pool.context.set_ctx("qa_plan_text", text)
-    pool.logger.log_event("qa_plan_written")
-    sc = self_check(pool, "Phase 7a: QA 出测试计划")
+    text = call_agent(runtime, "qa", "qa-plan", prompt, timeout=240)
+    runtime.context.set_ctx("qa_plan_text", text)
+    runtime.logger.log_event("qa_plan_written")
+    sc = self_check(runtime, "Phase 7a: QA 出测试计划")
     return {"loop_count": lc, "self_check_count": state.get("self_check_count", 0) + 1}
 
 
 def qa_plan_criteria(state: WorkflowState) -> dict:
-    pool = getattr(qa_plan_criteria, "_pool", None)
+    runtime = getattr(qa_plan_criteria, "_runtime", None)
     criteria = write_criteria(
-        pool,
+        runtime,
         "QA 的测试计划（是否覆盖全部业务路径、Playwright 脚本是否可行、边界条件是否覆盖）",
         "qa-plan-criteria",
     )
-    pool.context.set_ctx("qa_plan_criteria", criteria)
+    runtime.context.set_ctx("qa_plan_criteria", criteria)
     return {}
 
 
 def qa_plan_review(state: WorkflowState) -> dict:
-    pool = getattr(qa_plan_review, "_pool", None)
-    pool.logger.log_event("phase_started", detail="Phase 7c: 评审 QA 测试计划")
+    runtime = getattr(qa_plan_review, "_runtime", None)
+    runtime.logger.log_event("phase_started", detail="Phase 7c: 评审 QA 测试计划")
 
-    criteria = pool.context.get_ctx("qa_plan_criteria") or "（无审核标准）"
-    plan = pool.context.get_ctx("qa_plan_text") or "（无计划）"
+    criteria = runtime.context.get_ctx("qa_plan_criteria") or "（无审核标准）"
+    plan = runtime.context.get_ctx("qa_plan_text") or "（无计划）"
     prompt = (
         f"请按以下审核标准审查 QA 的测试计划：\n\n"
         f"【审核标准】\n{criteria}\n\n"
         f"【待审查内容】\n{plan}\n\n"
         f"逐条判断。最终结论：PASS 或 FAIL"
     )
-    text = call_agent(pool, "master", "review-qa-plan", prompt)
+    text = call_agent(runtime, "master", "review-qa-plan", prompt)
 
     is_pass = "PASS" in text.upper() and ("FAIL" not in text.upper().split("PASS")[0] if "PASS" in text.upper() else False)
     verdict = "pass" if is_pass else "fail"
-    archive_review(pool, "qa_plan", state.get("loop_count", 0), criteria, verdict, text)
+    archive_review(runtime, "qa_plan", state.get("loop_count", 0), criteria, verdict, text)
 
     if is_pass:
-        pool.context.set_ctx("approved_qa_plan", plan)
-        pool.context.set_phase_node(["QA 计划评审"], "done")
-        pool.logger.log_event("qa_plan_approved")
-        sc = self_check(pool, "Phase 7c: QA 测试计划评审通过")
+        runtime.context.set_ctx("approved_qa_plan", plan)
+        runtime.context.set_phase_node(["QA 计划评审"], "done")
+        runtime.logger.log_event("qa_plan_approved")
+        sc = self_check(runtime, "Phase 7c: QA 测试计划评审通过")
         return {"qa_plan_approved": True, "phase": "qa_exec", "loop_count": 0, "step_index": 0,
                 "self_check_count": state.get("self_check_count", 0) + 1}
     else:
         lc = state.get("loop_count", 0) + 1
         if lc >= MAX_REVIEW_LOOP:
-            decision = handle_review_exhausted(pool, "QA 测试计划评审", plan, criteria)
+            decision = handle_review_exhausted(runtime, "QA 测试计划评审", plan, criteria)
             if decision == "override":
-                pool.context.set_ctx("approved_qa_plan", plan)
-                pool.context.set_phase_node(["QA 计划评审"], "done")
-                pool.logger.log_event("qa_plan_approved", detail="user override")
+                runtime.context.set_ctx("approved_qa_plan", plan)
+                runtime.context.set_phase_node(["QA 计划评审"], "done")
+                runtime.logger.log_event("qa_plan_approved", detail="user override")
                 return {"qa_plan_approved": True, "phase": "qa_exec", "loop_count": 0, "step_index": 0}
             elif decision == "abort":
                 return {"phase": "done"}
@@ -886,11 +886,11 @@ def qa_plan_review(state: WorkflowState) -> dict:
 # ── Phase 8: QA 测试循环 ──────────────────────────────
 
 def qa_exec_test(state: WorkflowState) -> dict:
-    pool = getattr(qa_exec_test, "_pool", None)
-    pool.logger.log_event("phase_started", detail=f"Phase 8a: QA 测试 (round {state.get('bug_loop_count', 0)})")
+    runtime = getattr(qa_exec_test, "_runtime", None)
+    runtime.logger.log_event("phase_started", detail=f"Phase 8a: QA 测试 (round {state.get('bug_loop_count', 0)})")
 
-    plan = pool.context.get_ctx("approved_qa_plan") or "（无测试计划）"
-    prev_report = pool.context.get_ctx("qa_report")
+    plan = runtime.context.get_ctx("approved_qa_plan") or "（无测试计划）"
+    prev_report = runtime.context.get_ctx("qa_report")
 
     if state.get("bug_loop_count", 0) == 0:
         # 首轮：全部测试
@@ -907,14 +907,14 @@ def qa_exec_test(state: WorkflowState) -> dict:
         f"2. 白盒测试：用 curl/requests 调 API，记录 HTTP 状态码和响应体\n"
         f"3. 输出测试报告：JSON 格式，每项含 id、title、result(pass/fail)、actual_output"
     )
-    text = call_agent(pool, "qa", f"qa-exec-{state.get('bug_loop_count', 0)}", prompt, timeout=600)
-    pool.context.set_ctx(f"qa_raw_result_r{state.get('bug_loop_count', 0)}", text)
+    text = call_agent(runtime, "qa", f"qa-exec-{state.get('bug_loop_count', 0)}", prompt, timeout=600)
+    runtime.context.set_ctx(f"qa_raw_result_r{state.get('bug_loop_count', 0)}", text)
     return {}
 
 
 def qa_write_report(state: WorkflowState) -> dict:
-    pool = getattr(qa_write_report, "_pool", None)
-    raw = pool.context.get_ctx(f"qa_raw_result_r{state.get('bug_loop_count', 0)}") or "（无数据）"
+    runtime = getattr(qa_write_report, "_runtime", None)
+    raw = runtime.context.get_ctx(f"qa_raw_result_r{state.get('bug_loop_count', 0)}") or "（无数据）"
 
     prompt = (
         f"整理以下 QA 原始输出为结构化测试报告：\n\n{raw}\n\n"
@@ -923,27 +923,27 @@ def qa_write_report(state: WorkflowState) -> dict:
         f"- 每个失败用例：ID、名称、期望结果、实际结果、HTTP 响应体/Playwright 输出\n"
         f"- 最终结论：ALL_PASS 或 HAS_FAILURES"
     )
-    text = call_agent(pool, "master", "qa-report-compile", prompt, timeout=120)
-    pool.context.set_ctx("qa_report", text)
-    pool.logger.log_event("qa_report_written")
+    text = call_agent(runtime, "master", "qa-report-compile", prompt, timeout=120)
+    runtime.context.set_ctx("qa_report", text)
+    runtime.logger.log_event("qa_report_written")
     return {}
 
 
 def qa_report_router(state: WorkflowState) -> str:
     """根据 QA 报告决定下一步。"""
-    pool = getattr(qa_write_report, "_pool", None)
-    if pool:
-        report = pool.context.get_ctx("qa_report") or ""
+    runtime = getattr(qa_write_report, "_runtime", None)
+    if runtime:
+        report = runtime.context.get_ctx("qa_report") or ""
         if "ALL_PASS" in report.upper():
             return "deliver"
     return "dev_fix_bug"
 
 
 def dev_fix_bug(state: WorkflowState) -> dict:
-    pool = getattr(dev_fix_bug, "_pool", None)
-    pool.logger.log_event("phase_started", detail=f"Phase 8b: Dev 修 bug (round {state.get('bug_loop_count', 0)})")
+    runtime = getattr(dev_fix_bug, "_runtime", None)
+    runtime.logger.log_event("phase_started", detail=f"Phase 8b: Dev 修 bug (round {state.get('bug_loop_count', 0)})")
 
-    report = pool.context.get_ctx("qa_report") or "（无报告）"
+    report = runtime.context.get_ctx("qa_report") or "（无报告）"
 
     prompt = (
         f"以下是 QA 测试报告中的失败用例（需要修复的 bug）：\n\n{report}\n\n"
@@ -955,18 +955,18 @@ def dev_fix_bug(state: WorkflowState) -> dict:
         f"5. 如果通过 → 标记已修；如果仍失败 → 继续改\n\n"
         f"输出修复结果摘要。"
     )
-    text = call_agent(pool, "dev", f"dev-fix-{state.get('bug_loop_count', 0)}", prompt, timeout=300)
-    pool.context.set_ctx(f"dev_fix_r{state.get('bug_loop_count', 0)}", text)
-    sc = self_check(pool, f"Phase 8b: Dev 修 bug 第{state.get('bug_loop_count', 0) + 1}轮")
+    text = call_agent(runtime, "dev", f"dev-fix-{state.get('bug_loop_count', 0)}", prompt, timeout=300)
+    runtime.context.set_ctx(f"dev_fix_r{state.get('bug_loop_count', 0)}", text)
+    sc = self_check(runtime, f"Phase 8b: Dev 修 bug 第{state.get('bug_loop_count', 0) + 1}轮")
     return {"bug_loop_count": state.get("bug_loop_count", 0) + 1,
             "self_check_count": state.get("self_check_count", 0) + 1}
 
 
 def qa_verify_fix(state: WorkflowState) -> dict:
-    pool = getattr(qa_verify_fix, "_pool", None)
-    pool.logger.log_event("phase_started", detail=f"Phase 8c: QA 验证 fix (round {state.get('bug_loop_count', 0)})")
+    runtime = getattr(qa_verify_fix, "_runtime", None)
+    runtime.logger.log_event("phase_started", detail=f"Phase 8c: QA 验证 fix (round {state.get('bug_loop_count', 0)})")
 
-    report = pool.context.get_ctx("qa_report") or "（无报告）"
+    report = runtime.context.get_ctx("qa_report") or "（无报告）"
 
     prompt = (
         f"Dev 已修复以下 bug，请验证修复是否有效：\n\n"
@@ -974,16 +974,16 @@ def qa_verify_fix(state: WorkflowState) -> dict:
         f"请重新执行报告中 FAIL 的用例。\n"
         f"全部通过回复 ALL_PASS，仍有失败回复 HAS_FAILURES。"
     )
-    text = call_agent(pool, "qa", f"qa-verify-{state.get('bug_loop_count', 0)}", prompt, timeout=300)
-    pool.context.set_ctx(f"qa_verify_r{state.get('bug_loop_count', 0)}", text)
+    text = call_agent(runtime, "qa", f"qa-verify-{state.get('bug_loop_count', 0)}", prompt, timeout=300)
+    runtime.context.set_ctx(f"qa_verify_r{state.get('bug_loop_count', 0)}", text)
     return {}
 
 
 def qa_verify_router(state: WorkflowState) -> str:
-    pool = getattr(qa_verify_fix, "_pool", None)
-    if pool:
+    runtime = getattr(qa_verify_fix, "_runtime", None)
+    if runtime:
         bl = state.get("bug_loop_count", 0)
-        verify_text = pool.context.get_ctx(f"qa_verify_r{bl}") or ""
+        verify_text = runtime.context.get_ctx(f"qa_verify_r{bl}") or ""
         if "ALL_PASS" in verify_text.upper():
             return "deliver"
     return "dev_fix_bug"
@@ -996,13 +996,13 @@ def end_workflow(state: WorkflowState) -> dict:
     return state  # 不做任何事，只是让图走到 END
 
 def deliver(state: WorkflowState) -> dict:
-    pool = getattr(deliver, "_pool", None)
-    pool.logger.log_event("phase_started", detail="Phase 9: 交付")
+    runtime = getattr(deliver, "_runtime", None)
+    runtime.logger.log_event("phase_started", detail="Phase 9: 交付")
 
     # 汇总信息
-    bg_info = pool.context._data.get("background", {})
-    phase_tree = pool.context.get_phase_text()
-    qa_report = pool.context.get_ctx("qa_report") or "（无测试报告）"
+    bg_info = runtime.context._data.get("background", {})
+    phase_tree = runtime.context.get_phase_text()
+    qa_report = runtime.context.get_ctx("qa_report") or "（无测试报告）"
 
     summary = (
         f"## 项目信息\n"
@@ -1012,20 +1012,20 @@ def deliver(state: WorkflowState) -> dict:
     )
 
     # 等用户确认
-    cp = pool.checkpoint.wait(
+    cp = runtime.checkpoint.wait(
         "交付确认",
         summary,
         "请确认交付。直接按 Enter 完成，或输入修改意见："
     )
-    pool.logger.log_event("delivery_checkpoint", detail=cp.action)
+    runtime.logger.log_event("delivery_checkpoint", detail=cp.action)
 
     if cp.action == "continue":
-        pool.logger.log_event("workflow_completed")
+        runtime.logger.log_event("workflow_completed")
         return {"phase": "done"}
     else:
-        pool.logger.log_event("delivery_modify_requested", detail=cp.message)
+        runtime.logger.log_event("delivery_modify_requested", detail=cp.message)
         # 将用户意见保存到 context
-        pool.context.set_ctx("delivery_feedback", cp.message)
+        runtime.context.set_ctx("delivery_feedback", cp.message)
         return {"phase": "deliver"}  # 重试交付
 
 
@@ -1033,10 +1033,10 @@ def deliver(state: WorkflowState) -> dict:
 # 图构建
 # ════════════════════════════════════════════════════════
 
-def build_graph(pool) -> StateGraph:
+def build_graph(runtime) -> StateGraph:
     """构建 LangGraph StateGraph。"""
 
-    # 将 pool 注入到所有 node 函数中
+    # 将 runtime 注入到所有 node 函数中
     node_funcs = [
         pre_flight_clarify, pm_write_doc, pm_write_criteria, pm_review_doc,
         align_pm_dev,
@@ -1050,11 +1050,11 @@ def build_graph(pool) -> StateGraph:
         deliver, end_workflow,
     ]
     for fn in node_funcs:
-        fn._pool = pool
+        fn._runtime = runtime
 
-    # 设置 self_check 函数也能访问 pool
+    # 设置 self_check 函数也能访问 runtime
     self_check.__wrapped__ = lambda: None  # 标记
-    # 注意：self_check 通过 pool 参数传入，不需要注入
+    # 注意：self_check 通过 runtime 参数传入，不需要注入
 
     graph = StateGraph(WorkflowState)
 
@@ -1238,14 +1238,14 @@ def main():
     print("  AI Coding 工作流框架 — Workflow Engine")
     print("=" * 60)
 
-    # 1. 初始化 AgentPool
-    print("\n[1/3] 初始化 AgentPool...")
-    pool = setup_pool()
-    print("  AgentPool 就绪")
+    # 1. 初始化 AgentRuntime
+    print("\n[1/3] 初始化 AgentRuntime...")
+    runtime = setup_runtime()
+    print("  AgentRuntime 就绪")
 
     # 2. 构建图
     print("\n[2/3] 构建 LangGraph...")
-    app = build_graph(pool)
+    app = build_graph(runtime)
     print("  图编译完成")
 
     # 3. 运行
@@ -1268,7 +1268,7 @@ def main():
         traceback.print_exc()
     finally:
         print("\n清理资源...")
-        pool.logger.log_event("workflow_ended")
+        runtime.logger.log_event("workflow_ended")
         # AgentPool __exit__ 会自动 stop_gateway
 
 

@@ -21,7 +21,7 @@ import pytest
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_DIR)
 
-import agent_pool as ap
+import agent_runtime as ap
 
 # ── 路径常量 ────────────────────────────────────────────
 BACKUP_DIR = os.path.join(PROJECT_DIR, ".agent_pool.test_backup")

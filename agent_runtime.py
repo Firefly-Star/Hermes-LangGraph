@@ -1,7 +1,7 @@
 """
-Agent Pool — AI Coding 工作流框架
+AgentRuntime — AI Coding 工作流框架
 ================================
-严格遵循 detail-design-v1.md 的功能边界与功能范围设计。
+
 
 模块：
   AgentManager         — Agent 注册、Gateway 生命周期
@@ -18,23 +18,6 @@ from dataclasses import dataclass, field, asdict
 from typing import Optional, Any
 
 # ============================================================
-# 路径常量
-# ============================================================
-HERE = os.path.dirname(os.path.abspath(__file__))
-POOL_DIR = os.path.join(HERE, ".agent_pool")
-REGISTRY_PATH = os.path.join(POOL_DIR, "registry.json")
-CONTEXT_PATH = os.path.join(POOL_DIR, "context.json")
-CONFIG_PATH = os.path.join(POOL_DIR, "config.json")
-CALLS_LOG_PATH = os.path.join(POOL_DIR, "calls.jsonl")
-EVENTS_LOG_PATH = os.path.join(POOL_DIR, "events.jsonl")
-
-HERMES_CLI = r"C:\Users\温学周\AppData\Local\hermes\hermes-agent\venv\Scripts\hermes"
-HERMES_HOME = r"C:\Users\温学周\AppData\Local\hermes"
-
-def _ensure_dir():
-    os.makedirs(POOL_DIR, exist_ok=True)
-
-# ============================================================
 # 工具函数
 # ============================================================
 
@@ -48,12 +31,12 @@ def _read_json(path: str) -> dict:
         return json.load(f)
 
 def _write_json(path: str, data: dict):
-    _ensure_dir()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 def _append_jsonl(path: str, record: dict):
-    _ensure_dir()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
@@ -115,22 +98,26 @@ class ProgressReport:
 class AgentManager:
     """Agent 注册、Gateway 生命周期管理。"""
 
-    def __init__(self):
-        self._data = _read_json(REGISTRY_PATH)
+    def __init__(self, pool_dir: str, hermes_home: str):
+        self._pool_dir = pool_dir
+        self._hermes_home = hermes_home
+        self._registry_path = os.path.join(pool_dir, "registry.json")
+        self._data = _read_json(self._registry_path)
 
     def _save(self):
-        _write_json(REGISTRY_PATH, self._data)
+        _write_json(self._registry_path, self._data)
 
     def _profile_path(self, profile: str) -> str:
-        return os.path.join(HERMES_HOME, "profiles", profile)
+        return os.path.join(self._hermes_home, "profiles", profile)
 
     def _profile_exists(self, profile: str) -> bool:
         return os.path.isdir(self._profile_path(profile))
 
     def _create_profile(self, profile: str, source: str = "cg"):
         """创建 Hermes Profile。"""
+        hermes_cli = os.path.join(self._hermes_home, "hermes-agent", "venv", "Scripts", "hermes")
         subprocess.run(
-            [HERMES_CLI, "profile", "create", profile, "--clone-from", source],
+            [hermes_cli, "profile", "create", profile, "--clone-from", source],
             capture_output=True, timeout=30,
         )
 
@@ -286,10 +273,11 @@ class AgentManager:
 class ConversationManager:
     """对话调用、初始化、关闭。"""
 
-    def __init__(self, agent_mgr: AgentManager, logger: "Logger", config: "Config"):
+    def __init__(self, agent_mgr: AgentManager, logger: "Logger", config: "Config", pool_dir: str):
         self._agents = agent_mgr
         self._logger = logger
         self._config = config
+        self._registry_path = os.path.join(pool_dir, "registry.json")
 
     def call(self, agent: str, conversation: str, input_text: str,
              timeout: int = None) -> CallResult:
@@ -359,15 +347,15 @@ class ConversationManager:
 
     def close_conversation(self, agent: str, conversation: str):
         """停止追踪指定对话。不清除服务端数据。"""
-        data = _read_json(REGISTRY_PATH)
+        data = _read_json(self._registry_path)
         cfg = data.get("agents", {}).get(agent)
         if cfg and conversation in cfg.get("conversations", []):
             cfg["conversations"].remove(conversation)
-            _write_json(REGISTRY_PATH, data)
+            _write_json(self._registry_path, data)
 
     def _track_conversation(self, agent: str, conversation: str):
         """将 conversation 加入 registry 的追踪列表。"""
-        data = _read_json(REGISTRY_PATH)
+        data = _read_json(self._registry_path)
         cfg = data.get("agents", {}).get(agent)
         if cfg:
             convs = cfg.setdefault("conversations", [])
@@ -382,6 +370,10 @@ class ConversationManager:
 
 class Logger:
     """调用日志、事件日志。"""
+
+    def __init__(self, pool_dir: str):
+        self._calls_path = os.path.join(pool_dir, "calls.jsonl")
+        self._events_path = os.path.join(pool_dir, "events.jsonl")
 
     def log_call(self, agent: str, conversation: str, input_text: str, output_text: str,
                  input_tokens: int, output_tokens: int, latency_ms: int,
@@ -401,7 +393,7 @@ class Logger:
             "success": success,
             "error": error,
         }
-        _append_jsonl(CALLS_LOG_PATH, record)
+        _append_jsonl(self._calls_path, record)
 
     def log_event(self, event_type: str, agent: str = None, detail: str = None):
         record = {
@@ -410,13 +402,13 @@ class Logger:
             "agent": agent,
             "detail": detail,
         }
-        _append_jsonl(EVENTS_LOG_PATH, record)
+        _append_jsonl(self._events_path, record)
 
     def get_calls(self, agent: str = None, conversation: str = None, limit: int = 50) -> list[dict]:
-        if not os.path.exists(CALLS_LOG_PATH):
+        if not os.path.exists(self._calls_path):
             return []
         result = []
-        with open(CALLS_LOG_PATH, "r", encoding="utf-8") as f:
+        with open(self._calls_path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -430,10 +422,10 @@ class Logger:
         return result[-limit:]
 
     def get_events(self, agent: str = None, event_type: str = None, limit: int = 50) -> list[dict]:
-        if not os.path.exists(EVENTS_LOG_PATH):
+        if not os.path.exists(self._events_path):
             return []
         result = []
-        with open(EVENTS_LOG_PATH, "r", encoding="utf-8") as f:
+        with open(self._events_path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -454,11 +446,12 @@ class Logger:
 class ContextManager:
     """三段式上下文管理：background / phase（树状） / contexts。"""
 
-    def __init__(self):
-        self._data = _read_json(CONTEXT_PATH)
+    def __init__(self, pool_dir: str):
+        self._context_path = os.path.join(pool_dir, "context.json")
+        self._data = _read_json(self._context_path)
 
     def _save(self):
-        _write_json(CONTEXT_PATH, self._data)
+        _write_json(self._context_path, self._data)
 
     # ── background（项目信息，写一次就不变） ────────────
 
@@ -567,11 +560,12 @@ class Config:
         "max_bug_loop": 5,
     }
 
-    def __init__(self):
-        self._data = _read_json(CONFIG_PATH)
+    def __init__(self, pool_dir: str):
+        self._config_path = os.path.join(pool_dir, "config.json")
+        self._data = _read_json(self._config_path)
 
     def _save(self):
-        _write_json(CONFIG_PATH, self._data)
+        _write_json(self._config_path, self._data)
 
     def set(self, key: str, value):
         self._data[key] = value
@@ -604,20 +598,47 @@ class Checkpoint:
 
 
 # ============================================================
-# 7. AgentPool — 顶层编排
+# 7. AgentRuntime — 顶层编排
 # ============================================================
 
-class AgentPool:
-    """聚合全部模块，提供统一入口。"""
+class AgentRuntime:
+    """聚合全部模块，提供统一入口。可通过 config_path 加载配置。"""
 
-    def __init__(self):
-        _ensure_dir()
-        self.config = Config()
-        self.logger = Logger()
-        self.agents = AgentManager()
-        self.context = ContextManager()
-        self.conversations = ConversationManager(self.agents, self.logger, self.config)
+    def __init__(self, config_path: str = None):
+        # 加载用户配置
+        cfg = self._load_config(config_path) if config_path else {}
+        pool_dir = cfg.get("pool_dir", ".agent_runtime")
+        hermes_home = cfg.get("hermes_home", self._detect_hermes_home())
+
+        os.makedirs(pool_dir, exist_ok=True)
+
+        self.pool_dir = pool_dir
+        self.config = Config(pool_dir)
+        self.logger = Logger(pool_dir)
+        self.agents = AgentManager(pool_dir, hermes_home)
+        self.context = ContextManager(pool_dir)
+        self.conversations = ConversationManager(self.agents, self.logger, self.config, pool_dir)
         self.checkpoint = Checkpoint()
+
+    @staticmethod
+    def _load_config(config_path: str) -> dict:
+        """读取 JSON 配置文件。"""
+        with open(config_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    @staticmethod
+    def _detect_hermes_home() -> str:
+        """尝试检测 Hermes 安装目录。"""
+        candidates = [
+            os.path.expanduser("~/AppData/Local/hermes"),
+            r"C:\Users\温学周\AppData\Local\hermes",
+            r"C:\Program Files\hermes",
+        ]
+        for path in candidates:
+            if os.path.isdir(os.path.join(path, "profiles")):
+                return path
+        # 兜底：让用户自己配
+        return os.path.expanduser("~/AppData/Local/hermes")
 
     def __enter__(self):
         return self
