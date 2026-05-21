@@ -116,6 +116,14 @@ def call_agent(runtime, agent: str, conversation: str, prompt: str,
     return result.text
 
 
+def handoff(file_path: str) -> str:
+    """读取上游 agent 通过文件传递的 handoff 内容。"""
+    if file_path and os.path.exists(file_path):
+        with open(file_path, "r", encoding="utf-8") as f:
+            return f.read()
+    return ""
+
+
 def setup_runtime(config_path: str = None) -> ap.AgentRuntime:
     """初始化 AgentRuntime，启动 Master Gateway。"""
     runtime = ap.AgentRuntime(config_path)
@@ -177,7 +185,7 @@ def pre_flight_clarify(state: WorkflowState) -> dict:
         return result.strip()
 
     def _close_clarify(reason: str):
-        """通知 Master 写 project_context.md 并结束。"""
+        """通知 Master 写 project_context.md。"""
         call_agent(runtime, "master", conv,
                    "需求澄清阶段已结束。\n"
                    f"请将所有已确认的决策整理为完整的项目顶层决策记录，"
@@ -239,26 +247,58 @@ def pm_write_doc(state: WorkflowState) -> dict:
     """Phase 1: PM 产出 PRD.md + prototype.html。"""
     runtime = getattr(pm_write_doc, "_runtime", None)
     conv = _conv_name("pm-doc")
-    clarification = runtime.context.get_bg("clarification") or "（无上游澄清内容）"
+
+    # 让 Master 针对 PM 写 handoff 委托信
+    project_context_path = runtime.context.get_bg("project_context_path")
+    project_context = handoff(project_context_path)
+    if not project_context:
+        raise RuntimeError(f"project_context.md 不存在：{project_context_path}")
+
+    master_conv = _conv_name("master-to-pm")
+    handoff_dir = os.path.join(os.path.dirname(project_context_path), "handoffs")
+    master_to_pm_path = os.path.join(handoff_dir, "master_to_pm.md")
+    os.makedirs(handoff_dir, exist_ok=True)
+
+    runtime.conversations.init_conversation("master", master_conv,
+                                            MASTER_SYSTEM_PROMPT.strip())
+    call_agent(runtime, "master", master_conv,
+               f"以下是项目顶层决策记录：\n{project_context}\n\n"
+               f"现在请以 Master 的身份写一封给 PM agent 的信，"
+               f"写入文件 {master_to_pm_path}。\n"
+               "信件的目的是让 PM 理解项目上下文并确认信息是否足够，而不是直接派活。\n\n"
+               "信件需包含：\n"
+               "1. 开宗明义：这是 Master 给 PM 的信\n"
+               "2. 项目概况和核心需求（简要描述即可）\n"
+               f"3. 告知 PM 详细内容在项目顶层决策文件中，路径：{project_context_path}，让 PM 自行阅读\n"
+               "4. 要求 PM：先汇报你对项目的理解和疑问，得到 Master 明确许可后才能动手产出\n"
+               "5. 强调：在确认之前，不得开始写 PRD 或原型\n\n"
+               "信件要有 Master 的口吻，是上级对下级的沟通与任务委派。")
+
+    # 读取 handoff 信件（一次性，用完即删）
+    upstream_doc = handoff(master_to_pm_path)
+    if not upstream_doc:
+        raise RuntimeError(f"handoff 文件不存在：{master_to_pm_path}")
+    os.remove(master_to_pm_path)
 
     runtime.logger.log_event("phase_started", detail="PM 出方案")
     print(f"\n  ── PM 出方案 ──")
 
-    # Call 1 — PM 确认理解需求
+    # Call 1 — PM 对齐理解（不产出任何文档）
     call_agent(runtime, "pm", conv, role_aware_prompt(
         role="PM",
-        upstream="用户",
-        upstream_doc=clarification,
-        deliverable="对项目需求的确认和理解",
-        downstream="Master 编排者",
-        downstream_needs="确认 PM 正确理解了项目范围和目标，如有疑问请列出",
-    ) + "\n\n请总结你对项目的理解。如果有不清楚的地方，列出你的疑问。理解清楚后，确认可以开始写 PRD。")
+        upstream="Master",
+        upstream_doc=upstream_doc,
+        deliverable="对项目需求的理解汇报和疑问清单",
+        downstream="Master",
+        downstream_needs="确认 PM 正确理解了项目范围和目标，如果有疑问需要解答后再开始工作",
+    ) + "\n\n阅读 Master 给你的信以及项目顶层决策文件。请汇报你对项目的理解，并列出你的疑问。"
+      "在 Master 明确许可之前，不要开始写 PRD 或原型。")
 
     # Call 2 — PM 写 PRD
     prd_text = call_agent(runtime, "pm", conv, role_aware_prompt(
         role="PM",
-        upstream="用户",
-        upstream_doc=clarification,
+        upstream="Master",
+        upstream_doc=upstream_doc,
         deliverable="PRD.md 需求文档",
         downstream="Dev（开发工程师）",
         downstream_needs="清晰的功能列表、验收标准、页面结构描述、MVP 边界定义",
@@ -267,8 +307,8 @@ def pm_write_doc(state: WorkflowState) -> dict:
     # Call 3 — PM 写 prototype
     prototype_text = call_agent(runtime, "pm", conv, role_aware_prompt(
         role="PM",
-        upstream="用户",
-        upstream_doc=clarification,
+        upstream="Master",
+        upstream_doc=upstream_doc,
         deliverable="prototype.html 静态原型文件",
         downstream="Dev（开发工程师）",
         downstream_needs="可直接在浏览器中打开运行的 HTML 原型，展示页面布局和核心交互",
