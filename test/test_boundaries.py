@@ -234,7 +234,7 @@ class TestConversationManagerEdgeCases:
         hh = r"C:\Users\温学周\AppData\Local\hermes"
         mgr = ap.AgentManager(tmpdir, hh)
         logger = ap.Logger(tmpdir)
-        config = ap.Config(tmpdir)
+        config = ap.Config(os.path.join(tmpdir, "runtime_config.json"))
         cm = ap.ConversationManager(mgr, logger, config, tmpdir)
         return tmpdir, cm, mgr
 
@@ -379,7 +379,8 @@ class TestConfigEdgeCases:
         if os.path.exists(tmpdir):
             shutil.rmtree(tmpdir)
         os.makedirs(tmpdir, exist_ok=True)
-        return tmpdir, ap.Config(tmpdir)
+        cfg_path = os.path.join(tmpdir, "runtime_config.json")
+        return tmpdir, ap.Config(cfg_path)
 
     def _cleanup(self, tmpdir):
         shutil.rmtree(tmpdir, ignore_errors=True)
@@ -411,7 +412,7 @@ class TestConfigEdgeCases:
         """写入后重新实例化 Config 应读到相同值。"""
         tmpdir, cfg1 = self._setup()
         cfg1.set("persist_key", "persist_val")
-        cfg2 = ap.Config(tmpdir)
+        cfg2 = ap.Config(os.path.join(tmpdir, "runtime_config.json"))
         assert cfg2.get("persist_key") == "persist_val"
         self._cleanup(tmpdir)
 
@@ -424,7 +425,7 @@ class TestAgentRuntimeEdgeCases:
     def test_default_init(self):
         """无参数初始化应成功，使用默认路径。"""
         rt = ap.AgentRuntime()
-        assert rt.pool_dir is not None
+        assert rt.runtime_dir is not None
         assert hasattr(rt, 'config')
         assert hasattr(rt, 'logger')
         assert hasattr(rt, 'agents')
@@ -432,8 +433,8 @@ class TestAgentRuntimeEdgeCases:
         assert hasattr(rt, 'conversations')
         assert hasattr(rt, 'checkpoint')
         # 清理默认目录
-        if os.path.exists(rt.pool_dir):
-            shutil.rmtree(rt.pool_dir)
+        if os.path.exists(rt.runtime_dir):
+            shutil.rmtree(rt.runtime_dir)
 
     def test_init_with_config_file(self):
         """传入配置文件应使用配置中的路径。"""
@@ -444,9 +445,9 @@ class TestAgentRuntimeEdgeCases:
         cfg_path = os.path.join(tmpdir, "test_config.json")
         custom_pool = os.path.join(tmpdir, "my_pool")
         with open(cfg_path, "w") as f:
-            json.dump({"pool_dir": custom_pool, "hermes_home": tmpdir}, f)
+            json.dump({"runtime_dir": custom_pool, "hermes_home": tmpdir}, f)
         rt = ap.AgentRuntime(config_path=cfg_path)
-        assert rt.pool_dir == custom_pool
+        assert rt.runtime_dir == custom_pool
         shutil.rmtree(tmpdir)
 
     def test_load_config_not_found(self):

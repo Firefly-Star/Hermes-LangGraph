@@ -12,13 +12,8 @@ import agent_runtime as ap
 
 
 def setup_runtime():
-    runtime = ap.AgentRuntime()
     config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runtime_config.json")
-    if os.path.exists(config_path):
-        cfg = json.load(open(config_path, "r", encoding="utf-8"))
-        for key in ("call_timeout", "max_retry"):
-            if key in cfg:
-                runtime.config.set(key, cfg[key])
+    runtime = ap.AgentRuntime(config_path)
     for name, profile, port in [("master", "cg", 8642), ("pm", "pm", 8643)]:
         result = runtime.agents.create_agent(name, profile, port)
         if not result.success and "已存在" not in result.message:

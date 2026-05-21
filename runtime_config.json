@@ -1,5 +1,6 @@
 {
-  "pool_dir": ".agent_runtime",
+  "runtime_dir": "C:/Users/温学周/Desktop/langgraph_test/.agent_runtime",
+  "workspace": "C:/Users/温学周/Desktop/langgraph_test/test/web_test",
   "hermes_home": "C:/Users/温学周/AppData/Local/hermes",
   "call_timeout": 120,
   "max_retry": 3,

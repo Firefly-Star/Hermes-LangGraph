@@ -191,10 +191,9 @@ def call_agent(runtime, agent: str, conversation: str, prompt: str,
     return result.text
 
 
-def _letter_path(name: str) -> str:
+def _letter_path(runtime, name: str) -> str:
     """生成 handoff 信件路径。"""
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    handoff_dir = os.path.join(root, ".agent_runtime", "handoffs")
+    handoff_dir = os.path.join(runtime.runtime_dir, "handoffs")
     os.makedirs(handoff_dir, exist_ok=True)
     ws = os.path.basename(os.getcwd())
     ts = time.strftime("%Y%m%d_%H%M%S")
@@ -227,14 +226,6 @@ def setup_runtime(config_path: str = None) -> ap.AgentRuntime:
     """初始化 AgentRuntime，启动 Master Gateway。"""
     runtime = ap.AgentRuntime(config_path)
 
-    # 将工作流级配置项写入 Config
-    if config_path and os.path.exists(config_path):
-        cfg = json.load(open(config_path, "r", encoding="utf-8"))
-        for key in ("call_timeout", "max_retry", "max_plan_loop", "max_bug_loop",
-                     "input_end_word"):
-            if key in cfg:
-                runtime.config.set(key, cfg[key])
-
     started_ports = set()
     for name, cfg in AGENT_CONFIGS.items():
         result = runtime.agents.create_agent(name, cfg["profile"], cfg["port"])
@@ -265,8 +256,7 @@ def pre_flight_clarify(state: WorkflowState) -> dict:
 
     print(f"\n{'='*50}\n  ==> Phase 0: 需求澄清\n{'='*50}")
 
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    project_context_path = os.path.join(root, ".agent_runtime", "project_context.md")
+    project_context_path = os.path.join(runtime.runtime_dir, "project_context.md")
 
     runtime.logger.log_event("phase_started", detail="需求澄清")
     runtime.conversations.init_conversation("master", conv, MASTER_SYSTEM_PROMPT.strip())
@@ -303,7 +293,7 @@ def pm_handoff(state: WorkflowState) -> dict:
     runtime.conversations.init_conversation("master", master_conv,
                                             MASTER_SYSTEM_PROMPT.strip())
 
-    letter_path = _letter_path("master-to-pm")
+    letter_path = _letter_path(runtime, "master-to-pm")
     write_letter(runtime, "master", master_conv, letter_path,
                  "Master 给 PM 的信",
                  f"介绍项目上下文。信件需包含：\n"
@@ -337,7 +327,7 @@ def pm_align(state: WorkflowState) -> dict:
     if master_reply:
         # 循环：Master 先写正式答复信，PM 再读
         conv_clarify = runtime.context.get_ctx("conv_clarify")
-        master_letter_path = _letter_path("master-to-pm-reply")
+        master_letter_path = _letter_path(runtime, "master-to-pm-reply")
         write_letter(runtime, "master", conv_clarify, master_letter_path,
                      "Master 给 PM 的答复",
                      "你在刚才的分析中已核对了 PM 的理解并回答了疑问。"
@@ -374,7 +364,7 @@ def master_reply_pm(state: WorkflowState) -> dict:
         f"这是 PM 对项目的理解和疑问：\n{pm_reply}\n\n"
         "请逐一检查以下内容：\n"
         "1. PM 的理解是否正确？如有误，逐一指出\n"
-        "2. PM 的疑问中，你能回答的全部回答\n"
+        "2. PM 的疑问中，你能回答的全部回答。如果你修改了项目顶层决策文件，你需要答复 PM 让它从顶层决策文件中获取更新，不能假设 PM 已经得知了你对文件的修改\n"
         "3. 如果遇到你无从判定的问题（涉及顶层决策、技术选型、使用场景等），"
         "不要猜测，明确写出需要向用户确认的具体问题\n\n"
         "你的回复中需明确区分两部分：\n"
@@ -411,7 +401,7 @@ def judge_master_reply(state: WorkflowState) -> dict:
 def route_master_reply(state: WorkflowState) -> str:
     r = state.get("judge_result", "")
     if r.startswith("A"):
-        return "pm_write_doc"
+        return "pm_write_criteria"
     elif r.startswith("B"):
         return "pm_align"
     return "clarify_inject"
@@ -435,6 +425,80 @@ def clarify_inject(state: WorkflowState) -> dict:
     return {"phase": "clarify_done"}
 
 
+def pm_write_criteria(state: WorkflowState) -> dict:
+    """Master 制定 PM 产出的审核标准（PRD + prototype）。循环直至自检通过。"""
+    runtime = getattr(pm_write_criteria, "_runtime", None)
+    conv_clarify = runtime.context.get_ctx("conv_clarify")
+
+    project_context_path = runtime.context.get_bg("project_context_path")
+    project_context = ""
+    if project_context_path and os.path.exists(project_context_path):
+        with open(project_context_path, "r", encoding="utf-8") as f:
+            project_context = f.read()
+
+    runtime.logger.log_event("phase_started", detail="PM 审核标准制定")
+    print(f"\n  ── Master 制定 PM 审核标准 ──")
+
+    # 如有上一轮自检反馈，注入帮助改进
+    prev_check = runtime.context.get_ctx("pm_criteria_self_check")
+    feedback = ""
+    if prev_check and "FAIL" in prev_check:
+        feedback = "\n上一轮自检发现的问题：\n" + prev_check + "\n请针对性改进后重新制定标准。"
+
+    prompt = (
+        "你即将为 PM 产出的 PRD 和 prototype 制定审核标准。\n\n"
+        "## 上游约束\n"
+        "以下项目决策是你要考虑的上游上下文，标准必须与之对齐：\n"
+        f"{project_context or '（无项目决策记录）'}\n\n"
+        "## 标准覆盖维度\n"
+        "1. 需求完整性 — PRD 是否覆盖了所有已确认的功能？\n"
+        "2. MVP 边界 — 范围是否控制在 MVP 内？有无超额？\n"
+        "3. 逻辑自洽性 — 功能描述是否完整无矛盾？数据流是否有断点？\n"
+        "4. 一致性 — 功能定义、用户角色、技术假设是否与项目决策文件冲突？\n"
+        "5. 原型质量 — prototype 是否体现了核心交互和页面结构？\n\n"
+        "## 下游需求\n"
+        "- PM 将按这些标准撰写 PRD 和 prototype\n"
+        "- Reviewer 将按这些标准审查 PM 产出\n\n"
+        "## 要求\n"
+        "每条标准必须具体、可衡量，且写明审查方法（如何通过查看文件判断通过/不通过）。\n"
+        "确保标准不是模板化的文字堆砌，而是真正能为审查提供 actionable 的判断依据。\n"
+        "请具体、可操作，避免空泛描述。"
+    )
+    criteria = call_agent(runtime, "master", conv_clarify, prompt + feedback)
+
+    # 自检
+    self_check = call_agent(runtime, "master", conv_clarify,
+        "逐条确认以上标准每一条你都能实际执行检查"
+        "（通过查看 PRD 或 prototype 文件）。"
+        "依次回复每条是 ✓ 还是 ✗，如 ✗ 说明缺什么。\n"
+        "如果全部 ✓，最后一行回复 == PASS ==。"
+        "如果有 ✗，最后一行回复 == FAIL ==")
+
+    runtime.context.set_ctx("pm_criteria", criteria)
+    runtime.context.set_ctx("pm_criteria_self_check", self_check)
+
+    # 写入审核标准文件，供 PM 和后续 reviewer 使用
+    criteria_path = os.path.join(runtime.workspace, "test", "criteria.md")
+    os.makedirs(os.path.dirname(criteria_path), exist_ok=True)
+    with open(criteria_path, "w", encoding="utf-8") as f:
+        f.write("# PM 产出审核标准\n\n" + criteria)
+    runtime.context.set_ctx("pm_criteria_path", criteria_path)
+    print(f"  ✓ 审核标准已写入 {criteria_path}")
+
+    last_line = self_check.strip().split("\n")[-1].strip()
+    passed = "PASS" in last_line
+    runtime.logger.log_event("criteria_defined",
+        detail=f"PM 审核标准已制定，自检{'通过' if passed else '不通过'}")
+    return {"phase": "criteria_done", "judge_result": "pass" if passed else "fail"}
+
+
+def route_criteria_self_check(state: WorkflowState) -> str:
+    r = state.get("judge_result", "")
+    if r == "pass":
+        return "pm_write_doc"
+    return "pm_write_criteria"
+
+
 def pm_write_doc(state: WorkflowState) -> dict:
     """Phase 1e: Master 写信指令 → PM 产出 PRD.md + prototype.html。"""
     runtime = getattr(pm_write_doc, "_runtime", None)
@@ -450,27 +514,43 @@ def pm_write_doc(state: WorkflowState) -> dict:
     if not conv_clarify:
         raise RuntimeError("clarify conversation 不存在")
 
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    output_dir = os.path.join(script_dir, "..", "test")
+    output_dir = os.path.join(runtime.workspace, "test")
     os.makedirs(output_dir, exist_ok=True)
 
     # Call 1 — Master 写信要求 PRD，PM 直接写入 prd_path
     prd_path = os.path.join(output_dir, "PRD.md")
-    prd_letter = _letter_path("master-prd")
+    criteria_path = runtime.context.get_ctx("pm_criteria_path") or ""
+    criteria_ref = ""
+    if criteria_path and os.path.exists(criteria_path):
+        criteria_ref = f"\n审核标准文件（PM 需对着这些标准写，Reviewer 将用来审查）：{criteria_path}"
+    prd_letter = _letter_path(runtime, "master-prd")
     write_letter(runtime, "master", conv_clarify, prd_letter,
                  "PRD 编写说明",
                  "请以 Master 的身份给 PM 写信，要求 PM 输出 PRD.md 并写入指定文件。\n"
-                 "需包含：项目概述、功能需求、MVP 范围、页面结构、验收标准。")
+                 "需包含：项目概述、功能需求、MVP 范围、页面结构、验收标准。\n"
+                 "需要告知 PM ，在它写文档之前，需要考虑以下问题：\n"
+                 "1. 它的上游是谁，给了它哪些上下文，这些上下文该如何约束它进行文档的编写。\n"
+                 "2. 它的下游是谁，会如何从它的产出中获得约束和信息。\n"
+                 "3. 确保产出不是模板化的文字堆砌，而是真正能为下游提供 actionable 的信息。\n"
+                 "4. 确保具体、可操作，避免空泛描述\n"
+                 "5. 在这个阶段中，只要求它产出PRD.md，原型需要等你进一步下达指令后再进行产出。"
+                 + criteria_ref)
     read_letter(runtime, "pm", pm_conv, prd_letter,
                 f"按信中的要求编写 PRD.md，写入文件 {prd_path}。")
 
     # Call 2 — Master 写信要求原型，PM 直接写入 proto_path
     proto_path = os.path.join(output_dir, "prototype.html")
-    proto_letter = _letter_path("master-prototype")
+    proto_letter = _letter_path(runtime, "master-prototype")
     write_letter(runtime, "master", conv_clarify, proto_letter,
                  "原型编写说明",
-                 "请以 Master 的身份给 PM 写信，要求基于 PRD 产出 prototype.html 并写入指定文件。\n"
-                 "单文件自包含（CSS/JS 内嵌），可双击在浏览器中直接打开，包含核心交互和布局。")
+                 "请以 Master 的身份给 PM 写信，要求 PM 基于 PRD 产出 prototype.html 并写入指定文件。\n"
+                 "需包含：核心交互、页面布局、导航流程。\n"
+                 "单文件自包含（CSS/JS 内嵌），可双击在浏览器中直接打开。\n"
+                 "需要告知 PM，在它写原型之前，需要考虑以下问题：\n"
+                 "1. 它的上游是谁，给了它哪些上下文（PRD），这些上下文该如何约束它进行原型的编写。\n"
+                 "2. 它的下游是谁，会如何从它的产出中获得约束和信息。\n"
+                 "3. 确保产出不是模板化的文字堆砌，而是真正能为下游提供 actionable 的原型。\n"
+                 "4. 确保具体、可操作，避免空泛占位符。")
     read_letter(runtime, "pm", pm_conv, proto_letter,
                 f"按信中要求编写 prototype.html，写入文件 {proto_path}。")
 
@@ -486,7 +566,8 @@ def build_graph(runtime) -> StateGraph:
     """构建 LangGraph StateGraph。"""
     for f in [pre_flight_clarify, pm_handoff, pm_align,
               master_reply_pm, judge_master_reply, clarify_inject,
-              pm_write_doc, route_master_reply]:
+              pm_write_criteria, pm_write_doc,
+              route_master_reply, route_criteria_self_check]:
         f._runtime = runtime
 
     graph = StateGraph(WorkflowState)
@@ -496,6 +577,7 @@ def build_graph(runtime) -> StateGraph:
     graph.add_node("master_reply_pm", master_reply_pm)
     graph.add_node("judge_master_reply", judge_master_reply)
     graph.add_node("clarify_inject", clarify_inject)
+    graph.add_node("pm_write_criteria", pm_write_criteria)
     graph.add_node("pm_write_doc", pm_write_doc)
 
     graph.set_entry_point("pre_flight_clarify")
@@ -504,11 +586,15 @@ def build_graph(runtime) -> StateGraph:
     graph.add_edge("pm_align", "master_reply_pm")
     graph.add_edge("master_reply_pm", "judge_master_reply")
     graph.add_conditional_edges("judge_master_reply", route_master_reply, {
-        "pm_write_doc": "pm_write_doc",
+        "pm_write_criteria": "pm_write_criteria",
         "pm_align": "pm_align",
         "clarify_inject": "clarify_inject",
     })
     graph.add_edge("clarify_inject", "master_reply_pm")
+    graph.add_conditional_edges("pm_write_criteria", route_criteria_self_check, {
+        "pm_write_doc": "pm_write_doc",
+        "pm_write_criteria": "pm_write_criteria",
+    })
     graph.add_edge("pm_write_doc", END)
 
     return graph.compile(checkpointer=MemorySaver())
@@ -532,8 +618,7 @@ def main():
     print("=" * 60)
 
     args = parse_args()
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    config_path = args.config or os.path.join(script_dir, "..", "runtime_config.json")
+    config_path = args.config or os.path.join(os.getcwd(), "runtime_config.json")
 
     print("\n[1/2] 初始化 AgentRuntime...")
     runtime = setup_runtime(config_path)

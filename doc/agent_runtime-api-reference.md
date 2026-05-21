@@ -109,9 +109,9 @@
 
 负责 Agent 注册、Gateway 生命周期管理。
 
-### `__init__(pool_dir: str, hermes_home: str)`
+### `__init__(runtime_dir: str, hermes_home: str)`
 - **参数：**
-  - `pool_dir` — `.agent_runtime` 目录路径
+  - `runtime_dir` — `.agent_runtime` 目录路径
   - `hermes_home` — Hermes 安装根目录
 - **行为：** 从 `registry.json` 加载已注册的 agent 列表。
 - **边界情况：**
@@ -184,12 +184,12 @@
 
 负责对话调用、初始化、关闭。
 
-### `__init__(agent_mgr, logger, config, pool_dir)`
-- **参数：** `agent_mgr` — AgentManager 实例，`logger` — Logger 实例，`config` — Config 实例，`pool_dir` — 数据目录
+### `__init__(agent_mgr, logger, config, runtime_dir)`
+- **参数：** `agent_mgr` — AgentManager 实例，`logger` — Logger 实例，`config` — Config 实例，`runtime_dir` — 数据目录
 
-### `call(agent, conversation, input_text, timeout=None, stream_callback=None) -> CallResult`
+### `call(agent, conversation, input_text, timeout=None, stream_callback=None, tool_callback=None) -> CallResult`
 向指定 agent 的指定对话发送消息。
-- **参数：** `stream_callback` — 可选，传此参数时启用 SSE 流式接收，每收到一个文本块调用 `callback(chunk)`
+- **参数：** `stream_callback` — 可选，每收到一个文本块回调 `callback(chunk)`；`tool_callback(name, args)` — 可选，SSE 事件 `response.output_item.added(function_call)` 时实时回调
 - **行为：**
   1. 从 registry 读取 port/api_key
   2. POST `/v1/responses` 到 Gateway（传 `stream_callback` 时流式读取）
@@ -229,8 +229,8 @@
 
 负责调用日志和事件日志，均写入 JSONL 文件。
 
-### `__init__(pool_dir: str)`
-- **行为：** `calls.jsonl` 和 `events.jsonl` 的路径由 `pool_dir` 决定。
+### `__init__(runtime_dir: str)`
+- **行为：** `calls.jsonl` 和 `events.jsonl` 的路径由 `runtime_dir` 决定。
 - **边界情况：** 文件不会在 `__init__` 时创建，在第一次写入时自动创建。
 
 ### `log_call(agent, conversation, input_text, output_text, input_tokens, output_tokens, latency_ms, success, error=None)`
@@ -265,7 +265,7 @@
 
 三段式上下文管理：background / phase（树状） / contexts。
 
-### `__init__(pool_dir: str)`
+### `__init__(runtime_dir: str)`
 - **行为：** 从 `context.json` 加载数据。文件不存在时视为空数据。
 
 ### `set_bg(key, value)`
@@ -323,10 +323,12 @@
 
 ## 5. Config
 
-配置读写（JSON 文件）。
+配置读写。直接读写 `runtime_config.json`（项目根目录下的配置文件），不再使用独立的 `config.json`。
 
-### `__init__(pool_dir: str)`
-- **行为：** 从 `config.json` 加载。文件不存在时视为空 dict。
+### `__init__(config_path: str)`
+- **参数：** `config_path` — `runtime_config.json` 的路径
+- **行为：** 直接从 `runtime_config.json` 加载配置。文件不存在时视为空 dict。
+- **注意：** `Config.set()` 会写回 `runtime_config.json`，因此运行时修改的配置项会持久化到同一文件。
 
 ### 默认值
 ```python
@@ -339,7 +341,7 @@ DEFAULTS = {
 ```
 
 ### `set(key, value)`
-设置配置项。立即写入文件。
+设置配置项。立即写入 `runtime_config.json`。
 
 ### `get(key)`
 读取配置项。key 不存在则返回 `DEFAULTS` 中的值。
@@ -380,7 +382,8 @@ DEFAULTS = {
 - **配置文件格式（runtime_config.json）：**
   ```json
   {
-    "pool_dir": ".agent_runtime",
+    "runtime_dir": "C:/Users/温学周/Desktop/langgraph_test/.agent_runtime",
+    "workspace": "C:/Users/温学周/Desktop/langgraph_test",
     "hermes_home": "C:/Users/温学周/AppData/Local/hermes",
     "call_timeout": 120,
     "max_retry": 3,
@@ -389,12 +392,17 @@ DEFAULTS = {
     "input_end_word": "EOF"
   }
   ```
+- **字段说明：**
+  - `runtime_dir` — 运行时数据目录（registry、context、logs、handoffs 等），绝对路径
+  - `workspace` — 项目根目录，用于定位测试产出（PRD.md、prototype.html、criteria.md 等），绝对路径
+  - `hermes_home` — Hermes 安装根目录
+  - 其他配置项（`call_timeout`、`max_retry` 等）由 Config 模块管理，通过 `runtime.config.get()` 读取
 - **默认值：**
-  - `pool_dir` = `".agent_runtime"`（当前工作目录下）
-  - `hermes_home` = 自动检测（依次检查 `~/AppData/Local/hermes`、`C:\Users\温学周\AppData\Local\hermes`、`C:\Program Files\hermes`）
-  - 其他配置项走 Config 的 DEFAULTS，不传则使用默认值
-- **行为：** 创建 `pool_dir` 目录，实例化 Config、Logger、AgentManager、ContextManager、ConversationManager、Checkpoint
-- **注意：** runtime_config.json 中可包含任意工作流级配置项（如 `max_plan_loop`、`input_end_word`），AgentRuntime 会透传给 Config 模块，由 workflow.py 按需读取
+  - `runtime_dir` 不传时默认 `".agent_runtime"`（当前工作目录下）
+  - `workspace` 不传时默认 `os.getcwd()`
+  - `hermes_home` 不传时自动检测（依次检查 `~/AppData/Local/hermes`、`C:\Users\温学周\AppData\Local\hermes`、`C:\Program Files\hermes`）
+  - 其他配置项走 Config 的 DEFAULTS
+- **行为：** 创建 `runtime_dir` 目录，暴露 `self.runtime_dir` 和 `self.workspace`，实例化 Config、Logger、AgentManager、ContextManager、ConversationManager、Checkpoint
 
 ### `_load_config(config_path)`（静态方法）
 读取 JSON 配置文件。
@@ -416,22 +424,22 @@ DEFAULTS = {
 
 ```
 AgentRuntime
-├── Config(pool_dir)              # 读写 config.json
-├── Logger(pool_dir)              # 读写 calls.jsonl + events.jsonl
-├── AgentManager(pool_dir, hh)    # 读写 registry.json
+├── Config(config_path)            # 读写 runtime_config.json
+├── Logger(runtime_dir)            # 读写 calls.jsonl + events.jsonl
+├── AgentManager(runtime_dir, hh)  # 读写 registry.json
 │   └── 依赖: hermes CLI + profiles 目录
-├── ContextManager(pool_dir)      # 读写 context.json
-├── ConversationManager(agents, logger, config, pool_dir)
+├── ContextManager(runtime_dir)    # 读写 context.json
+├── ConversationManager(agents, logger, config, runtime_dir)
 │   └── 读写 registry.json（close_conversation / _track_conversation）
 └── Checkpoint()                  # 纯 stdin/stdout，无文件依赖
 ```
 
-数据文件全部位于 `pool_dir` 目录下：
+数据文件全部位于 `runtime_dir` 目录下：
 ```
-pool_dir/
+runtime_dir/
 ├── registry.json       # AgentManager + ConversationManager
 ├── context.json        # ContextManager
-├── config.json         # Config
 ├── calls.jsonl         # Logger
 └── events.jsonl        # Logger
 ```
+Config 不再在 `runtime_dir` 下独立存储文件，直接读写项目根目录的 `runtime_config.json`。

@@ -71,7 +71,7 @@ def _judge_clarify(runtime, reply: str) -> str:
 ### Phase 1 judge：`judge_master_reply`
 - 输入：Master 对 PM 疑问的回复
 - 输出：A / B / C
-  - A = Master 确认 PM 理解正确，无需再问用户 → 进入 pm_write_doc
+  - A = Master 确认 PM 理解正确，无需再问用户 → 进入 pm_write_criteria（先定标准，再出方案）
   - B = Master 已答复 PM，需要转发给 PM 继续确认 → 回 pm_align
   - C = Master 有无法判定的问题，需要向用户确认 → 进入 clarify_inject
 
@@ -159,8 +159,11 @@ pm_handoff → pm_align → master_reply_pm → judge_master_reply
                                         │ A    │ B    │ C
                                         ▼      ▼      ▼
                                    pm_write  pm_align  clarify_inject
-                                      doc                │
-                                                    (回 master_reply_pm)
+                                  criteria              │
+                                      │            (回 master_reply_pm)
+                                      ▼
+                                  pm_write
+                                     doc
 ```
 
 > **关键改动**：PM 不再经 judge_pm_align，直接走 master_reply_pm（上一 session 移除）。Judge 由 A/B 扩展为 A/B/C。`clarify_inject` 使用与 `pre_flight_clarify` 共享的 `_clarify_loop`，拥有完整的多轮问答 + judge + 确认子循环。

@@ -45,6 +45,9 @@ def manage_pool_dir():
 def _pool_dir():
     return getattr(ap, 'POOL_DIR_DEFAULT', None) or os.path.join(os.getcwd(), ".agent_runtime")
 
+def _config_path():
+    return os.path.join(_pool_dir(), "runtime_config.json")
+
 
 def _hermes_home():
     return r"C:\Users\温学周\AppData\Local\hermes"
@@ -140,34 +143,34 @@ class TestUtils:
 class TestConfig:
     def test_get_default(self):
         os.makedirs(_pool_dir(), exist_ok=True)
-        c = ap.Config(_pool_dir())
+        c = ap.Config(_config_path())
         assert c.get("call_timeout") == 120
         assert c.get("max_retry") == 3
         assert c.get("nonexistent") is None
 
     def test_set_and_get(self):
         os.makedirs(_pool_dir(), exist_ok=True)
-        c = ap.Config(_pool_dir())
+        c = ap.Config(_config_path())
         c.set("call_timeout", 300)
         assert c.get("call_timeout") == 300
 
     def test_set_overrides_default(self):
         os.makedirs(_pool_dir(), exist_ok=True)
-        c = ap.Config(_pool_dir())
+        c = ap.Config(_config_path())
         assert c.get("max_retry") == 3
         c.set("max_retry", 5)
         assert c.get("max_retry") == 5
 
     def test_persistence(self):
         os.makedirs(_pool_dir(), exist_ok=True)
-        c1 = ap.Config(_pool_dir())
+        c1 = ap.Config(_config_path())
         c1.set("call_timeout", 999)
-        c2 = ap.Config(_pool_dir())
+        c2 = ap.Config(_config_path())
         assert c2.get("call_timeout") == 999
 
     def test_set_preserves_existing(self):
         os.makedirs(_pool_dir(), exist_ok=True)
-        c = ap.Config(_pool_dir())
+        c = ap.Config(_config_path())
         c.set("call_timeout", 100)
         c.set("max_retry", 2)
         assert c.get("call_timeout") == 100
@@ -175,7 +178,7 @@ class TestConfig:
 
     def test_set_none_value(self):
         os.makedirs(_pool_dir(), exist_ok=True)
-        c = ap.Config(_pool_dir())
+        c = ap.Config(_config_path())
         c.set("some_key", None)
         assert c.get("some_key") is None
 
@@ -551,7 +554,7 @@ class TestAgentManager:
 class TestConversationManager:
     def test_call_agent_not_found(self):
         os.makedirs(_pool_dir(), exist_ok=True)
-        cm = ap.ConversationManager(ap.AgentManager(_pool_dir(), _hermes_home()), ap.Logger(_pool_dir()), ap.Config(_pool_dir()), _pool_dir())
+        cm = ap.ConversationManager(ap.AgentManager(_pool_dir(), _hermes_home()), ap.Logger(_pool_dir()), ap.Config(_config_path()), _pool_dir())
         result = cm.call("nonexistent", "conv1", "hello")
         assert result.success is False
         assert result.error is not None
@@ -561,7 +564,7 @@ class TestConversationManager:
         os.makedirs(_pool_dir(), exist_ok=True)
         mgr = ap.AgentManager(_pool_dir(), _hermes_home())
         mgr.create_agent("stopped_dev", "cg", 19990)
-        cm = ap.ConversationManager(mgr, ap.Logger(_pool_dir()), ap.Config(_pool_dir()), _pool_dir())
+        cm = ap.ConversationManager(mgr, ap.Logger(_pool_dir()), ap.Config(_config_path()), _pool_dir())
         result = cm.call("stopped_dev", "conv1", "hello")
         assert result.success is False
         assert "未运行" in result.error
@@ -569,7 +572,7 @@ class TestConversationManager:
     def test_close_conversation_nonexistent_agent(self):
         """关闭不存在 agent 的对话应不报错。"""
         os.makedirs(_pool_dir(), exist_ok=True)
-        cm = ap.ConversationManager(ap.AgentManager(_pool_dir(), _hermes_home()), ap.Logger(_pool_dir()), ap.Config(_pool_dir()), _pool_dir())
+        cm = ap.ConversationManager(ap.AgentManager(_pool_dir(), _hermes_home()), ap.Logger(_pool_dir()), ap.Config(_config_path()), _pool_dir())
         cm.close_conversation("ghost", "conv1")  # should not raise
 
 
@@ -599,7 +602,7 @@ class TestEdgeCases:
 
     def test_rapid_successive_writes(self):
         os.makedirs(_pool_dir(), exist_ok=True)
-        cfg = ap.Config(_pool_dir())
+        cfg = ap.Config(_config_path())
         for i in range(100):
             cfg.set(f"key_{i}", i)
         assert cfg.get("key_99") == 99

@@ -98,10 +98,10 @@ class ProgressReport:
 class AgentManager:
     """Agent 注册、Gateway 生命周期管理。"""
 
-    def __init__(self, pool_dir: str, hermes_home: str):
-        self._pool_dir = pool_dir
+    def __init__(self, runtime_dir: str, hermes_home: str):
+        self._runtime_dir = runtime_dir
         self._hermes_home = hermes_home
-        self._registry_path = os.path.join(pool_dir, "registry.json")
+        self._registry_path = os.path.join(runtime_dir, "registry.json")
         self._data = _read_json(self._registry_path)
 
     def _save(self):
@@ -274,11 +274,11 @@ class AgentManager:
 class ConversationManager:
     """对话调用、初始化、关闭。"""
 
-    def __init__(self, agent_mgr: AgentManager, logger: "Logger", config: "Config", pool_dir: str):
+    def __init__(self, agent_mgr: AgentManager, logger: "Logger", config: "Config", runtime_dir: str):
         self._agents = agent_mgr
         self._logger = logger
         self._config = config
-        self._registry_path = os.path.join(pool_dir, "registry.json")
+        self._registry_path = os.path.join(runtime_dir, "registry.json")
 
     def call(self, agent: str, conversation: str, input_text: str,
              timeout: int = None, stream_callback: callable = None,
@@ -450,9 +450,9 @@ class ConversationManager:
 class Logger:
     """调用日志、事件日志。"""
 
-    def __init__(self, pool_dir: str):
-        self._calls_path = os.path.join(pool_dir, "calls.jsonl")
-        self._events_path = os.path.join(pool_dir, "events.jsonl")
+    def __init__(self, runtime_dir: str):
+        self._calls_path = os.path.join(runtime_dir, "calls.jsonl")
+        self._events_path = os.path.join(runtime_dir, "events.jsonl")
 
     def log_call(self, agent: str, conversation: str, input_text: str, output_text: str,
                  input_tokens: int, output_tokens: int, latency_ms: int,
@@ -525,8 +525,8 @@ class Logger:
 class ContextManager:
     """三段式上下文管理：background / phase（树状） / contexts。"""
 
-    def __init__(self, pool_dir: str):
-        self._context_path = os.path.join(pool_dir, "context.json")
+    def __init__(self, runtime_dir: str):
+        self._context_path = os.path.join(runtime_dir, "context.json")
         self._data = _read_json(self._context_path)
 
     def _save(self):
@@ -630,7 +630,7 @@ class ContextManager:
 # ============================================================
 
 class Config:
-    """配置读写。"""
+    """配置读写。直接读写 runtime_config.json。"""
 
     DEFAULTS = {
         "call_timeout": 120,
@@ -639,9 +639,9 @@ class Config:
         "max_bug_loop": 5,
     }
 
-    def __init__(self, pool_dir: str):
-        self._config_path = os.path.join(pool_dir, "config.json")
-        self._data = _read_json(self._config_path)
+    def __init__(self, config_path: str):
+        self._config_path = config_path
+        self._data = _read_json(config_path) if os.path.exists(config_path) else {}
 
     def _save(self):
         _write_json(self._config_path, self._data)
@@ -699,17 +699,19 @@ class AgentRuntime:
     def __init__(self, config_path: str = None):
         # 加载用户配置
         cfg = self._load_config(config_path) if config_path else {}
-        pool_dir = cfg.get("pool_dir", ".agent_runtime")
+        runtime_dir = cfg.get("runtime_dir") or cfg.get("pool_dir", ".agent_runtime")
         hermes_home = cfg.get("hermes_home", self._detect_hermes_home())
+        workspace = cfg.get("workspace") or os.getcwd()
 
-        os.makedirs(pool_dir, exist_ok=True)
+        os.makedirs(runtime_dir, exist_ok=True)
 
-        self.pool_dir = pool_dir
-        self.config = Config(pool_dir)
-        self.logger = Logger(pool_dir)
-        self.agents = AgentManager(pool_dir, hermes_home)
-        self.context = ContextManager(pool_dir)
-        self.conversations = ConversationManager(self.agents, self.logger, self.config, pool_dir)
+        self.runtime_dir = runtime_dir
+        self.workspace = workspace
+        self.config = Config(config_path or os.path.join(os.getcwd(), "runtime_config.json"))
+        self.logger = Logger(runtime_dir)
+        self.agents = AgentManager(runtime_dir, hermes_home)
+        self.context = ContextManager(runtime_dir)
+        self.conversations = ConversationManager(self.agents, self.logger, self.config, runtime_dir)
         self.checkpoint = Checkpoint()
 
     @staticmethod
