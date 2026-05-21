@@ -79,6 +79,7 @@ MASTER_SYSTEM_PROMPT = """
 
 class WorkflowState(TypedDict):
     phase: str
+    judge_result: str
 
 
 def call_agent(runtime, agent: str, conversation: str, prompt: str,
@@ -170,6 +171,7 @@ def pre_flight_clarify(state: WorkflowState) -> dict:
 
     runtime.logger.log_event("phase_started", detail="需求澄清")
     runtime.conversations.init_conversation("master", conv, MASTER_SYSTEM_PROMPT.strip())
+    runtime.context.set_ctx("conv_clarify", conv)
 
     def _judge_clarify(reply: str) -> str:
         """判读 Master 回复是已确认还是有疑问。"""
@@ -243,15 +245,12 @@ def pre_flight_clarify(state: WorkflowState) -> dict:
             # 继续子循环：再 judge → 再确认
 
 
-def pm_write_doc(state: WorkflowState) -> dict:
-    """Phase 1: PM 产出 PRD.md + prototype.html。"""
-    runtime = getattr(pm_write_doc, "_runtime", None)
-    conv = _conv_name("pm-doc")
+def pm_handoff(state: WorkflowState) -> dict:
+    """Phase 1a: Master 写 handoff 信给 PM。"""
+    runtime = getattr(pm_handoff, "_runtime", None)
 
-    # 让 Master 针对 PM 写 handoff 委托信
     project_context_path = runtime.context.get_bg("project_context_path")
-    project_context = handoff(project_context_path)
-    if not project_context:
+    if not project_context_path or not os.path.exists(project_context_path):
         raise RuntimeError(f"project_context.md 不存在：{project_context_path}")
 
     master_conv = _conv_name("master-to-pm")
@@ -262,7 +261,7 @@ def pm_write_doc(state: WorkflowState) -> dict:
     runtime.conversations.init_conversation("master", master_conv,
                                             MASTER_SYSTEM_PROMPT.strip())
     call_agent(runtime, "master", master_conv,
-               f"以下是项目顶层决策记录：\n{project_context}\n\n"
+               f"以下是项目顶层决策记录的地址：\n{project_context_path}\n\n"
                f"现在请以 Master 的身份写一封给 PM agent 的信，"
                f"写入文件 {master_to_pm_path}。\n"
                "信件的目的是让 PM 理解项目上下文并确认信息是否足够，而不是直接派活。\n\n"
@@ -274,28 +273,166 @@ def pm_write_doc(state: WorkflowState) -> dict:
                "5. 强调：在确认之前，不得开始写 PRD 或原型\n\n"
                "信件要有 Master 的口吻，是上级对下级的沟通与任务委派。")
 
-    # 读取 handoff 信件（一次性，用完即删）
     upstream_doc = handoff(master_to_pm_path)
     if not upstream_doc:
         raise RuntimeError(f"handoff 文件不存在：{master_to_pm_path}")
     os.remove(master_to_pm_path)
 
+    runtime.context.set_ctx("pm_upstream_doc", upstream_doc)
+    print(f"\n  ── Master 给 PM 的信件已就绪 ──")
+    return {"phase": "pm_handoff_done"}
+
+
+def pm_align(state: WorkflowState) -> dict:
+    """Phase 1b: PM 读信，汇报理解 + 列出疑问。
+
+    首次调用时发 handoff 信；循环中再次调用时发 Master 的回复让 PM 确认。"""
+    runtime = getattr(pm_align, "_runtime", None)
+
+    upstream_doc = runtime.context.get_ctx("pm_upstream_doc")
+    if not upstream_doc:
+        raise RuntimeError("没有 handoff 内容")
+
+    pm_conv = runtime.context.get_ctx("pm_conv")
+    if not pm_conv:
+        pm_conv = _conv_name("pm-align")
+        runtime.context.set_ctx("pm_conv", pm_conv)
+
+    runtime.logger.log_event("phase_started", detail="PM 对齐理解")
+    print(f"\n  ── PM 对齐理解 ──")
+
+    master_reply = runtime.context.get_ctx("master_reply")
+    if master_reply:
+        # 循环中再次调用：Master 已回复，让 PM 确认是否清楚
+        prompt = (
+            f"Master 对你的疑问做出了回复：\n{master_reply}\n\n"
+            "请仔细阅读后确认：\n"
+            "1. 所有疑问是否已得到解答？\n"
+            "2. 是否有新的疑问？\n"
+            "3. 如果全部清楚，确认可以进入下一阶段"
+        )
+    else:
+        # 首次调用：发 handoff 信件
+        prompt = role_aware_prompt(
+            role="PM",
+            upstream="Master",
+            upstream_doc=upstream_doc,
+            deliverable="对项目需求的理解汇报和疑问清单",
+            downstream="Master",
+            downstream_needs="确认 PM 正确理解了项目范围和目标，如果有疑问需要解答后再开始工作",
+        ) + ("\n\n阅读 Master 给你的信以及项目顶层决策文件。请汇报你对项目的理解，并列出你的疑问。"
+              "在 Master 明确许可之前，不要开始写 PRD 或原型。")
+
+    reply = call_agent(runtime, "pm", pm_conv, prompt)
+
+    runtime.context.set_ctx("pm_reply", reply)
+    return {"phase": "pm_align_done"}
+
+
+def master_reply_pm(state: WorkflowState) -> dict:
+    """Master 回答 PM 的疑问，复用 clarify conversation。"""
+    runtime = getattr(master_reply_pm, "_runtime", None)
+    pm_reply = runtime.context.get_ctx("pm_reply")
+    conv_clarify = runtime.context.get_ctx("conv_clarify")
+
+    if not conv_clarify:
+        raise RuntimeError("clarify conversation 不存在")
+
+    prompt = (
+        f"这是 PM 对项目的理解和疑问：\n{pm_reply}\n\n"
+        "请逐一检查以下内容：\n"
+        "1. PM 的理解是否正确？如有误，逐一指出\n"
+        "2. PM 的疑问中，你能回答的全部回答\n"
+        "3. 如果遇到你无从判定的问题（涉及顶层决策、技术选型、使用场景等），"
+        "不要猜测，明确写出需要向用户确认的具体问题\n\n"
+        "你的回复中需明确区分两部分：\n"
+        "- 你对 PM 的答复/纠正\n"
+        "- 需要向用户确认的问题（如无则说'无需向用户提问'）"
+    )
+
+    user_answer = runtime.context.get_ctx("user_answer")
+    if user_answer:
+        prompt = f"用户对之前的疑问做出了回答：\n{user_answer}\n\n" + prompt
+        runtime.context.set_ctx("user_answer", None)
+
+    print(f"\n  ── Master 回复 PM ──")
+    reply = call_agent(runtime, "master", conv_clarify, prompt)
+
+    runtime.context.set_ctx("master_reply", reply)
+    return {"phase": "master_reply_done"}
+
+
+def judge_master_reply(state: WorkflowState) -> dict:
+    """判读 Master 能否独立回答 PM，还是需要问用户。"""
+    runtime = getattr(judge_master_reply, "_runtime", None)
+    master_reply = runtime.context.get_ctx("master_reply")
+
+    print("  ── judge: Master 回复 ──")
+    judge_prompt = (
+        "你是一个流程裁判。以下是 Master 的回复。\n\n"
+        f"## Master 的回复\n{master_reply}\n\n"
+        "判定当前状态是以下哪一种：\n"
+        "A. Master 确认 PM 理解正确，无需再问用户且无需纠正 PM 的错误 → 进入下一阶段\n"
+        "B. Master 已答复 PM，需要转发给 PM 继续确认 → 回 PM\n"
+        "C. Master 有无法判定的问题，需要向用户确认\n\n"
+        "回复 A / B / C 即可，不要输出其他内容。"
+    )
+    result = call_agent(runtime, "judge", _conv_name("judge-master-reply"), judge_prompt)
+    return {"judge_result": result.strip()}
+
+
+def route_master_reply(state: WorkflowState) -> str:
+    r = state.get("judge_result", "")
+    if r.startswith("A"):
+        return "pm_write_doc"
+    elif r.startswith("B"):
+        return "pm_align"
+    return "clarify_inject"
+
+
+def clarify_inject(state: WorkflowState) -> dict:
+    """向用户提问 Master 无法判定的问题，更新 project_context.md。"""
+    runtime = getattr(clarify_inject, "_runtime", None)
+    conv_clarify = runtime.context.get_ctx("conv_clarify")
+    master_reply = runtime.context.get_ctx("master_reply")
+    end_word = runtime.config.get("input_end_word") or None
+
+    cp = runtime.checkpoint.wait(
+        "需要向用户确认",
+        "Master 有以下问题需要向你确认：\n\n" + master_reply + "\n\n请回答：",
+        prompt="输入内容后按 Enter：", end_word=end_word,
+    )
+    user_answer = cp.message.strip()
+
+    # 把用户回答发给 Master（复用 clarify conversation）
+    call_agent(runtime, "master", conv_clarify, f"用户回答了你的疑问：\n{user_answer}")
+
+    # 让 Master 更新 project_context.md
+    project_context_path = runtime.context.get_bg("project_context_path")
+    call_agent(runtime, "master", conv_clarify,
+               f"请将本轮确认的决策记录到项目顶层决策记录文件的合适位置中：{project_context_path}")
+
+    runtime.context.set_ctx("user_answer", user_answer)
+    return {"phase": "clarify_done"}
+
+
+def pm_write_doc(state: WorkflowState) -> dict:
+    """Phase 1e: PM 产出 PRD.md + prototype.html（对齐完成后）。"""
+    runtime = getattr(pm_write_doc, "_runtime", None)
+    pm_conv = runtime.context.get_ctx("pm_conv")
+    upstream_doc = runtime.context.get_ctx("pm_upstream_doc")
+
+    if not pm_conv:
+        pm_conv = _conv_name("pm-doc")
+        runtime.context.set_ctx("pm_conv", pm_conv)
+    if not upstream_doc:
+        raise RuntimeError("没有 handoff 内容")
+
     runtime.logger.log_event("phase_started", detail="PM 出方案")
     print(f"\n  ── PM 出方案 ──")
 
-    # Call 1 — PM 对齐理解（不产出任何文档）
-    call_agent(runtime, "pm", conv, role_aware_prompt(
-        role="PM",
-        upstream="Master",
-        upstream_doc=upstream_doc,
-        deliverable="对项目需求的理解汇报和疑问清单",
-        downstream="Master",
-        downstream_needs="确认 PM 正确理解了项目范围和目标，如果有疑问需要解答后再开始工作",
-    ) + "\n\n阅读 Master 给你的信以及项目顶层决策文件。请汇报你对项目的理解，并列出你的疑问。"
-      "在 Master 明确许可之前，不要开始写 PRD 或原型。")
-
-    # Call 2 — PM 写 PRD
-    prd_text = call_agent(runtime, "pm", conv, role_aware_prompt(
+    # Call 1 — PM 写 PRD
+    prd_text = call_agent(runtime, "pm", pm_conv, role_aware_prompt(
         role="PM",
         upstream="Master",
         upstream_doc=upstream_doc,
@@ -304,8 +441,8 @@ def pm_write_doc(state: WorkflowState) -> dict:
         downstream_needs="清晰的功能列表、验收标准、页面结构描述、MVP 边界定义",
     ) + "\n\n请输出 PRD.md 的完整内容，包含：项目概述、功能需求、MVP 范围、页面结构、验收标准。")
 
-    # Call 3 — PM 写 prototype
-    prototype_text = call_agent(runtime, "pm", conv, role_aware_prompt(
+    # Call 2 — PM 写 prototype
+    prototype_text = call_agent(runtime, "pm", pm_conv, role_aware_prompt(
         role="PM",
         upstream="Master",
         upstream_doc=upstream_doc,
@@ -314,7 +451,7 @@ def pm_write_doc(state: WorkflowState) -> dict:
         downstream_needs="可直接在浏览器中打开运行的 HTML 原型，展示页面布局和核心交互",
     ) + "\n\n请基于 PRD 生成一个完整的 prototype.html。要求：单文件自包含（CSS/JS 内嵌），可双击在浏览器中直接打开，包含核心交互和布局。")
 
-    # 写文件到 test/
+    # 写文件
     script_dir = os.path.dirname(os.path.abspath(__file__))
     output_dir = os.path.join(script_dir, "..", "test")
     os.makedirs(output_dir, exist_ok=True)
@@ -329,7 +466,6 @@ def pm_write_doc(state: WorkflowState) -> dict:
         f.write(prototype_text)
     print(f"  ✓ 已写入 {proto_path}")
 
-    # 持久化到 context
     runtime.context.set_ctx("pm_prd", prd_text)
     runtime.context.set_ctx("pm_prototype", prototype_text)
     runtime.context.set_phase_node(["PM 出方案"], "done")
@@ -340,21 +476,38 @@ def pm_write_doc(state: WorkflowState) -> dict:
 
 def build_graph(runtime) -> StateGraph:
     """构建 LangGraph StateGraph。"""
-    pre_flight_clarify._runtime = runtime
-    pm_write_doc._runtime = runtime
+    for f in [pre_flight_clarify, pm_handoff, pm_align,
+              master_reply_pm, judge_master_reply, clarify_inject,
+              pm_write_doc, route_master_reply]:
+        f._runtime = runtime
 
     graph = StateGraph(WorkflowState)
     graph.add_node("pre_flight_clarify", pre_flight_clarify)
+    graph.add_node("pm_handoff", pm_handoff)
+    graph.add_node("pm_align", pm_align)
+    graph.add_node("master_reply_pm", master_reply_pm)
+    graph.add_node("judge_master_reply", judge_master_reply)
+    graph.add_node("clarify_inject", clarify_inject)
     graph.add_node("pm_write_doc", pm_write_doc)
+
     graph.set_entry_point("pre_flight_clarify")
-    graph.add_edge("pre_flight_clarify", "pm_write_doc")
+    graph.add_edge("pre_flight_clarify", "pm_handoff")
+    graph.add_edge("pm_handoff", "pm_align")
+    graph.add_edge("pm_align", "master_reply_pm")
+    graph.add_edge("master_reply_pm", "judge_master_reply")
+    graph.add_conditional_edges("judge_master_reply", route_master_reply, {
+        "pm_write_doc": "pm_write_doc",
+        "pm_align": "pm_align",
+        "clarify_inject": "clarify_inject",
+    })
+    graph.add_edge("clarify_inject", "master_reply_pm")
     graph.add_edge("pm_write_doc", END)
 
     return graph.compile(checkpointer=MemorySaver())
 
 
 def _init_state() -> WorkflowState:
-    return {"phase": "pre_flight"}
+    return {"phase": "pre_flight", "judge_result": ""}
 
 
 def parse_args():
@@ -387,7 +540,8 @@ def main():
             if node_state is None:
                 print(f"  [{node_name}] 完成")
                 continue
-            print(f"  [{node_name}] phase={node_state.get('phase', '?')}")
+            print(f"  [{node_name}] phase={node_state.get('phase', '?')}, "
+                  f"judge={node_state.get('judge_result', '')[:20]}")
 
     print("\n✅ 框架就绪")
 
