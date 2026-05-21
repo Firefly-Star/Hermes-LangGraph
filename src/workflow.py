@@ -77,6 +77,67 @@ MASTER_SYSTEM_PROMPT = """
 """
 
 
+def _judge_clarify(runtime, reply: str) -> str:
+    """判读 Master 回复是已确认还是有疑问。"""
+    judge_prompt = (
+        "你是一个流程裁判。以下是 Master 的回复。\n\n"
+        f"## Master 的回复\n{reply}\n\n"
+        "判定当前状态是以下哪一种：\n"
+        "A. 需求已明确，可以进入下一阶段\n"
+        "B. Master 有疑问需要用户继续回答\n\n"
+        "回复 A 或 B 即可，不要输出其他内容。"
+    )
+    result = call_agent(runtime, "judge", _conv_name("judge-clarify"), judge_prompt)
+    return result.strip()
+
+
+def _clarify_loop(runtime, conv, first_hint: str, on_done):
+    """通用澄清循环。用户↔Master↔judge↔确认，直到 CONFIRMED。"""
+    end_word = runtime.config.get("input_end_word") or None
+
+    round_num = 0
+    while True:
+        round_num += 1
+        hint = first_hint if round_num == 1 \
+            else "请回答 Master 的疑问，或输入 CONFIRMED 直接结束："
+
+        cp = runtime.checkpoint.wait(
+            f"需求澄清 — 第 {round_num} 轮", hint,
+            prompt="输入内容后按 Enter：", end_word=end_word,
+        )
+        user_input = cp.message.strip()
+        if not user_input:
+            continue
+
+        if user_input.upper() == "CONFIRMED":
+            on_done("用户直接确认")
+            return
+
+        reply = call_agent(runtime, "master", conv,
+                           f"{user_input}\n不要产出任何东西，说出你的理解，如果有疑问就问。")
+
+        # 确认子循环：judge 判读 → 用户确认或纠正
+        while True:
+            judge = _judge_clarify(runtime, reply)
+            if judge != "A":
+                break
+
+            cp = runtime.checkpoint.wait(
+                f"需求澄清 — 第 {round_num} 轮 (确认)",
+                "Master 已确认理解需求。认可的话输入 CONFIRMED 进入下一阶段；"
+                "不认可则说明哪里不对：",
+                prompt="输入内容后按 Enter：", end_word=end_word,
+            )
+            confirm_input = cp.message.strip()
+            if confirm_input.upper() == "CONFIRMED":
+                on_done("用户确认 Master 理解正确")
+                return
+
+            round_num += 1
+            reply = call_agent(runtime, "master", conv,
+                              f"用户认为你的理解有偏差，请重新理解需求：\n{confirm_input}")
+
+
 class WorkflowState(TypedDict):
     phase: str
     judge_result: str
@@ -164,7 +225,6 @@ def pre_flight_clarify(state: WorkflowState) -> dict:
     """Phase 0: 交互式需求澄清。"""
     runtime = getattr(pre_flight_clarify, "_runtime", None)
     conv = _conv_name("clarify")
-    end_word = runtime.config.get("input_end_word") or None
 
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     project_context_path = os.path.join(root, ".agent_runtime", "project_context.md")
@@ -173,21 +233,7 @@ def pre_flight_clarify(state: WorkflowState) -> dict:
     runtime.conversations.init_conversation("master", conv, MASTER_SYSTEM_PROMPT.strip())
     runtime.context.set_ctx("conv_clarify", conv)
 
-    def _judge_clarify(reply: str) -> str:
-        """判读 Master 回复是已确认还是有疑问。"""
-        judge_prompt = (
-            "你是一个流程裁判。以下是 Master 的回复。\n\n"
-            f"## Master 的回复\n{reply}\n\n"
-            "判定当前状态是以下哪一种：\n"
-            "A. 需求已明确，可以进入下一阶段\n"
-            "B. Master 有疑问需要用户继续回答\n\n"
-            "回复 A 或 B 即可，不要输出其他内容。"
-        )
-        result = call_agent(runtime, "judge", _conv_name("judge-clarify"), judge_prompt)
-        return result.strip()
-
-    def _close_clarify(reason: str):
-        """通知 Master 写 project_context.md。"""
+    def _close(reason: str):
         call_agent(runtime, "master", conv,
                    "需求澄清阶段已结束。\n"
                    f"请将所有已确认的决策整理为完整的项目顶层决策记录，"
@@ -200,49 +246,8 @@ def pre_flight_clarify(state: WorkflowState) -> dict:
         runtime.context.set_bg("project_context_path", project_context_path)
         runtime.context.set_bg("clarification", f"项目顶层决策文件：{project_context_path}")
 
-    round_num = 0
-    while True:
-        round_num += 1
-        hint = "请描述你的需求" if round_num == 1 \
-            else "请回答 Master 的疑问，或输入 CONFIRMED 直接开始："
-
-        cp = runtime.checkpoint.wait(
-            f"需求澄清 — 第 {round_num} 轮", hint,
-            prompt="输入内容后按 Enter：", end_word=end_word,
-        )
-        user_input = cp.message.strip()
-        if not user_input:
-            continue
-
-        if user_input.upper() == "CONFIRMED":
-            _close_clarify("用户直接确认")
-            return {"phase": "done"}
-
-        reply = call_agent(runtime, "master", conv, 
-                           f'''{user_input}
-                           不要产出任何东西，说出你的理解，如果有疑问就问就行。'''
-                           )
-
-        # 确认子循环：judge 判读 → 用户确认 → 修正 → 再 judge
-        while True:
-            judge = _judge_clarify(reply)
-            if judge != "A":
-                break  # Master 仍有疑问，回到外层让用户回答
-
-            cp = runtime.checkpoint.wait(
-                f"需求澄清 — 第 {round_num} 轮 (确认)",
-                "Master 已确认理解需求。认可的话输入 CONFIRMED 进入下一阶段；不认可则说明哪里不对：",
-                prompt="输入内容后按 Enter：", end_word=end_word,
-            )
-            confirm_input = cp.message.strip()
-            if confirm_input.upper() == "CONFIRMED":
-                _close_clarify("用户确认 Master 理解正确")
-                return {"phase": "done"}
-
-            round_num += 1
-            reply = call_agent(runtime, "master", conv,
-                              f"用户认为你的理解有偏差，请重新理解需求：\n{confirm_input}")
-            # 继续子循环：再 judge → 再确认
+    _clarify_loop(runtime, conv, "请描述你的需求", _close)
+    return {"phase": "done"}
 
 
 def pm_handoff(state: WorkflowState) -> dict:
@@ -350,11 +355,6 @@ def master_reply_pm(state: WorkflowState) -> dict:
         "- 需要向用户确认的问题（如无则说'无需向用户提问'）"
     )
 
-    user_answer = runtime.context.get_ctx("user_answer")
-    if user_answer:
-        prompt = f"用户对之前的疑问做出了回答：\n{user_answer}\n\n" + prompt
-        runtime.context.set_ctx("user_answer", None)
-
     print(f"\n  ── Master 回复 PM ──")
     reply = call_agent(runtime, "master", conv_clarify, prompt)
 
@@ -372,8 +372,8 @@ def judge_master_reply(state: WorkflowState) -> dict:
         "你是一个流程裁判。以下是 Master 的回复。\n\n"
         f"## Master 的回复\n{master_reply}\n\n"
         "判定当前状态是以下哪一种：\n"
-        "A. Master 确认 PM 理解正确，无需再问用户且无需纠正 PM 的错误 → 进入下一阶段\n"
-        "B. Master 已答复 PM，需要转发给 PM 继续确认 → 回 PM\n"
+        "A. Master 确认 PM 理解 100% 正确，无需再问用户任何问题且无需纠正 PM 的任何错误且无需回复 PM 的任何问题 → 进入下一阶段\n"
+        "B. Master 有对 PM 的答复或对 PM 指出的问题，需要转发给 PM 继续确认 → 回 PM\n"
         "C. Master 有无法判定的问题，需要向用户确认\n\n"
         "回复 A / B / C 即可，不要输出其他内容。"
     )
@@ -395,24 +395,16 @@ def clarify_inject(state: WorkflowState) -> dict:
     runtime = getattr(clarify_inject, "_runtime", None)
     conv_clarify = runtime.context.get_ctx("conv_clarify")
     master_reply = runtime.context.get_ctx("master_reply")
-    end_word = runtime.config.get("input_end_word") or None
 
-    cp = runtime.checkpoint.wait(
-        "需要向用户确认",
-        "Master 有以下问题需要向你确认：\n\n" + master_reply + "\n\n请回答：",
-        prompt="输入内容后按 Enter：", end_word=end_word,
-    )
-    user_answer = cp.message.strip()
+    print(f"\n  ── Master 需要向用户确认 ──\n{master_reply}")
 
-    # 把用户回答发给 Master（复用 clarify conversation）
-    call_agent(runtime, "master", conv_clarify, f"用户回答了你的疑问：\n{user_answer}")
+    def _close(reason: str):
+        project_context_path = runtime.context.get_bg("project_context_path")
+        call_agent(runtime, "master", conv_clarify,
+                   f"请将本轮确认的决策记录到项目顶层决策记录文件的合适位置中：{project_context_path}")
+        runtime.logger.log_event("clarification_done", detail=reason)
 
-    # 让 Master 更新 project_context.md
-    project_context_path = runtime.context.get_bg("project_context_path")
-    call_agent(runtime, "master", conv_clarify,
-               f"请将本轮确认的决策记录到项目顶层决策记录文件的合适位置中：{project_context_path}")
-
-    runtime.context.set_ctx("user_answer", user_answer)
+    _clarify_loop(runtime, conv_clarify, "请回答 Master 的疑问", _close)
     return {"phase": "clarify_done"}
 
 
