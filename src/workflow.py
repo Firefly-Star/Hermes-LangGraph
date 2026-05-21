@@ -178,12 +178,36 @@ def call_agent(runtime, agent: str, conversation: str, prompt: str,
     return result.text
 
 
-def handoff(file_path: str) -> str:
-    """读取上游 agent 通过文件传递的 handoff 内容。"""
-    if file_path and os.path.exists(file_path):
-        with open(file_path, "r", encoding="utf-8") as f:
-            return f.read()
-    return ""
+def _letter_path(name: str) -> str:
+    """生成 handoff 信件路径。"""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    handoff_dir = os.path.join(root, ".agent_runtime", "handoffs")
+    os.makedirs(handoff_dir, exist_ok=True)
+    ws = os.path.basename(os.getcwd())
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    return os.path.join(handoff_dir, f"{name}-{ws}-{ts}.md")
+
+
+def write_letter(runtime, sender, conv, letter_path, title, prompt):
+    """sender 在 conv 对话中写一封信到 letter_path。"""
+    call_agent(runtime, sender, conv,
+               f"请以 **{sender}** 的身份写一封信。\n\n"
+               f"## 信件标题\n{title}\n\n"
+               f"## 要求\n{prompt}\n\n"
+               f"请将信件完整写入文件：{letter_path}")
+    if not os.path.exists(letter_path):
+        raise RuntimeError(f"{sender} 未生成信件：{letter_path}")
+
+
+def read_letter(runtime, receiver, conv, letter_path, task):
+    """receiver 读 letter_path 后执行 task。读完删信。返回 receiver 回复。"""
+    if not os.path.exists(letter_path):
+        raise RuntimeError(f"信件不存在：{letter_path}")
+    with open(letter_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    os.remove(letter_path)
+    return call_agent(runtime, receiver, conv,
+                      f"请阅读以下信件，然后{task}\n\n## 信件内容\n{content}")
 
 
 def setup_runtime(config_path: str = None) -> ap.AgentRuntime:
@@ -259,31 +283,21 @@ def pm_handoff(state: WorkflowState) -> dict:
         raise RuntimeError(f"project_context.md 不存在：{project_context_path}")
 
     master_conv = _conv_name("master-to-pm")
-    handoff_dir = os.path.join(os.path.dirname(project_context_path), "handoffs")
-    master_to_pm_path = os.path.join(handoff_dir, "master_to_pm.md")
-    os.makedirs(handoff_dir, exist_ok=True)
-
     runtime.conversations.init_conversation("master", master_conv,
                                             MASTER_SYSTEM_PROMPT.strip())
-    call_agent(runtime, "master", master_conv,
-               f"以下是项目顶层决策记录的地址：\n{project_context_path}\n\n"
-               f"现在请以 Master 的身份写一封给 PM agent 的信，"
-               f"写入文件 {master_to_pm_path}。\n"
-               "信件的目的是让 PM 理解项目上下文并确认信息是否足够，而不是直接派活。\n\n"
-               "信件需包含：\n"
-               "1. 开宗明义：这是 Master 给 PM 的信\n"
-               "2. 项目概况和核心需求（简要描述即可）\n"
-               f"3. 告知 PM 详细内容在项目顶层决策文件中，路径：{project_context_path}，让 PM 自行阅读\n"
-               "4. 要求 PM：先汇报你对项目的理解和疑问，得到 Master 明确许可后才能动手产出\n"
-               "5. 强调：在确认之前，不得开始写 PRD 或原型\n\n"
-               "信件要有 Master 的口吻，是上级对下级的沟通与任务委派。")
 
-    upstream_doc = handoff(master_to_pm_path)
-    if not upstream_doc:
-        raise RuntimeError(f"handoff 文件不存在：{master_to_pm_path}")
-    os.remove(master_to_pm_path)
+    letter_path = _letter_path("master-to-pm")
+    write_letter(runtime, "master", master_conv, letter_path,
+                 "Master 给 PM 的信",
+                 f"介绍项目上下文。信件需包含：\n"
+                 "1. 开宗明义：这是 Master 给 PM 的信\n"
+                 "2. 项目概况和核心需求（简要描述即可）\n"
+                 f"3. 告知 PM 详细内容在项目顶层决策文件中，路径：{project_context_path}，让 PM 自行阅读\n"
+                 "4. 要求 PM：先汇报你对项目的理解和疑问，得到 Master 明确许可后才能动手产出\n"
+                 "5. 强调：在确认之前，不得开始写 PRD 或原型\n\n"
+                 "信件要有 Master 的口吻，是上级对下级的沟通与任务委派。")
 
-    runtime.context.set_ctx("pm_upstream_doc", upstream_doc)
+    runtime.context.set_ctx("pm_letter_path", letter_path)
     print(f"\n  ── Master 给 PM 的信件已就绪 ──")
     return {"phase": "pm_handoff_done"}
 
@@ -291,12 +305,8 @@ def pm_handoff(state: WorkflowState) -> dict:
 def pm_align(state: WorkflowState) -> dict:
     """Phase 1b: PM 读信，汇报理解 + 列出疑问。
 
-    首次调用时发 handoff 信；循环中再次调用时发 Master 的回复让 PM 确认。"""
+    首次调用时读 handoff 信；循环中 Master 先写信，PM 再读。"""
     runtime = getattr(pm_align, "_runtime", None)
-
-    upstream_doc = runtime.context.get_ctx("pm_upstream_doc")
-    if not upstream_doc:
-        raise RuntimeError("没有 handoff 内容")
 
     pm_conv = runtime.context.get_ctx("pm_conv")
     if not pm_conv:
@@ -308,27 +318,27 @@ def pm_align(state: WorkflowState) -> dict:
 
     master_reply = runtime.context.get_ctx("master_reply")
     if master_reply:
-        # 循环中再次调用：Master 已回复，让 PM 确认是否清楚
-        prompt = (
-            f"Master 对你的疑问做出了回复：\n{master_reply}\n\n"
-            "请仔细阅读后确认：\n"
-            "1. 所有疑问是否已得到解答？\n"
-            "2. 是否有新的疑问？\n"
-            "3. 如果全部清楚，确认可以进入下一阶段"
-        )
+        # 循环：Master 先写正式答复信，PM 再读
+        conv_clarify = runtime.context.get_ctx("conv_clarify")
+        master_letter_path = _letter_path("master-to-pm-reply")
+        write_letter(runtime, "master", conv_clarify, master_letter_path,
+                     "Master 给 PM 的答复",
+                     "你在刚才的分析中已核对了 PM 的理解并回答了疑问。"
+                     "请将你的结论写成正式信件给 PM。\n"
+                     "逐一核对 PM 的理解是否正确，回答所有疑问。"
+                     "如果 PM 的理解完全正确且无疑问，也请告知 PM。")
+        reply = read_letter(runtime, "pm", pm_conv, master_letter_path,
+                            "仔细阅读 Master 的答复，确认是否清楚所有疑问。"
+                            "如有新的疑问也一并提出。"
+                            "在 Master 明确许可之前，不得开始写 PRD 或原型。")
     else:
-        # 首次调用：发 handoff 信件
-        prompt = role_aware_prompt(
-            role="PM",
-            upstream="Master",
-            upstream_doc=upstream_doc,
-            deliverable="对项目需求的理解汇报和疑问清单",
-            downstream="Master",
-            downstream_needs="确认 PM 正确理解了项目范围和目标，如果有疑问需要解答后再开始工作",
-        ) + ("\n\n阅读 Master 给你的信以及项目顶层决策文件。请汇报你对项目的理解，并列出你的疑问。"
-              "在 Master 明确许可之前，不要开始写 PRD 或原型。")
-
-    reply = call_agent(runtime, "pm", pm_conv, prompt)
+        # 首次：读 handoff 信
+        letter_path = runtime.context.get_ctx("pm_letter_path")
+        if not letter_path:
+            raise RuntimeError("没有 handoff 信件路径")
+        reply = read_letter(runtime, "pm", pm_conv, letter_path,
+                            "写一封回信汇报你对项目的理解和疑问。"
+                            "在 Master 明确许可之前，不得开始写 PRD 或原型。")
 
     runtime.context.set_ctx("pm_reply", reply)
     return {"phase": "pm_align_done"}
@@ -409,59 +419,48 @@ def clarify_inject(state: WorkflowState) -> dict:
 
 
 def pm_write_doc(state: WorkflowState) -> dict:
-    """Phase 1e: PM 产出 PRD.md + prototype.html（对齐完成后）。"""
+    """Phase 1e: Master 写信指令 → PM 产出 PRD.md + prototype.html。"""
     runtime = getattr(pm_write_doc, "_runtime", None)
     pm_conv = runtime.context.get_ctx("pm_conv")
-    upstream_doc = runtime.context.get_ctx("pm_upstream_doc")
-
     if not pm_conv:
         pm_conv = _conv_name("pm-doc")
         runtime.context.set_ctx("pm_conv", pm_conv)
-    if not upstream_doc:
-        raise RuntimeError("没有 handoff 内容")
 
     runtime.logger.log_event("phase_started", detail="PM 出方案")
     print(f"\n  ── PM 出方案 ──")
 
-    # Call 1 — PM 写 PRD
-    prd_text = call_agent(runtime, "pm", pm_conv, role_aware_prompt(
-        role="PM",
-        upstream="Master",
-        upstream_doc=upstream_doc,
-        deliverable="PRD.md 需求文档",
-        downstream="Dev（开发工程师）",
-        downstream_needs="清晰的功能列表、验收标准、页面结构描述、MVP 边界定义",
-    ) + "\n\n请输出 PRD.md 的完整内容，包含：项目概述、功能需求、MVP 范围、页面结构、验收标准。")
+    conv_clarify = runtime.context.get_ctx("conv_clarify")
+    if not conv_clarify:
+        raise RuntimeError("clarify conversation 不存在")
 
-    # Call 2 — PM 写 prototype
-    prototype_text = call_agent(runtime, "pm", pm_conv, role_aware_prompt(
-        role="PM",
-        upstream="Master",
-        upstream_doc=upstream_doc,
-        deliverable="prototype.html 静态原型文件",
-        downstream="Dev（开发工程师）",
-        downstream_needs="可直接在浏览器中打开运行的 HTML 原型，展示页面布局和核心交互",
-    ) + "\n\n请基于 PRD 生成一个完整的 prototype.html。要求：单文件自包含（CSS/JS 内嵌），可双击在浏览器中直接打开，包含核心交互和布局。")
-
-    # 写文件
     script_dir = os.path.dirname(os.path.abspath(__file__))
     output_dir = os.path.join(script_dir, "..", "test")
     os.makedirs(output_dir, exist_ok=True)
 
+    # Call 1 — Master 写信要求 PRD，PM 直接写入 prd_path
     prd_path = os.path.join(output_dir, "PRD.md")
-    with open(prd_path, "w", encoding="utf-8") as f:
-        f.write(prd_text)
-    print(f"  ✓ 已写入 {prd_path}")
+    prd_letter = _letter_path("master-prd")
+    write_letter(runtime, "master", conv_clarify, prd_letter,
+                 "PRD 编写说明",
+                 "请以 Master 的身份给 PM 写信，要求 PM 输出 PRD.md 并写入指定文件。\n"
+                 "需包含：项目概述、功能需求、MVP 范围、页面结构、验收标准。")
+    read_letter(runtime, "pm", pm_conv, prd_letter,
+                f"按信中的要求编写 PRD.md，写入文件 {prd_path}。")
 
+    # Call 2 — Master 写信要求原型，PM 直接写入 proto_path
     proto_path = os.path.join(output_dir, "prototype.html")
-    with open(proto_path, "w", encoding="utf-8") as f:
-        f.write(prototype_text)
-    print(f"  ✓ 已写入 {proto_path}")
+    proto_letter = _letter_path("master-prototype")
+    write_letter(runtime, "master", conv_clarify, proto_letter,
+                 "原型编写说明",
+                 "请以 Master 的身份给 PM 写信，要求基于 PRD 产出 prototype.html 并写入指定文件。\n"
+                 "单文件自包含（CSS/JS 内嵌），可双击在浏览器中直接打开，包含核心交互和布局。")
+    read_letter(runtime, "pm", pm_conv, proto_letter,
+                f"按信中要求编写 prototype.html，写入文件 {proto_path}。")
 
-    runtime.context.set_ctx("pm_prd", prd_text)
-    runtime.context.set_ctx("pm_prototype", prototype_text)
+    print(f"  ✓ {prd_path}")
+    print(f"  ✓ {proto_path}")
+
     runtime.context.set_phase_node(["PM 出方案"], "done")
-
     runtime.logger.log_event("phase_completed", detail="PM 方案完成")
     return {"phase": "done"}
 
