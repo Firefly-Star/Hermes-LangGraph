@@ -91,8 +91,11 @@ def _judge_clarify(runtime, reply: str) -> str:
     return result.strip()
 
 
-def _clarify_loop(runtime, conv, first_hint: str, on_done):
-    """通用澄清循环。用户↔Master↔judge↔确认，直到 CONFIRMED。"""
+def _clarify_loop(runtime, conv, title: str, first_hint: str, on_done):
+    """通用澄清循环。用户↔Master↔judge↔确认，直到 CONFIRMED。
+
+    title: checkpoint 标题（如 "== 需求澄清 =="）
+    """
     end_word = runtime.config.get("input_end_word") or None
 
     round_num = 0
@@ -102,7 +105,7 @@ def _clarify_loop(runtime, conv, first_hint: str, on_done):
             else "请回答 Master 的疑问，或输入 CONFIRMED 直接结束："
 
         cp = runtime.checkpoint.wait(
-            f"需求澄清 — 第 {round_num} 轮", hint,
+            title, hint,
             prompt="输入内容后按 Enter：", end_word=end_word,
         )
         user_input = cp.message.strip()
@@ -123,7 +126,7 @@ def _clarify_loop(runtime, conv, first_hint: str, on_done):
                 break
 
             cp = runtime.checkpoint.wait(
-                f"需求澄清 — 第 {round_num} 轮 (确认)",
+                f"{title} (确认)",
                 "Master 已确认理解需求。认可的话输入 CONFIRMED 进入下一阶段；"
                 "不认可则说明哪里不对：",
                 prompt="输入内容后按 Enter：", end_word=end_word,
@@ -149,7 +152,14 @@ def call_agent(runtime, agent: str, conversation: str, prompt: str,
     print(f"  → 调 {agent}/{conversation}... ", end="", flush=True)
     t0 = time.time()
 
-    print(f"\n──── Request ────\n{prompt}\n──── Response ────")
+    def on_tool(name, args):
+        print(f"\n  ── TOOL {name} ──")
+        for k, v in args.items():
+            if isinstance(v, str) and len(v) > 200:
+                v = v[:200] + "..."
+            print(f"     {k}: {v}", flush=True)
+
+    print(f"\n──── Request: {agent}/{conversation} ────\n{prompt}\n──── {agent}'s Response ────")
 
     if stream:
         print(flush=True)
@@ -158,7 +168,8 @@ def call_agent(runtime, agent: str, conversation: str, prompt: str,
             print(chunk, end="", flush=True)
             text_parts.append(chunk)
         result = runtime.conversations.call(
-            agent, conversation, prompt, timeout=timeout, stream_callback=on_chunk)
+            agent, conversation, prompt, timeout=timeout,
+            stream_callback=on_chunk, tool_callback=on_tool)
         print()
     else:
         result = runtime.conversations.call(agent, conversation, prompt, timeout=timeout)
@@ -168,12 +179,14 @@ def call_agent(runtime, agent: str, conversation: str, prompt: str,
         print(f"  [FAIL] ({elapsed:.0f}s)")
         raise RuntimeError(f"[{agent}/{conversation}] 调用失败: {result.error}")
 
-    tool_info = ""
+    # 统计工具调用（只用于 token 统计显示）
+    tool_names = []
     if result.raw_data:
-        tools = [i["name"] for i in result.raw_data.get("output", []) if i.get("type") == "function_call"]
-        if tools:
-            tool_info = f" tools:[{','.join(tools)}]"
+        for item in result.raw_data.get("output", []):
+            if item.get("type") == "function_call":
+                tool_names.append(item.get("name", ""))
 
+    tool_info = f" tools:[{','.join(tool_names)}]" if tool_names else ""
     print(f"  ✓ ({elapsed:.0f}s, {result.input_tokens + result.output_tokens} tokens{tool_info})")
     return result.text
 
@@ -250,6 +263,8 @@ def pre_flight_clarify(state: WorkflowState) -> dict:
     runtime = getattr(pre_flight_clarify, "_runtime", None)
     conv = _conv_name("clarify")
 
+    print(f"\n{'='*50}\n  ==> Phase 0: 需求澄清\n{'='*50}")
+
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     project_context_path = os.path.join(root, ".agent_runtime", "project_context.md")
 
@@ -270,13 +285,15 @@ def pre_flight_clarify(state: WorkflowState) -> dict:
         runtime.context.set_bg("project_context_path", project_context_path)
         runtime.context.set_bg("clarification", f"项目顶层决策文件：{project_context_path}")
 
-    _clarify_loop(runtime, conv, "请描述你的需求", _close)
+    _clarify_loop(runtime, conv, "== 需求澄清 ==", "请描述你的需求", _close)
     return {"phase": "done"}
 
 
 def pm_handoff(state: WorkflowState) -> dict:
     """Phase 1a: Master 写 handoff 信给 PM。"""
     runtime = getattr(pm_handoff, "_runtime", None)
+
+    print(f"\n{'='*60}\n  ==> Phase 1a: Master 写信给 PM\n{'='*60}")
 
     project_context_path = runtime.context.get_bg("project_context_path")
     if not project_context_path or not os.path.exists(project_context_path):
@@ -414,7 +431,7 @@ def clarify_inject(state: WorkflowState) -> dict:
                    f"请将本轮确认的决策记录到项目顶层决策记录文件的合适位置中：{project_context_path}")
         runtime.logger.log_event("clarification_done", detail=reason)
 
-    _clarify_loop(runtime, conv_clarify, "请回答 Master 的疑问", _close)
+    _clarify_loop(runtime, conv_clarify, "== 向用户确认 ==", "请回答 Master 的疑问", _close)
     return {"phase": "clarify_done"}
 
 

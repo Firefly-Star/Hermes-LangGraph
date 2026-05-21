@@ -281,7 +281,8 @@ class ConversationManager:
         self._registry_path = os.path.join(pool_dir, "registry.json")
 
     def call(self, agent: str, conversation: str, input_text: str,
-             timeout: int = None, stream_callback: callable = None) -> CallResult:
+             timeout: int = None, stream_callback: callable = None,
+             tool_callback: callable = None) -> CallResult:
         cfg = self._agents.get_config(agent)
         if not cfg:
             return CallResult(False, "", error=f"agent {agent} 不存在")
@@ -293,7 +294,7 @@ class ConversationManager:
         t0 = time.time()
 
         if stream_callback:
-            return self._call_stream(agent, conversation, input_text, port, api_key, timeout, stream_callback, t0)
+            return self._call_stream(agent, conversation, input_text, port, api_key, timeout, stream_callback, t0, tool_callback)
 
         max_retry = self._config.get("max_retry")
         last_error = None
@@ -368,7 +369,7 @@ class ConversationManager:
                 convs.append(conversation)
                 _write_json(self._registry_path, data)
 
-    def _call_stream(self, agent, conversation, input_text, port, api_key, timeout, callback, t0):
+    def _call_stream(self, agent, conversation, input_text, port, api_key, timeout, callback, t0, tool_callback=None):
         """流式调用 Hermes Gateway。timeout 只约束连接和首块到达时间。"""
         try:
             resp = requests.post(
@@ -401,6 +402,18 @@ class ConversationManager:
                 if txt:
                     text_parts.append(txt)
                     callback(txt)
+            elif et == "response.output_item.added":
+                item = data.get("item", {})
+                if item.get("type") == "function_call":
+                    if tool_callback:
+                        name = item.get("name", "")
+                        args = item.get("arguments", "{}")
+                        if isinstance(args, str):
+                            try:
+                                args = json.loads(args)
+                            except json.JSONDecodeError:
+                                args = {"raw": args}
+                        tool_callback(name, args)
             elif et == "response.completed":
                 raw_data = data.get("response", {})
                 break
