@@ -22,6 +22,7 @@ AGENT_CONFIGS = {
     "master": {"profile": "cg", "port": 8642},
     "judge":  {"profile": "cg", "port": 8642},
     "pm":     {"profile": "pm", "port": 8643},
+    "dev":    {"profile": "dev", "port": 8644},
     "reviewer": {"profile": "cg", "port": 8642},
 }
 
@@ -299,6 +300,13 @@ def pre_flight_clarify(state: WorkflowState) -> dict:
 
     print(f"\n{'='*50}\n  ==> Phase 0: 需求澄清\n{'='*50}")
 
+    # 清理上一轮运行的 session context，避免残留 key 干扰
+    for key in ["master_reply", "pm_reply_text", "pm_reply_path", "pm_letter_path",
+                "pm_criteria", "pm_criteria_self_check", "pm_criteria_path",
+                "review_result", "human_feedback", "pm_align_round",
+                "dev_conv", "dev_letter_path", "dev_feedback_path"]:
+        runtime.context.set_ctx(key, "")
+
     project_context_path = os.path.join(runtime.runtime_dir, "project_context.md")
 
     runtime.logger.log_event("phase_started", detail="需求澄清")
@@ -363,12 +371,13 @@ def pm_align(state: WorkflowState) -> dict:
         pm_conv = _conv_name("pm-align")
         runtime.context.set_ctx("pm_conv", pm_conv)
 
-    runtime.logger.log_event("phase_started", detail="PM 对齐理解")
-    print(f"\n  ── PM 对齐理解 ──")
+    round_num = int(runtime.context.get_ctx("pm_align_round") or 0)
 
-    master_reply = runtime.context.get_ctx("master_reply")
+    runtime.logger.log_event("phase_started", detail="PM 对齐理解")
+    print(f"\n  ── PM 对齐理解（第 {round_num + 1} 轮）──")
+
     pm_reply_path = _letter_path(runtime, "pm-reply")
-    if master_reply:
+    if round_num > 0:
         # 循环：Master 先写正式答复信，PM 读信后写回信
         master_conv = runtime.context.get_ctx("master_conv")
         master_letter_path = _letter_path(runtime, "master-to-pm-reply")
@@ -397,6 +406,8 @@ def pm_align(state: WorkflowState) -> dict:
                               "写一封回信汇报你对项目的理解和疑问。"
                               "列出不清楚或需要 Master 确认的地方。",
                               "在 Master 明确许可之前，不得开始写 PRD 或原型。")
+
+    runtime.context.set_ctx("pm_align_round", str(round_num + 1))
 
     runtime.context.set_ctx("pm_reply_path", pm_reply_path)
     # 缓存回信内容，供 master_reply_pm 重读（文件可能被 read_letter 删除）
@@ -692,12 +703,185 @@ def human_review(state: WorkflowState) -> dict:
     return {"phase": "human_review_rejected", "judge_result": "review_pm_output"}
 
 
+def dev_handoff(state: WorkflowState) -> dict:
+    """Phase 2a: Master 写 handoff 信给 Dev。"""
+    runtime = getattr(dev_handoff, "_runtime", None)
+    print(f"\n{'='*60}\n  ==> Phase 2a: Master 写信给 Dev\n{'='*60}")
+
+    master_conv = runtime.context.get_ctx("master_conv")
+    project_context_path = runtime.context.get_bg("project_context_path")
+    ws = runtime.workspace
+
+    letter_path = _letter_path(runtime, "master-to-dev")
+    write_letter(runtime, "master", master_conv, letter_path,
+                 "Master 给 Dev 的信",
+                 f"介绍项目上下文。信件需包含：\n"
+                 "1. 开宗明义：这是 Master 给 Dev 的信\n"
+                 "2. 项目概况和核心需求（简要描述即可）\n"
+                 f"3. 告知 Dev 详细内容在以下文件：\n"
+                 f"   项目顶层决策：{project_context_path}\n"
+                 f"   PRD：{ws}/PM/PRD.md\n"
+                 f"   原型：{ws}/PM/prototype.html\n"
+                 "4. 要求 Dev：先阅读以上所有文档，然后写出你对需求的理解总结和疑问清单\n"
+                 "5. 你的直接对接人是 PM，PM 无法回答的问题会由 Master 处理\n"
+                 "6. 在 PM 明确许可之前，不得开始写详细设计\n\n"
+                 "信件要有 Master 的口吻，是上级对下级的沟通与任务委派。")
+
+    runtime.context.set_ctx("dev_letter_path", letter_path)
+    print(f"\n  ── Master 给 Dev 的信件已就绪 ──")
+    return {"phase": "dev_handoff_done"}
+
+
+def dev_align(state: WorkflowState) -> dict:
+    """Phase 2b: Dev↔PM/Master 对齐循环。
+
+    Dev 写信（理解+疑问），PM 审答疑，需升级则 Master 介入。"""
+    runtime = getattr(dev_align, "_runtime", None)
+    master_conv = runtime.context.get_ctx("master_conv")
+    ws = runtime.workspace
+
+    dev_conv = runtime.context.get_ctx("dev_conv")
+    if not dev_conv:
+        dev_conv = _conv_name("dev-align")
+        runtime.context.set_ctx("dev_conv", dev_conv)
+
+    pm_conv = runtime.context.get_ctx("pm_conv")
+    if not pm_conv:
+        pm_conv = _conv_name("pm-align")
+        runtime.context.set_ctx("pm_conv", pm_conv)
+
+    runtime.logger.log_event("phase_started", detail="Dev 对齐")
+    print(f"\n{'='*60}\n  ==> Phase 2b: Dev 对齐（Dev ↔ PM / Master）\n{'='*60}")
+
+    is_first = True
+    while True:
+        if is_first:
+            # 首次：Dev 读 handoff 信，写理解+疑问
+            handoff_path = runtime.context.get_ctx("dev_letter_path")
+            if not handoff_path:
+                raise RuntimeError("没有 handoff 信件路径")
+            dev_reply_path = _letter_path(runtime, "dev-understanding")
+            read_and_write_letter(runtime, "dev", dev_conv,
+                                  handoff_path, dev_reply_path,
+                                  "From Dev, Re: Master 的委托",
+                                  "阅读所有项目文档后，"
+                                  "写出你对项目需求的理解总结，"
+                                  "以及不清楚或有疑问的地方的清单。",
+                                  "在 PM 明确许可之前，不得开始写详细设计")
+            is_first = False
+        else:
+            # 后续：Dev 读反馈信（来自 PM 或 Master），修订理解
+            feedback_path = runtime.context.get_ctx("dev_feedback_path")
+            if not feedback_path or not os.path.exists(feedback_path):
+                raise RuntimeError("Dev 反馈信缺失")
+            dev_reply_path = _letter_path(runtime, "dev-understanding")
+            read_and_write_letter(runtime, "dev", dev_conv,
+                                  feedback_path, dev_reply_path,
+                                  "From Dev, Re: 修订后的理解",
+                                  "根据上轮反馈修订你的理解总结，"
+                                  "如果有新的疑问也一并提出。"
+                                  "如果已经没有疑问，明确说明已无疑问。",
+                                  "在 PM 明确许可之前，不得开始写详细设计")
+
+        # PM 读 Dev 的信，审理解 + 答疑问
+        pm_reply_path = _letter_path(runtime, "pm-reply-dev")
+        read_and_write_letter(runtime, "pm", pm_conv,
+                              dev_reply_path, pm_reply_path,
+                              "From PM, Re: Dev 的理解与疑问",
+                              "逐一检查 Dev 的理解是否正确，有误则纠正。"
+                              "回答 Dev 的所有疑问。"
+                              "有无法回答的问题，在对应处标记 ❓需要升级。"
+                              "如果 Dev 的理解完全正确且无疑问，也请明确说明。"
+                              "不得许可 Dev 写详细设计。"
+                              "注意：如果需要升级到 Master，你的回信中必须包含"
+                              "Dev 对项目的全部理解和全部疑问清单"
+                              "（包括你已解答的和需要升级给 Master 的），"
+                              "以便 Master 掌握完整上下文。",
+                              "审 Dev 的理解并回答问题")
+
+        # 缓存 PM 回信内容
+        pm_reply = ""
+        if os.path.exists(pm_reply_path):
+            with open(pm_reply_path, "r", encoding="utf-8") as f:
+                pm_reply = f.read()
+            runtime.context.set_ctx("pm_reply_text", pm_reply)
+
+        # judge 判读 + marker 双重检查
+        judge_result = judge_reply(runtime, "PM", pm_reply, [
+            "A. Dev 理解完全正确且无疑问，无需修改",
+            "B. PM 有反馈需要 Dev 修改或回答疑问",
+            "C. PM 有需要升级到 Master 的问题",
+        ], "judge-dev-align")
+        needs_upgrade = "❓" in pm_reply
+
+        # 升级条件：judge 说 C 或 marker 检测到 ❓
+        if judge_result in ("C",) or needs_upgrade:
+            print(f"\n  ── 升级到 Master ──")
+            # PM 的回复已包含升级请求，转发给 Master
+            master_reply_path = _letter_path(runtime, "master-reply-dev")
+            read_and_write_letter(runtime, "master", master_conv,
+                                  pm_reply_path, master_reply_path,
+                                  "From Master, Re: Dev 对齐中的争议",
+                                  "阅读 PM 的报告，逐条回答 PM 无法解决的问题。"
+                                  "如果 PM 报告中有你无法判定的问题，明确写出需要向用户确认。"
+                                  "你的回复中将包含 Dev 对项目的全部理解和全部疑问清单"
+                                  "（包括 PM 已解答的和需要升级给你的），"
+                                  "确保 Dev 收到后掌握完整的对齐结论。",
+                                  "回答 Dev 对齐中升级上来的问题")
+
+            # 判读 Master 回复
+            master_reply = ""
+            if os.path.exists(master_reply_path):
+                with open(master_reply_path, "r", encoding="utf-8") as f:
+                    master_reply = f.read()
+
+            master_judge = judge_reply(runtime, "Master", master_reply, [
+                "A. Master 已解决所有问题",
+                "B. Master 还有疑问需要向用户确认",
+            ], "judge-dev-master")
+
+            if master_judge == "B" or "❓" in master_reply:
+                # Master 需要向用户确认
+                print(f"\n  ── Master 需要向用户确认 ──")
+
+                def _close(reason: str):
+                    pc_path = runtime.context.get_bg("project_context_path")
+                    call_agent(runtime, "master", master_conv,
+                               f"请将本轮确认的决策记录到项目顶层决策记录文件的合适位置中：{pc_path}")
+
+                _clarify_loop(runtime, master_conv, "== 向用户确认（Dev 对齐）==",
+                             "Master 需要向用户确认 Dev 对齐中的争议问题", _close)
+
+                # Master 写最终答复给 Dev
+                final_path = _letter_path(runtime, "master-final-dev")
+                write_letter(runtime, "master", master_conv, final_path,
+                            "Master 给 Dev 的最终答复",
+                            "根据用户确认的决策以及你的分析，"
+                            "写出对 Dev 对齐中所有问题的最终答复。")
+                runtime.context.set_ctx("dev_feedback_path", final_path)
+            else:
+                runtime.context.set_ctx("dev_feedback_path", master_reply_path)
+
+        elif judge_result == "B":
+            # PM 有反馈，直接回 Dev
+            runtime.context.set_ctx("dev_feedback_path", pm_reply_path)
+
+        else:  # A
+            # 理解正确 + 无疑问，对齐完成
+            runtime.logger.log_event("phase_completed", detail="Dev 对齐完成")
+            print(f"\n  ✓ Dev 对齐完成")
+            if os.path.exists(pm_reply_path):
+                os.remove(pm_reply_path)
+            return {"phase": "dev_align_done"}
+
+
 def build_graph(runtime) -> StateGraph:
     """构建 LangGraph StateGraph。"""
     for f in [pre_flight_clarify, pm_handoff, pm_align,
               master_reply_pm, judge_master_reply, clarify_inject,
               pm_write_criteria, pm_write_doc,
-              review_pm_output, human_review]:
+              review_pm_output, human_review,
+              dev_handoff, dev_align]:
         f._runtime = runtime
 
     graph = StateGraph(WorkflowState)
@@ -711,6 +895,8 @@ def build_graph(runtime) -> StateGraph:
     graph.add_node("pm_write_doc", pm_write_doc)
     graph.add_node("review_pm_output", review_pm_output)
     graph.add_node("human_review", human_review)
+    graph.add_node("dev_handoff", dev_handoff)
+    graph.add_node("dev_align", dev_align)
 
     graph.set_entry_point("pre_flight_clarify")
     graph.add_edge("pre_flight_clarify", "pm_handoff")
@@ -726,7 +912,12 @@ def build_graph(runtime) -> StateGraph:
     graph.add_conditional_edges("pm_write_criteria", lambda s: s.get("judge_result", ""))
     graph.add_edge("pm_write_doc", "review_pm_output")
     graph.add_conditional_edges("review_pm_output", lambda s: s.get("judge_result", ""))
-    graph.add_conditional_edges("human_review", lambda s: s.get("judge_result", ""))
+    graph.add_conditional_edges("human_review", lambda s: s.get("judge_result", ""), {
+        END: "dev_handoff",
+        "review_pm_output": "review_pm_output",
+    })
+    graph.add_edge("dev_handoff", "dev_align")
+    graph.add_edge("dev_align", END)
 
     return graph.compile(checkpointer=MemorySaver())
 
