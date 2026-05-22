@@ -609,6 +609,54 @@ def dev_write_criteria(state: WorkflowState) -> dict:
     return {"phase": "dev_criteria_done", "judge_result": "dev_write_design" if passed else "dev_write_criteria"}
 
 
+def dev_write_design(state: WorkflowState) -> dict:
+    """Master 写信指令 → Dev 产出详细设计方案。"""
+    runtime = getattr(dev_write_design, "_runtime", None)
+    dev_conv = runtime.context.get_ctx("dev_conv")
+    if not dev_conv:
+        dev_conv = _conv_name("dev-design")
+        runtime.context.set_ctx("dev_conv", dev_conv)
+
+    runtime.logger.log_event("phase_started", detail="Dev 出详细设计")
+    print(f"\n  ── Dev 出详细设计 ──")
+
+    master_conv = runtime.context.get_ctx("master_conv")
+    if not master_conv:
+        raise RuntimeError("master conversation 不存在")
+
+    dev_dir = os.path.join(runtime.workspace, "Dev")
+    os.makedirs(dev_dir, exist_ok=True)
+
+    criteria_path = runtime.context.get_ctx("dev_criteria_path") or ""
+    criteria_ref = ""
+    if criteria_path and os.path.exists(criteria_path):
+        criteria_ref = f"\n审核标准文件（Dev 需对着这些标准写，Reviewer 将用来审查）：{criteria_path}"
+
+    design_path = os.path.join(dev_dir, "design.md")
+    design_letter_path = _letter_path(runtime, "master-design")
+    write_letter(runtime, "master", master_conv, design_letter_path,
+                 "详细设计编写说明",
+                 "请以 Master 的身份给 Dev 写信，要求 Dev 输出详细设计方案并写入指定文件。\n"
+                 "需包含：系统架构、数据流设计、路由/API 定义、组件结构、关键实现逻辑。\n"
+                 "需要告知 Dev，在它写详细设计之前，需要考虑以下问题：\n"
+                 "1. 它的上游是谁（PM），给了它哪些上下文（PRD、原型），"
+                 "这些上下文该如何约束它进行详细设计的编写。\n"
+                 "2. 它的下游是谁（QA），会如何从它的产出中获得约束和信息。\n"
+                 "3. 确保产出不是模板化的文字堆砌，而是真正能为下游提供 actionable 的信息。\n"
+                 "4. 确保具体、可操作，避免空泛描述。\n"
+                 "5. 在这个阶段中，只要求产出详细设计文档，"
+                 "代码实现需要等进一步指令后再进行。"
+                 + criteria_ref)
+    read_letter(runtime, "dev", dev_conv, design_letter_path,
+                f"按信中的要求编写详细设计方案，写入文件 {design_path}。")
+
+    print(f"  ✓ {design_path}")
+
+    runtime.context.set_phase_node(["Dev 出详细设计"], "done")
+    runtime.logger.log_event("phase_completed", detail="Dev 详细设计完成")
+    return {"phase": "dev_design_done", "judge_result": "pass"}
+
+
 def pm_write_doc(state: WorkflowState) -> dict:
     """Phase 1e: Master 写信指令 → PM 产出 PRD.md + prototype.html。"""
     runtime = getattr(pm_write_doc, "_runtime", None)
@@ -934,7 +982,7 @@ def build_graph(runtime) -> StateGraph:
               master_reply_pm, judge_master_reply, clarify_inject,
               pm_write_criteria, pm_write_doc,
               review_pm_output, human_review,
-              dev_handoff, dev_align, dev_write_criteria]:
+              dev_handoff, dev_align, dev_write_criteria, dev_write_design]:
         f._runtime = runtime
 
     graph = StateGraph(WorkflowState)
@@ -951,6 +999,7 @@ def build_graph(runtime) -> StateGraph:
     graph.add_node("dev_handoff", dev_handoff)
     graph.add_node("dev_align", dev_align)
     graph.add_node("dev_write_criteria", dev_write_criteria)
+    graph.add_node("dev_write_design", dev_write_design)
 
     graph.set_entry_point("pre_flight_clarify")
     graph.add_edge("pre_flight_clarify", "pm_handoff")
@@ -963,16 +1012,26 @@ def build_graph(runtime) -> StateGraph:
         "C": "clarify_inject",
     })
     graph.add_edge("clarify_inject", "master_reply_pm")
-    graph.add_conditional_edges("pm_write_criteria", lambda s: s.get("judge_result", ""))
+    graph.add_conditional_edges("pm_write_criteria", lambda s: s.get("judge_result", ""), {
+        "pm_write_doc": "pm_write_doc",
+        "pm_write_criteria": "pm_write_criteria",
+    })
     graph.add_edge("pm_write_doc", "review_pm_output")
-    graph.add_conditional_edges("review_pm_output", lambda s: s.get("judge_result", ""))
+    graph.add_conditional_edges("review_pm_output", lambda s: s.get("judge_result", ""), {
+        "human_review": "human_review",
+        "pm_write_doc": "pm_write_doc",
+    })
     graph.add_conditional_edges("human_review", lambda s: s.get("judge_result", ""), {
         END: "dev_handoff",
         "review_pm_output": "review_pm_output",
     })
     graph.add_edge("dev_handoff", "dev_align")
     graph.add_edge("dev_align", "dev_write_criteria")
-    graph.add_conditional_edges("dev_write_criteria", lambda s: s.get("judge_result", ""))
+    graph.add_conditional_edges("dev_write_criteria", lambda s: s.get("judge_result", ""), {
+        "dev_write_design": "dev_write_design",
+        "dev_write_criteria": "dev_write_criteria",
+    })
+    graph.add_edge("dev_write_design", END)
 
     return graph.compile(checkpointer=MemorySaver())
 
