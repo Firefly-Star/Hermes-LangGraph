@@ -64,6 +64,19 @@ MASTER_SYSTEM_PROMPT = """
 4. QA 测试（由 workflow 调 qa agent）
 5. 交付
 
+## 工作文件夹
+项目工作目录：{workspace}
+产出路径规则：
+- 审核标准：{workspace}/test/criteria.md
+- PRD:      {workspace}/test/PRD.md
+- 原型:     {workspace}/test/prototype.html
+- 设计稿:   {workspace}/test/ui_design.html
+
+## Agent 间通信机制
+- **只能通过信件通信** — 给其他 agent 的信息通过 write_letter() 写文件，对方通过 read_letter() 读取
+- **信件格式** — 必须包含：发件人、收件人、目的（上游/下游/参考）、正文
+- **不要直接在对话里引用其他 agent 的对话内容** — 其他 agent 看不到你的对话
+
 ## 核心原则
 1. **Review 不可跳过** — 每个专业 agent 的输出必须审查，再小也不能省
 2. **执行与验证分离** — 写代码的 agent 不能自己验证自己
@@ -72,8 +85,21 @@ MASTER_SYSTEM_PROMPT = """
 5. **UI 验证必须自动化** — 有 UI 就须有 Playwright 脚本
 
 ## 当前阶段的工作方式
-- 当你不清楚用户需求时，列出你的疑问，用 `## 疑问` 标题
-- 当全部理解后，正常总结确认即可，无需特殊标记
+
+### 需求澄清阶段
+- 当用户提出需求后，逐条确认关键信息：功能范围、目标用户、技术约束、交付标准
+- 如果信息不足，列出你的疑问并用 `## 疑问` 标题
+- 当所有关键信息已明确时，输出需求总结，用 `## 已确认的需求` 标题
+- 判断「需求已明确」的标准：功能边界清晰、MVP 范围可定义、验收标准可写
+
+### 审核与分析阶段
+- 当被要求写审核标准时，先理解上游需求，再针对性产出
+- 输出需结构化：列出各维度标准（功能、体验、兼容性、一致性、逻辑自洽）
+- 每项标准必须可验证（通过/不通过），不能写模糊描述
+
+### 决策输出阶段
+- 整理澄清结果为结构化文档
+- 必须标明：来源（用户原话 vs 你的推断）
 """
 
 
@@ -244,7 +270,7 @@ def setup_runtime(config_path: str = None) -> ap.AgentRuntime:
     runtime.logger.log_event("workflow_started")
 
     # 持久化 Master system prompt，供后续 flush 重建对话时注入
-    runtime.context.set_bg("master_principles", MASTER_SYSTEM_PROMPT.strip())
+    runtime.context.set_bg("master_principles", MASTER_SYSTEM_PROMPT.format(workspace=runtime.workspace).strip())
 
     return runtime
 
@@ -259,7 +285,7 @@ def pre_flight_clarify(state: WorkflowState) -> dict:
     project_context_path = os.path.join(runtime.runtime_dir, "project_context.md")
 
     runtime.logger.log_event("phase_started", detail="需求澄清")
-    runtime.conversations.init_conversation("master", conv, MASTER_SYSTEM_PROMPT.strip())
+    runtime.conversations.init_conversation("master", conv, MASTER_SYSTEM_PROMPT.format(workspace=runtime.workspace).strip())
     runtime.context.set_ctx("conv_clarify", conv)
 
     def _close(reason: str):
@@ -291,7 +317,7 @@ def pm_handoff(state: WorkflowState) -> dict:
 
     master_conv = _conv_name("master-to-pm")
     runtime.conversations.init_conversation("master", master_conv,
-                                            MASTER_SYSTEM_PROMPT.strip())
+                                            MASTER_SYSTEM_PROMPT.format(workspace=runtime.workspace).strip())
 
     letter_path = _letter_path(runtime, "master-to-pm")
     write_letter(runtime, "master", master_conv, letter_path,

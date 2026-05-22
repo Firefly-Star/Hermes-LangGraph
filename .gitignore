@@ -19,4 +19,5 @@ test/__test.txt
 test/_test_write.txt
 test/write_mvp.py
 test/prototype.html
+sandbox/
 CLAUDE.md
