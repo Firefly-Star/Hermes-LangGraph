@@ -67,14 +67,12 @@ MASTER_SYSTEM_PROMPT = """
 ## 工作文件夹
 项目工作目录：{workspace}
 产出路径规则：
-- 审核标准：{workspace}/test/criteria.md
-- PRD:      {workspace}/test/PRD.md
-- 原型:     {workspace}/test/prototype.html
-- 设计稿:   {workspace}/test/ui_design.html
+- 审核标准：{workspace}/criteria.md
+- PM 的产出:      {workspace}/PM/
+- Dev 的产出:     {workspace}/Dev/
+- QA 的产出:   {workspace}/QA/
 
 ## Agent 间通信机制
-- **只能通过信件通信** — 给其他 agent 的信息通过 write_letter() 写文件，对方通过 read_letter() 读取
-- **信件格式** — 必须包含：发件人、收件人、目的（上游/下游/参考）、正文
 - **不要直接在对话里引用其他 agent 的对话内容** — 其他 agent 看不到你的对话
 
 ## 核心原则
@@ -118,17 +116,14 @@ def _judge_clarify(runtime, reply: str) -> str:
 
 
 def _clarify_loop(runtime, conv, title: str, first_hint: str, on_done):
-    """通用澄清循环。用户↔Master↔judge↔确认，直到 CONFIRMED。
-
-    title: checkpoint 标题（如 "== 需求澄清 =="）
-    """
+    """通用澄清循环。用户↔Master↔judge↔确认。空输入（直接 EOF）视为确认。"""
     end_word = runtime.config.get("input_end_word") or None
 
     round_num = 0
     while True:
         round_num += 1
         hint = first_hint if round_num == 1 \
-            else "请回答 Master 的疑问，或输入 CONFIRMED 直接结束："
+            else "请回答 Master 的疑问，或直接 EOF 结束："
 
         cp = runtime.checkpoint.wait(
             title, hint,
@@ -136,14 +131,11 @@ def _clarify_loop(runtime, conv, title: str, first_hint: str, on_done):
         )
         user_input = cp.message.strip()
         if not user_input:
-            continue
-
-        if user_input.upper() == "CONFIRMED":
             on_done("用户直接确认")
             return
 
         reply = call_agent(runtime, "master", conv,
-                           f"{user_input}\n不要产出任何东西，说出你的理解，如果有疑问就问。")
+                           f"{user_input}\n不要产出任何东西，也不要修改任何文件，只需要说出你的理解，以及对有疑问的地方提出问题。")
 
         # 确认子循环：judge 判读 → 用户确认或纠正
         while True:
@@ -153,12 +145,12 @@ def _clarify_loop(runtime, conv, title: str, first_hint: str, on_done):
 
             cp = runtime.checkpoint.wait(
                 f"{title} (确认)",
-                "Master 已确认理解需求。认可的话输入 CONFIRMED 进入下一阶段；"
+                "Master 已确认理解需求。认可的话直接 EOF 进入下一阶段；"
                 "不认可则说明哪里不对：",
                 prompt="输入内容后按 Enter：", end_word=end_word,
             )
             confirm_input = cp.message.strip()
-            if confirm_input.upper() == "CONFIRMED":
+            if not confirm_input:
                 on_done("用户确认 Master 理解正确")
                 return
 
@@ -248,6 +240,27 @@ def read_letter(runtime, receiver, conv, letter_path, task):
                       f"请阅读以下信件，然后{task}\n\n## 信件内容\n{content}")
 
 
+def read_and_write_letter(runtime, receiver, conv,
+                          input_letter_path, output_letter_path,
+                          title, instruction, task):
+    """读 input_letter，让 receiver 按要求写回信到 output_letter_path。"""
+    if not os.path.exists(input_letter_path):
+        raise RuntimeError(f"信件不存在：{input_letter_path}")
+    with open(input_letter_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    os.remove(input_letter_path)
+    call_agent(runtime, receiver, conv,
+               f"请阅读以下信件，然后{task}\n\n"
+               f"## 信件内容\n{content}\n\n"
+               f"## 回复方式\n"
+               f"请以 **{receiver}** 的身份写一封回信。\n\n"
+               f"## 信件标题\n{title}\n\n"
+               f"## 要求\n{instruction}\n\n"
+               f"请将信件完整写入文件：{output_letter_path}")
+    if not os.path.exists(output_letter_path):
+        raise RuntimeError(f"{receiver} 未生成回信：{output_letter_path}")
+
+
 def setup_runtime(config_path: str = None) -> ap.AgentRuntime:
     """初始化 AgentRuntime，启动 Master Gateway。"""
     runtime = ap.AgentRuntime(config_path)
@@ -278,7 +291,7 @@ def setup_runtime(config_path: str = None) -> ap.AgentRuntime:
 def pre_flight_clarify(state: WorkflowState) -> dict:
     """Phase 0: 交互式需求澄清。"""
     runtime = getattr(pre_flight_clarify, "_runtime", None)
-    conv = _conv_name("clarify")
+    conv = _conv_name("master")
 
     print(f"\n{'='*50}\n  ==> Phase 0: 需求澄清\n{'='*50}")
 
@@ -286,7 +299,7 @@ def pre_flight_clarify(state: WorkflowState) -> dict:
 
     runtime.logger.log_event("phase_started", detail="需求澄清")
     runtime.conversations.init_conversation("master", conv, MASTER_SYSTEM_PROMPT.format(workspace=runtime.workspace).strip())
-    runtime.context.set_ctx("conv_clarify", conv)
+    runtime.context.set_ctx("master_conv", conv)
 
     def _close(reason: str):
         call_agent(runtime, "master", conv,
@@ -315,9 +328,9 @@ def pm_handoff(state: WorkflowState) -> dict:
     if not project_context_path or not os.path.exists(project_context_path):
         raise RuntimeError(f"project_context.md 不存在：{project_context_path}")
 
-    master_conv = _conv_name("master-to-pm")
-    runtime.conversations.init_conversation("master", master_conv,
-                                            MASTER_SYSTEM_PROMPT.format(workspace=runtime.workspace).strip())
+    master_conv = runtime.context.get_ctx("master_conv")
+    if not master_conv:
+        raise RuntimeError("clarify conversation 不存在")
 
     letter_path = _letter_path(runtime, "master-to-pm")
     write_letter(runtime, "master", master_conv, letter_path,
@@ -350,56 +363,75 @@ def pm_align(state: WorkflowState) -> dict:
     print(f"\n  ── PM 对齐理解 ──")
 
     master_reply = runtime.context.get_ctx("master_reply")
+    pm_reply_path = _letter_path(runtime, "pm-reply")
     if master_reply:
-        # 循环：Master 先写正式答复信，PM 再读
-        conv_clarify = runtime.context.get_ctx("conv_clarify")
+        # 循环：Master 先写正式答复信，PM 读信后写回信
+        master_conv = runtime.context.get_ctx("master_conv")
         master_letter_path = _letter_path(runtime, "master-to-pm-reply")
-        write_letter(runtime, "master", conv_clarify, master_letter_path,
+        write_letter(runtime, "master", master_conv, master_letter_path,
                      "Master 给 PM 的答复",
                      "你在刚才的分析中已核对了 PM 的理解并回答了疑问。"
                      "请将你的结论写成正式信件给 PM。\n"
                      "逐一核对 PM 的理解是否正确，回答所有疑问。"
-                     "如果 PM 的理解完全正确且无疑问，也请告知 PM。")
-        reply = read_letter(runtime, "pm", pm_conv, master_letter_path,
-                            "仔细阅读 Master 的答复，确认是否清楚所有疑问。"
-                            "如有新的疑问也一并提出。"
-                            "在 Master 明确许可之前，不得开始写 PRD 或原型。")
+                     "如果 PM 的理解完全正确且无疑问，也请告知 PM。"
+                     "要求 PM 再次汇报它对项目的理解和疑问。\n"
+                     "强调：不得许可 PM 写 PRD 或原型\n\n")
+        read_and_write_letter(runtime, "pm", pm_conv,
+                              master_letter_path, pm_reply_path,
+                              "From PM, Re: 对 Master 的答复",
+                              "逐一回应 Master 的答复，确认清楚所有疑问。"
+                              "如有新的疑问也一并提出。如果已没有疑问，也需要明确说明没有疑问，并重新详细讲述自己对项目的了解。",
+                              "在 Master 明确许可之前，不得开始写 PRD 或原型。")
     else:
-        # 首次：读 handoff 信
+        # 首次：读 handoff 信，写回信
         letter_path = runtime.context.get_ctx("pm_letter_path")
         if not letter_path:
             raise RuntimeError("没有 handoff 信件路径")
-        reply = read_letter(runtime, "pm", pm_conv, letter_path,
-                            "写一封回信汇报你对项目的理解和疑问。"
-                            "在 Master 明确许可之前，不得开始写 PRD 或原型。")
+        read_and_write_letter(runtime, "pm", pm_conv,
+                              letter_path, pm_reply_path,
+                              "From PM, Re: Master 的委托",
+                              "写一封回信汇报你对项目的理解和疑问。"
+                              "列出不清楚或需要 Master 确认的地方。",
+                              "在 Master 明确许可之前，不得开始写 PRD 或原型。")
 
-    runtime.context.set_ctx("pm_reply", reply)
+    runtime.context.set_ctx("pm_reply_path", pm_reply_path)
+    # 缓存回信内容，供 master_reply_pm 重读（文件可能被 read_letter 删除）
+    if os.path.exists(pm_reply_path):
+        with open(pm_reply_path, "r", encoding="utf-8") as f:
+            runtime.context.set_ctx("pm_reply_text", f.read())
     return {"phase": "pm_align_done"}
 
 
 def master_reply_pm(state: WorkflowState) -> dict:
-    """Master 回答 PM 的疑问，复用 clarify conversation。"""
+    """Master 读取 PM 回信，回答疑问，复用 clarify conversation。"""
     runtime = getattr(master_reply_pm, "_runtime", None)
-    pm_reply = runtime.context.get_ctx("pm_reply")
-    conv_clarify = runtime.context.get_ctx("conv_clarify")
+    master_conv = runtime.context.get_ctx("master_conv")
 
-    if not conv_clarify:
+    if not master_conv:
         raise RuntimeError("clarify conversation 不存在")
 
-    prompt = (
-        f"这是 PM 对项目的理解和疑问：\n{pm_reply}\n\n"
-        "请逐一检查以下内容：\n"
-        "1. PM 的理解是否正确？如有误，逐一指出\n"
-        "2. PM 的疑问中，你能回答的全部回答。如果你修改了项目顶层决策文件，你需要答复 PM 让它从顶层决策文件中获取更新，不能假设 PM 已经得知了你对文件的修改\n"
-        "3. 如果遇到你无从判定的问题（涉及顶层决策、技术选型、使用场景等），"
-        "不要猜测，明确写出需要向用户确认的具体问题\n\n"
-        "你的回复中需明确区分两部分：\n"
-        "- 你对 PM 的答复/纠正\n"
-        "- 需要向用户确认的问题（如无则说'无需向用户提问'）"
-    )
+    task = ("逐一检查以下内容：\n"
+            "1. PM 的理解是否正确？如有误，逐一指出\n"
+            "2. PM 的疑问中，你能回答的全部回答。"
+            "如果你修改了项目顶层决策文件，你需要答复 PM "
+            "让它从顶层决策文件中获取更新，不能假设 PM 已经得知了你对文件的修改\n"
+            "3. 如果遇到你无从判定的问题（涉及顶层决策、技术选型、使用场景等），"
+            "不要猜测，明确写出需要向用户确认的具体问题\n\n"
+            "你的回复中需明确区分两部分：\n"
+            "- 你对 PM 的答复/纠正\n"
+            "- 需要向用户确认的问题（如无则说'无需向用户提问'）")
 
-    print(f"\n  ── Master 回复 PM ──")
-    reply = call_agent(runtime, "master", conv_clarify, prompt)
+    pm_reply_path = runtime.context.get_ctx("pm_reply_path")
+    if pm_reply_path and os.path.exists(pm_reply_path):
+        reply = read_letter(runtime, "master", master_conv, pm_reply_path, task)
+    else:
+        # 文件已被 read_letter 删除，用缓存的文本
+        pm_reply = runtime.context.get_ctx("pm_reply_text")
+        if not pm_reply:
+            raise RuntimeError("PM 回信缺失，既无文件也无缓存")
+        reply = call_agent(runtime, "master", master_conv,
+                          f"请阅读以下 PM 的回信，然后{task}\n\n"
+                          f"## PM 回信内容\n{pm_reply}")
 
     runtime.context.set_ctx("master_reply", reply)
     return {"phase": "master_reply_done"}
@@ -436,25 +468,25 @@ def route_master_reply(state: WorkflowState) -> str:
 def clarify_inject(state: WorkflowState) -> dict:
     """向用户提问 Master 无法判定的问题，更新 project_context.md。"""
     runtime = getattr(clarify_inject, "_runtime", None)
-    conv_clarify = runtime.context.get_ctx("conv_clarify")
+    master_conv = runtime.context.get_ctx("master_conv")
     master_reply = runtime.context.get_ctx("master_reply")
 
     print(f"\n  ── Master 需要向用户确认 ──\n{master_reply}")
 
     def _close(reason: str):
         project_context_path = runtime.context.get_bg("project_context_path")
-        call_agent(runtime, "master", conv_clarify,
+        call_agent(runtime, "master", master_conv,
                    f"请将本轮确认的决策记录到项目顶层决策记录文件的合适位置中：{project_context_path}")
         runtime.logger.log_event("clarification_done", detail=reason)
 
-    _clarify_loop(runtime, conv_clarify, "== 向用户确认 ==", "请回答 Master 的疑问", _close)
+    _clarify_loop(runtime, master_conv, "== 向用户确认 ==", "请回答 Master 的疑问", _close)
     return {"phase": "clarify_done"}
 
 
 def pm_write_criteria(state: WorkflowState) -> dict:
     """Master 制定 PM 产出的审核标准（PRD + prototype）。循环直至自检通过。"""
     runtime = getattr(pm_write_criteria, "_runtime", None)
-    conv_clarify = runtime.context.get_ctx("conv_clarify")
+    master_conv = runtime.context.get_ctx("master_conv")
 
     project_context_path = runtime.context.get_bg("project_context_path")
     project_context = ""
@@ -490,10 +522,10 @@ def pm_write_criteria(state: WorkflowState) -> dict:
         "确保标准不是模板化的文字堆砌，而是真正能为审查提供 actionable 的判断依据。\n"
         "请具体、可操作，避免空泛描述。"
     )
-    criteria = call_agent(runtime, "master", conv_clarify, prompt + feedback)
+    criteria = call_agent(runtime, "master", master_conv, prompt + feedback)
 
     # 自检
-    self_check = call_agent(runtime, "master", conv_clarify,
+    self_check = call_agent(runtime, "master", master_conv,
         "逐条确认以上标准每一条你都能实际执行检查"
         "（通过查看 PRD 或 prototype 文件）。"
         "依次回复每条是 ✓ 还是 ✗，如 ✗ 说明缺什么。\n"
@@ -536,8 +568,8 @@ def pm_write_doc(state: WorkflowState) -> dict:
     runtime.logger.log_event("phase_started", detail="PM 出方案")
     print(f"\n  ── PM 出方案 ──")
 
-    conv_clarify = runtime.context.get_ctx("conv_clarify")
-    if not conv_clarify:
+    master_conv = runtime.context.get_ctx("master_conv")
+    if not master_conv:
         raise RuntimeError("clarify conversation 不存在")
 
     output_dir = os.path.join(runtime.workspace, "test")
@@ -550,7 +582,7 @@ def pm_write_doc(state: WorkflowState) -> dict:
     if criteria_path and os.path.exists(criteria_path):
         criteria_ref = f"\n审核标准文件（PM 需对着这些标准写，Reviewer 将用来审查）：{criteria_path}"
     prd_letter = _letter_path(runtime, "master-prd")
-    write_letter(runtime, "master", conv_clarify, prd_letter,
+    write_letter(runtime, "master", master_conv, prd_letter,
                  "PRD 编写说明",
                  "请以 Master 的身份给 PM 写信，要求 PM 输出 PRD.md 并写入指定文件。\n"
                  "需包含：项目概述、功能需求、MVP 范围、页面结构、验收标准。\n"
@@ -567,7 +599,7 @@ def pm_write_doc(state: WorkflowState) -> dict:
     # Call 2 — Master 写信要求原型，PM 直接写入 proto_path
     proto_path = os.path.join(output_dir, "prototype.html")
     proto_letter = _letter_path(runtime, "master-prototype")
-    write_letter(runtime, "master", conv_clarify, proto_letter,
+    write_letter(runtime, "master", master_conv, proto_letter,
                  "原型编写说明",
                  "请以 Master 的身份给 PM 写信，要求 PM 基于 PRD 产出 prototype.html 并写入指定文件。\n"
                  "需包含：核心交互、页面布局、导航流程。\n"
