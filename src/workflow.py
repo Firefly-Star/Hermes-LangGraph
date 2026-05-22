@@ -22,6 +22,7 @@ AGENT_CONFIGS = {
     "master": {"profile": "cg", "port": 8642},
     "judge":  {"profile": "cg", "port": 8642},
     "pm":     {"profile": "pm", "port": 8643},
+    "reviewer": {"profile": "cg", "port": 8642},
 }
 
 
@@ -233,25 +234,21 @@ def read_letter(runtime, receiver, conv, letter_path, task):
     """receiver 读 letter_path 后执行 task。读完删信。返回 receiver 回复。"""
     if not os.path.exists(letter_path):
         raise RuntimeError(f"信件不存在：{letter_path}")
-    with open(letter_path, "r", encoding="utf-8") as f:
-        content = f.read()
+    reply = call_agent(runtime, receiver, conv,
+                       f"请阅读以下信件，然后{task}\n\n## 信件路径\n{letter_path}")
     os.remove(letter_path)
-    return call_agent(runtime, receiver, conv,
-                      f"请阅读以下信件，然后{task}\n\n## 信件内容\n{content}")
+    return reply
 
 
 def read_and_write_letter(runtime, receiver, conv,
                           input_letter_path, output_letter_path,
                           title, instruction, task):
-    """读 input_letter，让 receiver 按要求写回信到 output_letter_path。"""
+    """读 input_letter（给路径让 agent 自读），让 receiver 按要求写回信到 output_letter_path。"""
     if not os.path.exists(input_letter_path):
         raise RuntimeError(f"信件不存在：{input_letter_path}")
-    with open(input_letter_path, "r", encoding="utf-8") as f:
-        content = f.read()
-    os.remove(input_letter_path)
     call_agent(runtime, receiver, conv,
                f"请阅读以下信件，然后{task}\n\n"
-               f"## 信件内容\n{content}\n\n"
+               f"## 信件路径\n{input_letter_path}\n\n"
                f"## 回复方式\n"
                f"请以 **{receiver}** 的身份写一封回信。\n\n"
                f"## 信件标题\n{title}\n\n"
@@ -259,6 +256,7 @@ def read_and_write_letter(runtime, receiver, conv,
                f"请将信件完整写入文件：{output_letter_path}")
     if not os.path.exists(output_letter_path):
         raise RuntimeError(f"{receiver} 未生成回信：{output_letter_path}")
+    os.remove(input_letter_path)
 
 
 def setup_runtime(config_path: str = None) -> ap.AgentRuntime:
@@ -506,19 +504,24 @@ def pm_write_criteria(state: WorkflowState) -> dict:
     prompt = (
         "你即将为 PM 产出的 PRD 和 prototype 制定审核标准。\n\n"
         "## 上游约束\n"
-        "以下项目决策是你要考虑的上游上下文，标准必须与之对齐：\n"
-        f"{project_context or '（无项目决策记录）'}\n\n"
+        "项目决策是你要考虑的上游上下文，标准必须与之对齐：\n"
+        f"项目决策记录的文件地址为：{project_context_path or '（无项目决策记录）'}\n\n"
         "## 标准覆盖维度\n"
         "1. 需求完整性 — PRD 是否覆盖了所有已确认的功能？\n"
         "2. MVP 边界 — 范围是否控制在 MVP 内？有无超额？\n"
         "3. 逻辑自洽性 — 功能描述是否完整无矛盾？数据流是否有断点？\n"
         "4. 一致性 — 功能定义、用户角色、技术假设是否与项目决策文件冲突？\n"
-        "5. 原型质量 — prototype 是否体现了核心交互和页面结构？\n\n"
+        "5. 原型质量 — prototype 是否体现了核心交互和页面结构？\n"
+        "   - 页面要素完整（输入框、按钮、链接等）\n"
+        "   - 交互行为正确（表单校验触发、错误提示展示、页面切换、登出流程等）\n"
+        "   - 边界情况体现（空输入拦截、重复注册检测、非法字符过滤等）\n"
+        "   - 数据流一致性（注册后可登录、大小写区分、密码错误提示等信息流是否自洽）\n"
+        "   - 视觉风格统一\n"
         "## 下游需求\n"
         "- PM 将按这些标准撰写 PRD 和 prototype\n"
         "- Reviewer 将按这些标准审查 PM 产出\n\n"
         "## 要求\n"
-        "每条标准必须具体、可衡量，且写明审查方法（如何通过查看文件判断通过/不通过）。\n"
+        "每条标准必须具体、可衡量，且写明审查方法（如何使用tool或者skill判断通过/不通过）。\n"
         "确保标准不是模板化的文字堆砌，而是真正能为审查提供 actionable 的判断依据。\n"
         "请具体、可操作，避免空泛描述。"
     )
@@ -536,7 +539,7 @@ def pm_write_criteria(state: WorkflowState) -> dict:
     runtime.context.set_ctx("pm_criteria_self_check", self_check)
 
     # 写入审核标准文件，供 PM 和后续 reviewer 使用
-    criteria_path = os.path.join(runtime.workspace, "test", "criteria.md")
+    criteria_path = os.path.join(runtime.workspace, "criteria.md")
     os.makedirs(os.path.dirname(criteria_path), exist_ok=True)
     with open(criteria_path, "w", encoding="utf-8") as f:
         f.write("# PM 产出审核标准\n\n" + criteria)
@@ -572,17 +575,26 @@ def pm_write_doc(state: WorkflowState) -> dict:
     if not master_conv:
         raise RuntimeError("clarify conversation 不存在")
 
-    output_dir = os.path.join(runtime.workspace, "test")
-    os.makedirs(output_dir, exist_ok=True)
+    pm_dir = os.path.join(runtime.workspace, "PM")
+    os.makedirs(pm_dir, exist_ok=True)
+
+    # 审查反馈注入（循环进入时）
+    prev_review = runtime.context.get_ctx("review_result") or ""
+    human_feedback = runtime.context.get_ctx("human_feedback") or ""
+    feedback_ref = ""
+    if prev_review:
+        feedback_ref += f"\n\n## 上一轮审查发现的问题\n{prev_review}"
+    if human_feedback:
+        feedback_ref += f"\n\n## 人工反馈（需优先处理）\n{human_feedback}"
 
     # Call 1 — Master 写信要求 PRD，PM 直接写入 prd_path
-    prd_path = os.path.join(output_dir, "PRD.md")
+    prd_path = os.path.join(pm_dir, "PRD.md")
     criteria_path = runtime.context.get_ctx("pm_criteria_path") or ""
     criteria_ref = ""
     if criteria_path and os.path.exists(criteria_path):
         criteria_ref = f"\n审核标准文件（PM 需对着这些标准写，Reviewer 将用来审查）：{criteria_path}"
-    prd_letter = _letter_path(runtime, "master-prd")
-    write_letter(runtime, "master", master_conv, prd_letter,
+    prd_letter_path = _letter_path(runtime, "master-prd")
+    write_letter(runtime, "master", master_conv, prd_letter_path,
                  "PRD 编写说明",
                  "请以 Master 的身份给 PM 写信，要求 PM 输出 PRD.md 并写入指定文件。\n"
                  "需包含：项目概述、功能需求、MVP 范围、页面结构、验收标准。\n"
@@ -592,14 +604,14 @@ def pm_write_doc(state: WorkflowState) -> dict:
                  "3. 确保产出不是模板化的文字堆砌，而是真正能为下游提供 actionable 的信息。\n"
                  "4. 确保具体、可操作，避免空泛描述\n"
                  "5. 在这个阶段中，只要求它产出PRD.md，原型需要等你进一步下达指令后再进行产出。"
-                 + criteria_ref)
-    read_letter(runtime, "pm", pm_conv, prd_letter,
+                 + criteria_ref + feedback_ref)
+    read_letter(runtime, "pm", pm_conv, prd_letter_path,
                 f"按信中的要求编写 PRD.md，写入文件 {prd_path}。")
 
     # Call 2 — Master 写信要求原型，PM 直接写入 proto_path
-    proto_path = os.path.join(output_dir, "prototype.html")
-    proto_letter = _letter_path(runtime, "master-prototype")
-    write_letter(runtime, "master", master_conv, proto_letter,
+    proto_path = os.path.join(pm_dir, "prototype.html")
+    proto_letter_path = _letter_path(runtime, "master-prototype")
+    write_letter(runtime, "master", master_conv, proto_letter_path,
                  "原型编写说明",
                  "请以 Master 的身份给 PM 写信，要求 PM 基于 PRD 产出 prototype.html 并写入指定文件。\n"
                  "需包含：核心交互、页面布局、导航流程。\n"
@@ -609,7 +621,7 @@ def pm_write_doc(state: WorkflowState) -> dict:
                  "2. 它的下游是谁，会如何从它的产出中获得约束和信息。\n"
                  "3. 确保产出不是模板化的文字堆砌，而是真正能为下游提供 actionable 的原型。\n"
                  "4. 确保具体、可操作，避免空泛占位符。")
-    read_letter(runtime, "pm", pm_conv, proto_letter,
+    read_letter(runtime, "pm", pm_conv, proto_letter_path,
                 f"按信中要求编写 prototype.html，写入文件 {proto_path}。")
 
     print(f"  ✓ {prd_path}")
@@ -617,7 +629,92 @@ def pm_write_doc(state: WorkflowState) -> dict:
 
     runtime.context.set_phase_node(["PM 出方案"], "done")
     runtime.logger.log_event("phase_completed", detail="PM 方案完成")
-    return {"phase": "done"}
+    return {"phase": "done", "judge_result": "pass"}
+
+
+def review_pm_output(state: WorkflowState) -> dict:
+    """Reviewer 对照审核标准和项目决策，审查 PM 产出。"""
+    runtime = getattr(review_pm_output, "_runtime", None)
+    print(f"\n{'='*60}\n  ==> Reviewer 审查 PM 产出\n{'='*60}")
+
+    criteria_path = os.path.join(runtime.workspace, "criteria.md")
+    prd_path = os.path.join(runtime.workspace, "PM", "PRD.md")
+    proto_path = os.path.join(runtime.workspace, "PM", "prototype.html")
+    project_context_path = runtime.context.get_bg("project_context_path") or ""
+
+    human_feedback = runtime.context.get_ctx("human_feedback") or "(无人工反馈)"
+
+    prompt = "你是一个项目审查员。请根据以下材料审查 PM 的产出。\n"
+    prompt += f"## 审核标准在：{criteria_path}\n"
+    prompt += f"## 项目顶层决策在：{project_context_path}\n"
+    if human_feedback:
+        prompt += f"## 人工反馈（需优先处理）\n{human_feedback}\n\n"
+    prompt += f"PM的产出：\n PRD 在：{prd_path}\n\n"
+    prompt += f"Prototype 在：{proto_path}\n\n"
+
+    prompt += ("逐条对照审核标准检查，输出审查结果。\n"
+               "明确列出每个不通过项及其原因。\n"
+               "如果全部通过，最后一行回复 == PASS ==\n"
+               "如果有不通过项，最后一行回复 == FAIL ==")
+
+    conv = _conv_name("reviewer")
+    reply = call_agent(runtime, "reviewer", conv, prompt)
+
+    last_line = reply.strip().split("\n")[-1].strip()
+    passed = "PASS" in last_line
+
+    runtime.context.set_ctx("review_result", reply)
+    if passed:
+        runtime.context.set_ctx("human_feedback", "")
+
+    runtime.logger.log_event("review_completed", detail=f"审查{'通过' if passed else '不通过'}")
+    print(f"  {'✓ Reviewer 审查通过' if passed else '✗ Reviewer 审查不通过'}")
+    return {"phase": "review_done", "judge_result": "pass" if passed else "fail"}
+
+
+def route_review(state: WorkflowState) -> str:
+    r = state.get("judge_result", "")
+    return "human_review" if r == "pass" else "pm_write_doc"
+
+
+def human_review(state: WorkflowState) -> dict:
+    """人工审核 PM 产出。展出文件路径，让人确认或提意见。"""
+    runtime = getattr(human_review, "_runtime", None)
+
+    prd_path = os.path.join(runtime.workspace, "PM", "PRD.md")
+    proto_path = os.path.join(runtime.workspace, "PM", "prototype.html")
+    criteria_path = os.path.join(runtime.workspace, "criteria.md")
+
+    print(f"\n{'='*60}\n  ==> 人工审核 PM 产出\n{'='*60}")
+    print(f"  PM 产出位置：")
+    print(f"    PRD:       {prd_path}")
+    print(f"    Prototype: {proto_path}")
+    print(f"    审核标准:   {criteria_path}")
+    print()
+
+    end_word = runtime.config.get("input_end_word") or None
+    cp = runtime.checkpoint.wait(
+        "人工审核 PM 产出",
+        f"请查看以上文件，确认 PM 产出符合要求。\n"
+        f"直接 EOF 通过审核；如有问题请说明：",
+        prompt="输入内容后按 Enter：", end_word=end_word,
+    )
+    feedback = cp.message.strip()
+
+    if not feedback:
+        print("  ✓ 人工审核通过")
+        runtime.logger.log_event("human_review_passed")
+        return {"phase": "done", "judge_result": "pass"}
+
+    runtime.context.set_ctx("human_feedback", feedback)
+    runtime.logger.log_event("human_review_rejected", detail=feedback)
+    print(f"  ⚠ 人工审核不通过，反馈已记录")
+    return {"phase": "human_review_rejected", "judge_result": "fail"}
+
+
+def route_human_review(state: WorkflowState) -> str:
+    r = state.get("judge_result", "")
+    return END if r == "pass" else "review_pm_output"
 
 
 def build_graph(runtime) -> StateGraph:
@@ -625,7 +722,9 @@ def build_graph(runtime) -> StateGraph:
     for f in [pre_flight_clarify, pm_handoff, pm_align,
               master_reply_pm, judge_master_reply, clarify_inject,
               pm_write_criteria, pm_write_doc,
-              route_master_reply, route_criteria_self_check]:
+              review_pm_output, human_review,
+              route_master_reply, route_criteria_self_check,
+              route_review, route_human_review]:
         f._runtime = runtime
 
     graph = StateGraph(WorkflowState)
@@ -637,6 +736,8 @@ def build_graph(runtime) -> StateGraph:
     graph.add_node("clarify_inject", clarify_inject)
     graph.add_node("pm_write_criteria", pm_write_criteria)
     graph.add_node("pm_write_doc", pm_write_doc)
+    graph.add_node("review_pm_output", review_pm_output)
+    graph.add_node("human_review", human_review)
 
     graph.set_entry_point("pre_flight_clarify")
     graph.add_edge("pre_flight_clarify", "pm_handoff")
@@ -653,7 +754,15 @@ def build_graph(runtime) -> StateGraph:
         "pm_write_doc": "pm_write_doc",
         "pm_write_criteria": "pm_write_criteria",
     })
-    graph.add_edge("pm_write_doc", END)
+    graph.add_edge("pm_write_doc", "review_pm_output")
+    graph.add_conditional_edges("review_pm_output", route_review, {
+        "human_review": "human_review",
+        "pm_write_doc": "pm_write_doc",
+    })
+    graph.add_conditional_edges("human_review", route_human_review, {
+        END: END,
+        "review_pm_output": "review_pm_output",
+    })
 
     return graph.compile(checkpointer=MemorySaver())
 
