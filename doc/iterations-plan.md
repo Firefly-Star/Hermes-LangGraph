@@ -17,11 +17,6 @@
 
 验收：`python src/workflow.py` 跑通，看到 Master 回复。
 
-功能：
-- 启动 Master Gateway（仅一个 Agent）
-- 一条边直通 END
-- main() 输出可读结果
-
 ---
 
 ## Iteration 2 — 需求澄清
@@ -32,41 +27,57 @@
 
 变更：`checkpoint.wait()` 新增 `end_word` 参数支持多行输入；`runtime_config.json` 新增 `input_end_word` 配置项
 
-验收：输入需求 → Master 回应 → 输入 CONFIRMED 结束。
+验收：输入需求 → Master 回应 → EOF 结束。
 
 功能：
 - 无限循环，通过 `input_end_word`（默认 EOF）支持多行输入
 - Master 回应的内容通过 SSE 流式显示给用户
-- 用户输入 CONFIRMED 或 Master 回复 `## 确认` 时结束
-- 退出前通知 Master 阶段结束，避免遗留疑问悬空
+- 空输入（直接 EOF）视为确认，无需输入 CONFIRMED
+- 退出前通知 Master 写 project_context.md
 
 ---
 
-## Iteration 3 — PM 出方案
+## Iteration 3 — PM 出方案 + 审核循环
 
-目标：PM 产出 PRD.md + prototype.html 到磁盘。
+目标：PM 产出 PRD.md + prototype.html，经过审核循环（criteria 自检 + Reviewer 审查 + 人工审查）后通过。
 
-新增节点：1 个（`pm_write_doc`）
+新增节点：
+- `pm_handoff` — Master 写 handoff 信给 PM
+- `pm_align` — PM 汇报理解 + 疑问
+- `master_reply_pm` — Master 回答 PM 疑问
+- `judge_master_reply` — 判读路由（A/B/C）
+- `clarify_inject` — 向用户确认无法判定的问题
+- `pm_write_criteria` — Master 制定审核标准，自检循环
+- `pm_write_doc` — PM 产出 PRD + prototype
+- `review_pm_output` — Reviewer 按标准审查
+- `human_review` — 人工审核，可提反馈循环
 
-变更：注册 PM agent、抽出公用函数 `role_aware_prompt`、`call_agent`
+变更：注册 PM/Reviewer agent，新增 role_aware_prompt、_letter_path、write_letter、read_letter、read_and_write_letter 等公用函数
 
-验收：PM 角色生成文档文件。
+验收：PM 生成文档 → 审查循环 → 通过或反馈循环。
+
+图结构：
+```
+pre_flight_clarify → pm_handoff → pm_align → master_reply_pm → judge_master_reply
+                                                                       │ A
+                                                                       ▼
+                                                                  pm_write_criteria
+                                                                   │ pass
+                                                                   ▼
+                                                               pm_write_doc
+                                                                   │
+                                                                   ▼
+                                                               review_pm_output
+                                                                │ PASS
+                                                                ▼
+                                                            human_review
+                                                             │ PASS → END
+                                                             │ FAIL → review_pm_output
+```
 
 ---
 
-## Iteration 4 — PM 评审循环
-
-目标：方案写审核标准 → 审查 → 循环或通过。
-
-新增节点：2 个（`pm_write_criteria`、`pm_review_doc`）
-
-变更：抽出 `write_criteria`、`archive_review` 公用函数
-
-验收：方案不通过会循环，达上限可人工 override。
-
----
-
-## Iteration 5 — Dev 详细设计 + 评审
+## Iteration 4 — Dev 详细设计 + 评审
 
 目标：Dev 出详细设计文档并通过评审。
 
@@ -76,7 +87,7 @@
 
 ---
 
-## Iteration 6 — Dev 计划 + 执行循环
+## Iteration 5 — Dev 计划 + 执行循环
 
 目标：Dev 分步实现代码，每步被审查。
 
@@ -88,7 +99,7 @@
 
 ---
 
-## Iteration 7 — QA 计划 + 测试循环
+## Iteration 6 — QA 计划 + 测试循环
 
 目标：QA 执行测试，bug 被修复验证。
 
@@ -98,10 +109,10 @@
 
 ---
 
-## Iteration 8 — 交付 + 收尾
+## Iteration 7 — 交付 + 收尾
 
 目标：完整工作流打通，交付后用户 sign-off。
 
 新增节点：1 个（`deliver`）
 
-验收：完整走完 9 阶段，输出总结报告。
+验收：完整走完所有阶段，输出总结报告。
