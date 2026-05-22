@@ -69,7 +69,9 @@ MASTER_SYSTEM_PROMPT = """
 ## 工作文件夹
 项目工作目录：{workspace}
 产出路径规则：
-- 审核标准：{workspace}/criteria.md
+- PM 产出审核标准：{workspace}/criteria-pm.md
+- Dev 设计审核标准：{workspace}/criteria-design.md
+- Dev 代码审核标准：{workspace}/criteria-code.md
 - PM 的产出:      {workspace}/PM/
 - Dev 的产出:     {workspace}/Dev/
 - QA 的产出:   {workspace}/QA/
@@ -484,25 +486,50 @@ def clarify_inject(state: WorkflowState) -> dict:
     return {"phase": "clarify_done"}
 
 
+def _write_criteria(runtime, master_conv, title: str, file_path: str,
+                     file_header: str, prompt: str, context_key: str) -> bool:
+    """通用审核标准编写。Master 编写 + 自检。返回是否通过。"""
+    print(f"\n  ── {title} ──")
+
+    # 如有上一轮自检反馈，注入帮助改进
+    prev_check = runtime.context.get_ctx(f"{context_key}_self_check")
+    feedback = ""
+    if prev_check and "FAIL" in prev_check:
+        feedback = "\n上一轮自检发现的问题：\n" + prev_check + "\n请针对性改进后重新制定标准。"
+
+    criteria = call_agent(runtime, "master", master_conv, prompt + feedback)
+
+    # 自检
+    self_check = call_agent(runtime, "master", master_conv,
+        "逐条确认以上标准每一条你都能实际执行检查"
+        "（通过查看对应的文件）。"
+        "依次回复每条是 ✓ 还是 ✗，如 ✗ 说明缺什么。\n"
+        "如果全部 ✓，最后一行回复 == PASS ==。"
+        "如果有 ✗，最后一行回复 == FAIL ==")
+
+    runtime.context.set_ctx(context_key, criteria)
+    runtime.context.set_ctx(f"{context_key}_self_check", self_check)
+
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(file_header + "\n\n" + criteria)
+    runtime.context.set_ctx(f"{context_key}_path", file_path)
+    print(f"  ✓ 审核标准已写入 {file_path}")
+
+    last_line = self_check.strip().split("\n")[-1].strip()
+    passed = "PASS" in last_line
+    runtime.logger.log_event("criteria_defined",
+        detail=f"{title}——自检{'通过' if passed else '不通过'}")
+    return passed
+
+
 def pm_write_criteria(state: WorkflowState) -> dict:
     """Master 制定 PM 产出的审核标准（PRD + prototype）。循环直至自检通过。"""
     runtime = getattr(pm_write_criteria, "_runtime", None)
     master_conv = runtime.context.get_ctx("master_conv")
-
     project_context_path = runtime.context.get_bg("project_context_path")
-    project_context = ""
-    if project_context_path and os.path.exists(project_context_path):
-        with open(project_context_path, "r", encoding="utf-8") as f:
-            project_context = f.read()
 
     runtime.logger.log_event("phase_started", detail="PM 审核标准制定")
-    print(f"\n  ── Master 制定 PM 审核标准 ──")
-
-    # 如有上一轮自检反馈，注入帮助改进
-    prev_check = runtime.context.get_ctx("pm_criteria_self_check")
-    feedback = ""
-    if prev_check and "FAIL" in prev_check:
-        feedback = "\n上一轮自检发现的问题：\n" + prev_check + "\n请针对性改进后重新制定标准。"
 
     prompt = (
         "你即将为 PM 产出的 PRD 和 prototype 制定审核标准。\n\n"
@@ -528,32 +555,58 @@ def pm_write_criteria(state: WorkflowState) -> dict:
         "确保标准不是模板化的文字堆砌，而是真正能为审查提供 actionable 的判断依据。\n"
         "请具体、可操作，避免空泛描述。"
     )
-    criteria = call_agent(runtime, "master", master_conv, prompt + feedback)
 
-    # 自检
-    self_check = call_agent(runtime, "master", master_conv,
-        "逐条确认以上标准每一条你都能实际执行检查"
-        "（通过查看 PRD 或 prototype 文件）。"
-        "依次回复每条是 ✓ 还是 ✗，如 ✗ 说明缺什么。\n"
-        "如果全部 ✓，最后一行回复 == PASS ==。"
-        "如果有 ✗，最后一行回复 == FAIL ==")
-
-    runtime.context.set_ctx("pm_criteria", criteria)
-    runtime.context.set_ctx("pm_criteria_self_check", self_check)
-
-    # 写入审核标准文件，供 PM 和后续 reviewer 使用
-    criteria_path = os.path.join(runtime.workspace, "criteria.md")
-    os.makedirs(os.path.dirname(criteria_path), exist_ok=True)
-    with open(criteria_path, "w", encoding="utf-8") as f:
-        f.write("# PM 产出审核标准\n\n" + criteria)
-    runtime.context.set_ctx("pm_criteria_path", criteria_path)
-    print(f"  ✓ 审核标准已写入 {criteria_path}")
-
-    last_line = self_check.strip().split("\n")[-1].strip()
-    passed = "PASS" in last_line
-    runtime.logger.log_event("criteria_defined",
-        detail=f"PM 审核标准已制定，自检{'通过' if passed else '不通过'}")
+    passed = _write_criteria(
+        runtime, master_conv,
+        title="Master 制定 PM 审核标准",
+        file_path=os.path.join(runtime.workspace, "criteria-pm.md"),
+        file_header="# PM 产出审核标准",
+        prompt=prompt,
+        context_key="pm_criteria",
+    )
     return {"phase": "criteria_done", "judge_result": "pm_write_doc" if passed else "pm_write_criteria"}
+
+
+def dev_write_criteria(state: WorkflowState) -> dict:
+    """Master 制定 Dev 详细设计的审核标准。循环直至自检通过。"""
+    runtime = getattr(dev_write_criteria, "_runtime", None)
+    master_conv = runtime.context.get_ctx("master_conv")
+    project_context_path = runtime.context.get_bg("project_context_path")
+    ws = runtime.workspace
+
+    runtime.logger.log_event("phase_started", detail="Dev 设计审核标准制定")
+
+    prompt = (
+        "你即将为 Dev 的详细设计方案制定审核标准。\n\n"
+        "## 上游约束\n"
+        "标准必须与以下已确认的内容对齐：\n"
+        f"- 项目决策记录：{project_context_path or '（无项目决策记录）'}\n"
+        f"- PRD：{ws}/PM/PRD.md\n"
+        f"- 原型：{ws}/PM/prototype.html\n\n"
+        "## 标准覆盖维度\n"
+        "1. 架构合理性 — 设计方案是否与 PRD 一致？技术选型是否合理？\n"
+        "2. 功能完整性 — 设计方案是否覆盖了 PRD 中所有功能点？\n"
+        "3. 数据流正确性 — 数据流转路径是否清晰？前后端接口定义是否完整？\n"
+        "4. 可实现性 — 在当前技术栈和约束下是否可行？\n"
+        "5. 可测试性 — 设计是否考虑了如何验证每个功能？\n"
+        "6. 边界与异常 — 是否涵盖了错误处理、空状态、异常场景等边界情况？\n"
+        "## 下游需求\n"
+        "- Dev 将按这些标准撰写详细设计方案\n"
+        "- Reviewer 将按这些标准审查 Dev 的设计\n\n"
+        "## 要求\n"
+        "每条标准必须具体、可衡量，且写明审查方法。\n"
+        "请具体、可操作，避免空泛描述。"
+    )
+
+    passed = _write_criteria(
+        runtime, master_conv,
+        title="Master 制定 Dev 设计审核标准",
+        file_path=os.path.join(ws, "criteria-design.md"),
+        file_header="# Dev 详细设计审核标准",
+        prompt=prompt,
+        context_key="dev_criteria",
+    )
+    return {"phase": "dev_criteria_done", "judge_result": "dev_write_design" if passed else "dev_write_criteria"}
 
 
 def pm_write_doc(state: WorkflowState) -> dict:
@@ -633,7 +686,7 @@ def review_pm_output(state: WorkflowState) -> dict:
     runtime = getattr(review_pm_output, "_runtime", None)
     print(f"\n{'='*60}\n  ==> Reviewer 审查 PM 产出\n{'='*60}")
 
-    criteria_path = os.path.join(runtime.workspace, "criteria.md")
+    criteria_path = os.path.join(runtime.workspace, "criteria-pm.md")
     prd_path = os.path.join(runtime.workspace, "PM", "PRD.md")
     proto_path = os.path.join(runtime.workspace, "PM", "prototype.html")
     project_context_path = runtime.context.get_bg("project_context_path") or ""
@@ -674,7 +727,7 @@ def human_review(state: WorkflowState) -> dict:
 
     prd_path = os.path.join(runtime.workspace, "PM", "PRD.md")
     proto_path = os.path.join(runtime.workspace, "PM", "prototype.html")
-    criteria_path = os.path.join(runtime.workspace, "criteria.md")
+    criteria_path = os.path.join(runtime.workspace, "criteria-pm.md")
 
     print(f"\n{'='*60}\n  ==> 人工审核 PM 产出\n{'='*60}")
     print(f"  PM 产出位置：")
@@ -881,7 +934,7 @@ def build_graph(runtime) -> StateGraph:
               master_reply_pm, judge_master_reply, clarify_inject,
               pm_write_criteria, pm_write_doc,
               review_pm_output, human_review,
-              dev_handoff, dev_align]:
+              dev_handoff, dev_align, dev_write_criteria]:
         f._runtime = runtime
 
     graph = StateGraph(WorkflowState)
@@ -897,6 +950,7 @@ def build_graph(runtime) -> StateGraph:
     graph.add_node("human_review", human_review)
     graph.add_node("dev_handoff", dev_handoff)
     graph.add_node("dev_align", dev_align)
+    graph.add_node("dev_write_criteria", dev_write_criteria)
 
     graph.set_entry_point("pre_flight_clarify")
     graph.add_edge("pre_flight_clarify", "pm_handoff")
@@ -917,7 +971,8 @@ def build_graph(runtime) -> StateGraph:
         "review_pm_output": "review_pm_output",
     })
     graph.add_edge("dev_handoff", "dev_align")
-    graph.add_edge("dev_align", END)
+    graph.add_edge("dev_align", "dev_write_criteria")
+    graph.add_conditional_edges("dev_write_criteria", lambda s: s.get("judge_result", ""))
 
     return graph.compile(checkpointer=MemorySaver())
 
