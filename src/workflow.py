@@ -102,17 +102,20 @@ MASTER_SYSTEM_PROMPT = """
 """
 
 
-def _judge_clarify(runtime, reply: str) -> str:
-    """判读 Master 回复是已确认还是有疑问。"""
-    judge_prompt = (
-        "你是一个流程裁判。以下是 Master 的回复。\n\n"
-        f"## Master 的回复\n{reply}\n\n"
+def judge_reply(runtime, target_role: str, reply: str, options: list[str],
+                tag: str = None) -> str:
+    """通用判读函数。judge agent 对 target_role 的回复进行分类路由。返回选项字母。"""
+    options_text = "\n".join(f"{opt}" for opt in options)
+    keys = "/".join(opt.strip()[0] for opt in options if opt.strip())
+    conv = _conv_name(tag or f"judge-{target_role.lower()}")
+    prompt = (
+        "你是一个流程裁判。以下是 {target_role} 的回复。\n\n"
+        f"## {target_role} 的回复\n{reply}\n\n"
         "判定当前状态是以下哪一种：\n"
-        "A. 需求已明确，可以进入下一阶段\n"
-        "B. Master 有疑问需要用户继续回答\n\n"
-        "回复 A 或 B 即可，不要输出其他内容。"
+        f"{options_text}\n\n"
+        f"回复 {keys} 即可，不要输出其他内容。"
     )
-    result = call_agent(runtime, "judge", _conv_name("judge-clarify"), judge_prompt)
+    result = call_agent(runtime, "judge", conv, prompt)
     return result.strip()
 
 
@@ -140,8 +143,11 @@ def _clarify_loop(runtime, conv, title: str, first_hint: str, on_done):
 
         # 确认子循环：judge 判读 → 用户确认或纠正
         while True:
-            judge = _judge_clarify(runtime, reply)
-            if judge != "A":
+            judge_result = judge_reply(runtime, "Master", reply, [
+                "A. 需求已明确，可以进入下一阶段",
+                "B. Master 有疑问需要用户继续回答",
+            ], "judge-clarify")
+            if judge_result != "A":
                 break
 
             cp = runtime.checkpoint.wait(
@@ -441,26 +447,12 @@ def judge_master_reply(state: WorkflowState) -> dict:
     master_reply = runtime.context.get_ctx("master_reply")
 
     print("  ── judge: Master 回复 ──")
-    judge_prompt = (
-        "你是一个流程裁判。以下是 Master 的回复。\n\n"
-        f"## Master 的回复\n{master_reply}\n\n"
-        "判定当前状态是以下哪一种：\n"
-        "A. Master 确认 PM 理解 100% 正确，无需再问用户任何问题且无需纠正 PM 的任何错误且无需回复 PM 的任何问题 → 进入下一阶段\n"
-        "B. Master 有对 PM 的答复或对 PM 指出的问题，需要转发给 PM 继续确认 → 回 PM\n"
-        "C. Master 有无法判定的问题，需要向用户确认\n\n"
-        "回复 A / B / C 即可，不要输出其他内容。"
-    )
-    result = call_agent(runtime, "judge", _conv_name("judge-master-reply"), judge_prompt)
+    result = judge_reply(runtime, "Master", master_reply, [
+        "A. Master 确认 PM 理解 100% 正确，无需再问用户任何问题且无需纠正 PM 的任何错误且无需回复 PM 的任何问题 → 进入下一阶段",
+        "B. Master 有对 PM 的答复或对 PM 指出的问题，需要转发给 PM 继续确认 → 回 PM",
+        "C. Master 有无法判定的问题，需要向用户确认",
+    ], "judge-master-reply")
     return {"judge_result": result.strip()}
-
-
-def route_master_reply(state: WorkflowState) -> str:
-    r = state.get("judge_result", "")
-    if r.startswith("A"):
-        return "pm_write_criteria"
-    elif r.startswith("B"):
-        return "pm_align"
-    return "clarify_inject"
 
 
 def clarify_inject(state: WorkflowState) -> dict:
@@ -550,14 +542,7 @@ def pm_write_criteria(state: WorkflowState) -> dict:
     passed = "PASS" in last_line
     runtime.logger.log_event("criteria_defined",
         detail=f"PM 审核标准已制定，自检{'通过' if passed else '不通过'}")
-    return {"phase": "criteria_done", "judge_result": "pass" if passed else "fail"}
-
-
-def route_criteria_self_check(state: WorkflowState) -> str:
-    r = state.get("judge_result", "")
-    if r == "pass":
-        return "pm_write_doc"
-    return "pm_write_criteria"
+    return {"phase": "criteria_done", "judge_result": "pm_write_doc" if passed else "pm_write_criteria"}
 
 
 def pm_write_doc(state: WorkflowState) -> dict:
@@ -669,12 +654,7 @@ def review_pm_output(state: WorkflowState) -> dict:
 
     runtime.logger.log_event("review_completed", detail=f"审查{'通过' if passed else '不通过'}")
     print(f"  {'✓ Reviewer 审查通过' if passed else '✗ Reviewer 审查不通过'}")
-    return {"phase": "review_done", "judge_result": "pass" if passed else "fail"}
-
-
-def route_review(state: WorkflowState) -> str:
-    r = state.get("judge_result", "")
-    return "human_review" if r == "pass" else "pm_write_doc"
+    return {"phase": "review_done", "judge_result": "human_review" if passed else "pm_write_doc"}
 
 
 def human_review(state: WorkflowState) -> dict:
@@ -704,17 +684,12 @@ def human_review(state: WorkflowState) -> dict:
     if not feedback:
         print("  ✓ 人工审核通过")
         runtime.logger.log_event("human_review_passed")
-        return {"phase": "done", "judge_result": "pass"}
+        return {"phase": "done", "judge_result": END}
 
     runtime.context.set_ctx("human_feedback", feedback)
     runtime.logger.log_event("human_review_rejected", detail=feedback)
     print(f"  ⚠ 人工审核不通过，反馈已记录")
-    return {"phase": "human_review_rejected", "judge_result": "fail"}
-
-
-def route_human_review(state: WorkflowState) -> str:
-    r = state.get("judge_result", "")
-    return END if r == "pass" else "review_pm_output"
+    return {"phase": "human_review_rejected", "judge_result": "review_pm_output"}
 
 
 def build_graph(runtime) -> StateGraph:
@@ -722,9 +697,7 @@ def build_graph(runtime) -> StateGraph:
     for f in [pre_flight_clarify, pm_handoff, pm_align,
               master_reply_pm, judge_master_reply, clarify_inject,
               pm_write_criteria, pm_write_doc,
-              review_pm_output, human_review,
-              route_master_reply, route_criteria_self_check,
-              route_review, route_human_review]:
+              review_pm_output, human_review]:
         f._runtime = runtime
 
     graph = StateGraph(WorkflowState)
@@ -744,25 +717,16 @@ def build_graph(runtime) -> StateGraph:
     graph.add_edge("pm_handoff", "pm_align")
     graph.add_edge("pm_align", "master_reply_pm")
     graph.add_edge("master_reply_pm", "judge_master_reply")
-    graph.add_conditional_edges("judge_master_reply", route_master_reply, {
-        "pm_write_criteria": "pm_write_criteria",
-        "pm_align": "pm_align",
-        "clarify_inject": "clarify_inject",
+    graph.add_conditional_edges("judge_master_reply", lambda s: s.get("judge_result", ""), {
+        "A": "pm_write_criteria",
+        "B": "pm_align",
+        "C": "clarify_inject",
     })
     graph.add_edge("clarify_inject", "master_reply_pm")
-    graph.add_conditional_edges("pm_write_criteria", route_criteria_self_check, {
-        "pm_write_doc": "pm_write_doc",
-        "pm_write_criteria": "pm_write_criteria",
-    })
+    graph.add_conditional_edges("pm_write_criteria", lambda s: s.get("judge_result", ""))
     graph.add_edge("pm_write_doc", "review_pm_output")
-    graph.add_conditional_edges("review_pm_output", route_review, {
-        "human_review": "human_review",
-        "pm_write_doc": "pm_write_doc",
-    })
-    graph.add_conditional_edges("human_review", route_human_review, {
-        END: END,
-        "review_pm_output": "review_pm_output",
-    })
+    graph.add_conditional_edges("review_pm_output", lambda s: s.get("judge_result", ""))
+    graph.add_conditional_edges("human_review", lambda s: s.get("judge_result", ""))
 
     return graph.compile(checkpointer=MemorySaver())
 
