@@ -461,7 +461,6 @@ def judge_master_reply(state: WorkflowState) -> dict:
 
     print("  ── judge: Master 回复 ──")
     result = judge_reply(runtime, "Master", master_reply, [
-        "A. Master 确认 PM 理解 100% 正确，无需再问用户任何问题且无需纠正 PM 的任何错误且无需回复 PM 的任何问题 → 进入下一阶段",
         "B. Master 有对 PM 的答复或对 PM 指出的问题，需要转发给 PM 继续确认 → 回 PM",
         "C. Master 有无法判定的问题，需要向用户确认",
     ], "judge-master-reply")
@@ -487,28 +486,13 @@ def clarify_inject(state: WorkflowState) -> dict:
 
 
 def _write_criteria(runtime, master_conv, title: str, file_path: str,
-                     file_header: str, prompt: str, context_key: str) -> bool:
-    """通用审核标准编写。Master 编写 + 自检。返回是否通过。"""
+                     file_header: str, prompt: str, context_key: str):
+    """通用审核标准编写。Master 编写并写入文件。"""
     print(f"\n  ── {title} ──")
 
-    # 如有上一轮自检反馈，注入帮助改进
-    prev_check = runtime.context.get_ctx(f"{context_key}_self_check")
-    feedback = ""
-    if prev_check and "FAIL" in prev_check:
-        feedback = "\n上一轮自检发现的问题：\n" + prev_check + "\n请针对性改进后重新制定标准。"
-
-    criteria = call_agent(runtime, "master", master_conv, prompt + feedback)
-
-    # 自检
-    self_check = call_agent(runtime, "master", master_conv,
-        "逐条确认以上标准每一条你都能实际执行检查"
-        "（通过查看对应的文件）。"
-        "依次回复每条是 ✓ 还是 ✗，如 ✗ 说明缺什么。\n"
-        "如果全部 ✓，最后一行回复 == PASS ==。"
-        "如果有 ✗，最后一行回复 == FAIL ==")
+    criteria = call_agent(runtime, "master", master_conv, prompt)
 
     runtime.context.set_ctx(context_key, criteria)
-    runtime.context.set_ctx(f"{context_key}_self_check", self_check)
 
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
     with open(file_path, "w", encoding="utf-8") as f:
@@ -516,11 +500,8 @@ def _write_criteria(runtime, master_conv, title: str, file_path: str,
     runtime.context.set_ctx(f"{context_key}_path", file_path)
     print(f"  ✓ 审核标准已写入 {file_path}")
 
-    last_line = self_check.strip().split("\n")[-1].strip()
-    passed = "PASS" in last_line
     runtime.logger.log_event("criteria_defined",
-        detail=f"{title}——自检{'通过' if passed else '不通过'}")
-    return passed
+        detail=f"{title}——已写入 {file_path}")
 
 
 def pm_write_criteria(state: WorkflowState) -> dict:
@@ -556,7 +537,7 @@ def pm_write_criteria(state: WorkflowState) -> dict:
         "请具体、可操作，避免空泛描述。"
     )
 
-    passed = _write_criteria(
+    _write_criteria(
         runtime, master_conv,
         title="Master 制定 PM 审核标准",
         file_path=os.path.join(runtime.workspace, "criteria-pm.md"),
@@ -564,11 +545,11 @@ def pm_write_criteria(state: WorkflowState) -> dict:
         prompt=prompt,
         context_key="pm_criteria",
     )
-    return {"phase": "criteria_done", "judge_result": "pm_write_doc" if passed else "pm_write_criteria"}
+    return {"phase": "criteria_done", "judge_result": "review_pm_criteria"}
 
 
 def dev_write_criteria(state: WorkflowState) -> dict:
-    """Master 制定 Dev 详细设计的审核标准。循环直至自检通过。"""
+    """Master 制定 Dev 详细设计的审核标准。"""
     runtime = getattr(dev_write_criteria, "_runtime", None)
     master_conv = runtime.context.get_ctx("master_conv")
     project_context_path = runtime.context.get_bg("project_context_path")
@@ -598,7 +579,7 @@ def dev_write_criteria(state: WorkflowState) -> dict:
         "请具体、可操作，避免空泛描述。"
     )
 
-    passed = _write_criteria(
+    _write_criteria(
         runtime, master_conv,
         title="Master 制定 Dev 设计审核标准",
         file_path=os.path.join(ws, "criteria-design.md"),
@@ -606,7 +587,69 @@ def dev_write_criteria(state: WorkflowState) -> dict:
         prompt=prompt,
         context_key="dev_criteria",
     )
-    return {"phase": "dev_criteria_done", "judge_result": "dev_write_design" if passed else "dev_write_criteria"}
+    return {"phase": "dev_criteria_done", "judge_result": "review_dev_criteria"}
+
+
+def review_pm_criteria(state: WorkflowState) -> dict:
+    """Reviewer 审查 PM 审核标准是否具体可执行。"""
+    runtime = getattr(review_pm_criteria, "_runtime", None)
+    criteria_path = runtime.context.get_ctx("pm_criteria_path") or ""
+    print(f"\n{'='*60}\n  ==> Reviewer 审查 PM 审核标准\n{'='*60}")
+
+    if not criteria_path or not os.path.exists(criteria_path):
+        print(f"  ✗ PM 审核标准文件不存在：{criteria_path}")
+        return {"phase": "review_criteria_fail", "judge_result": "pm_write_criteria"}
+
+    review = call_agent(runtime, "reviewer", _conv_name("review-pm-criteria"),
+        "请审查以下审核标准。\n\n"
+        "逐条检查：\n"
+        "1. 每条标准是否具体、可衡量(审核标准不能带有“恰当”，“合理”等主观判断)？\n"
+        "2. 每条标准是否写明了审查方法？(agent可以使用tool如file_read等方法进行审查)\n"
+        "3. 标准是否覆盖了所有应覆盖的维度？\n"
+        f"审核标准文件在：{criteria_path}\n\n"
+        "逐条给出评价，最后一行输出 == PASS == 或 == FAIL ==。\n"
+        "如果 FAIL，写明需要修正的具体问题。",
+        stream=False)
+
+    last_line = review.strip().split("\n")[-1].strip()
+    passed = "PASS" in last_line
+    runtime.logger.log_event("criteria_reviewed",
+        detail=f"PM 审核标准审查{'通过' if passed else '不通过'}")
+    return {
+        "phase": "review_pm_criteria_done" if passed else "review_pm_criteria_fail",
+        "judge_result": "pm_write_doc" if passed else "pm_write_criteria",
+    }
+
+
+def review_dev_criteria(state: WorkflowState) -> dict:
+    """Reviewer 审查 Dev 审核标准是否具体可执行。"""
+    runtime = getattr(review_dev_criteria, "_runtime", None)
+    criteria_path = runtime.context.get_ctx("dev_criteria_path") or ""
+    print(f"\n{'='*60}\n  ==> Reviewer 审查 Dev 审核标准\n{'='*60}")
+
+    if not criteria_path or not os.path.exists(criteria_path):
+        print(f"  ✗ Dev 审核标准文件不存在：{criteria_path}")
+        return {"phase": "review_criteria_fail", "judge_result": "dev_write_criteria"}
+
+    review = call_agent(runtime, "reviewer", _conv_name("review-dev-criteria"),
+        "请审查以下审核标准。\n\n"
+        "逐条检查：\n"
+        "1. 每条标准是否具体、可衡量(审核标准不能带有“恰当”，“合理”等主观判断)？\n"
+        "2. 每条标准是否写明了审查方法？(agent可以使用tool如file_read等方法进行审查)\n"
+        "3. 标准是否覆盖了所有应覆盖的维度？\n"
+        f"审核标准文件在：{criteria_path}\n\n"
+        "逐条给出评价，最后一行输出 == PASS == 或 == FAIL ==。\n"
+        "如果 FAIL，写明需要修正的具体问题。",
+        stream=False)
+
+    last_line = review.strip().split("\n")[-1].strip()
+    passed = "PASS" in last_line
+    runtime.logger.log_event("criteria_reviewed",
+        detail=f"Dev 审核标准审查{'通过' if passed else '不通过'}")
+    return {
+        "phase": "review_dev_criteria_done" if passed else "review_dev_criteria_fail",
+        "judge_result": "dev_write_design" if passed else "dev_write_criteria",
+    }
 
 
 def dev_write_design(state: WorkflowState) -> dict:
@@ -655,6 +698,119 @@ def dev_write_design(state: WorkflowState) -> dict:
     runtime.context.set_phase_node(["Dev 出详细设计"], "done")
     runtime.logger.log_event("phase_completed", detail="Dev 详细设计完成")
     return {"phase": "dev_design_done", "judge_result": "pass"}
+
+
+def dev_write_plan(state: WorkflowState) -> dict:
+    """Master 写信指令 → Dev 产出分步实现计划，每步含可执行验收标准。"""
+    runtime = getattr(dev_write_plan, "_runtime", None)
+    dev_conv = runtime.context.get_ctx("dev_conv")
+    if not dev_conv:
+        dev_conv = _conv_name("dev-plan")
+        runtime.context.set_ctx("dev_conv", dev_conv)
+
+    runtime.logger.log_event("phase_started", detail="Dev 出实现计划")
+    print(f"\n  ── Dev 出实现计划 ──")
+
+    master_conv = runtime.context.get_ctx("master_conv")
+    if not master_conv:
+        raise RuntimeError("master conversation 不存在")
+
+    dev_dir = os.path.join(runtime.workspace, "Dev")
+    os.makedirs(dev_dir, exist_ok=True)
+
+    design_path = os.path.join(dev_dir, "design.md")
+    criteria_path = runtime.context.get_ctx("dev_criteria_path") or ""
+
+    plan_path = os.path.join(dev_dir, "plan.md")
+    plan_letter_path = _letter_path(runtime, "master-plan")
+    write_letter(runtime, "master", master_conv, plan_letter_path,
+                 "分步实现计划编写说明",
+                 "请以 Master 的身份给 Dev 写信，要求 Dev 输出分步实现的计划并写入指定文件。\n"
+                 "告知 Dev，它的详细设计方案在：\n"
+                 f"{design_path}\n\n"
+                 "## 计划模板格式\n"
+                 "每个 Step 必须按以下模板编写：\n"
+                 "```markdown\n"
+                 "## Step N: <简短标题>\n"
+                 "### 改动文件\n"
+                 "- 列出需要新增或修改的文件路径\n"
+                 "### 验收方法\n"
+                 "```bash\n"
+                 "<一条可执行的命令，能独立验证此步骤完成>\n"
+                 "```\n"
+                 "### 前置条件\n"
+                 "- 列出需要上一步已完成的前提（如果有）\n"
+                 "```\n\n"
+                 "## 要求\n"
+                 "1. 每个 Step 的改动不超过 3-5 个文件\n"
+                 "2. 验收方法必须是可直接运行的命令（pytest、curl、python -c 等），"
+                 "或是可使用tools或playwright脚本进行e2e验证的方法(如需要此方法验收，需要细致地写明验证方式)，"
+                 "如果有必要的话，鼓励编写测试代码来进行验收，"
+                 "每一步的验收需要覆盖这一 Step 中的所有改动。"
+                 "不允许主观描述（如'确认代码正确'、'检查逻辑'）\n"
+                 "3. 步骤必须按依赖顺序排列\n"
+                 "4. 覆盖设计文档中的所有功能点\n"
+                 "5. 这个阶段只要求产出计划文档，"
+                 "代码实现需要等进一步指令后再进行。\n"
+                 f"审核标准文件参考：{criteria_path}")
+    read_letter(runtime, "dev", dev_conv, plan_letter_path,
+                f"按信中的要求编写分步实现计划，写入文件 {plan_path}。")
+
+    print(f"  ✓ {plan_path}")
+
+    runtime.context.set_phase_node(["Dev 出实现计划"], "done")
+    runtime.logger.log_event("phase_completed", detail="Dev 实现计划完成")
+    return {"phase": "dev_plan_done", "judge_result": "pass"}
+
+
+def dev_review_plan(state: WorkflowState) -> dict:
+    """Reviewer 审查 Dev 的实现计划。"""
+    runtime = getattr(dev_review_plan, "_runtime", None)
+    print(f"\n{'='*60}\n  ==> Reviewer 审查 Dev 实现计划\n{'='*60}")
+
+    dev_dir = os.path.join(runtime.workspace, "Dev")
+    plan_path = os.path.join(dev_dir, "plan.md")
+    design_path = os.path.join(dev_dir, "design.md")
+    criteria_path = runtime.context.get_ctx("dev_criteria_path") or ""
+
+    if not os.path.exists(plan_path):
+        print(f"  ✗ 计划文件不存在：{plan_path}")
+        return {"phase": "review_plan_fail", "judge_result": "dev_write_plan"}
+
+    prompt = (
+        "你是一个项目审查员。请审查 Dev 的分步实现计划。\n\n"
+        "## 审查标准\n"
+        "逐条检查以下维度，每一条回复 ✓ 或 ✗：\n\n"
+        "1. **步骤完整性** — 计划是否覆盖了设计文档中的所有功能点？\n"
+        f"   设计文档在：{design_path}\n"
+        "2. **验收可执行性** — 每个 Step 的验收方法是否为可运行的命令、\n"
+        "   Playwright 脚本、或测试代码？不允许'确认代码正确'、'检查逻辑'这类主观描述。\n"
+        "3. **步骤粒度** — 每个 Step 的改动是否不超过 3-5 个文件？\n"
+        "4. **步骤顺序** — 步骤是否按依赖关系排列？\n"
+        "5. **可验证性** — 每个 Step 完成后是否可独立验证？\n"
+        "6. **验收覆盖度** — 每个 Step 的验收方法是否覆盖了该步骤的所有改动？\n"
+        "   如果用了 Playwright/E2E 方式，是否写明了具体的验证步骤和预期结果？\n\n"
+        "## Dev 的实现计划\n"
+        f"计划文件在：{plan_path}\n\n"
+        f"## 审核标准参考\n{criteria_path}\n\n"
+        "## 输出格式\n"
+        "逐条给出评价，最后一行输出 == PASS == 或 == FAIL ==。\n"
+        "如果 FAIL，写明需要修正的具体问题。"
+    )
+
+    review = call_agent(runtime, "reviewer", _conv_name("review-plan"),
+                        prompt, stream=False)
+    print(f"\n── Reviewer 审查结果 ──\n{review}\n")
+
+    last_line = review.strip().split("\n")[-1].strip()
+    passed = "PASS" in last_line
+
+    runtime.logger.log_event("plan_reviewed",
+        detail=f"Dev 计划审查{'通过' if passed else '不通过'}")
+    return {
+        "phase": "plan_review_done" if passed else "plan_review_fail",
+        "judge_result": "dev_exec" if passed else "dev_write_plan",
+    }
 
 
 def pm_write_doc(state: WorkflowState) -> dict:
@@ -982,7 +1138,9 @@ def build_graph(runtime) -> StateGraph:
               master_reply_pm, judge_master_reply, clarify_inject,
               pm_write_criteria, pm_write_doc,
               review_pm_output, human_review,
-              dev_handoff, dev_align, dev_write_criteria, dev_write_design]:
+              dev_handoff, dev_align, dev_write_criteria, dev_write_design,
+              dev_write_plan, dev_review_plan,
+              review_pm_criteria, review_dev_criteria]:
         f._runtime = runtime
 
     graph = StateGraph(WorkflowState)
@@ -1000,6 +1158,10 @@ def build_graph(runtime) -> StateGraph:
     graph.add_node("dev_align", dev_align)
     graph.add_node("dev_write_criteria", dev_write_criteria)
     graph.add_node("dev_write_design", dev_write_design)
+    graph.add_node("dev_write_plan", dev_write_plan)
+    graph.add_node("dev_review_plan", dev_review_plan)
+    graph.add_node("review_pm_criteria", review_pm_criteria)
+    graph.add_node("review_dev_criteria", review_dev_criteria)
 
     graph.set_entry_point("pre_flight_clarify")
     graph.add_edge("pre_flight_clarify", "pm_handoff")
@@ -1007,12 +1169,15 @@ def build_graph(runtime) -> StateGraph:
     graph.add_edge("pm_align", "master_reply_pm")
     graph.add_edge("master_reply_pm", "judge_master_reply")
     graph.add_conditional_edges("judge_master_reply", lambda s: s.get("judge_result", ""), {
-        "A": "pm_write_criteria",
         "B": "pm_align",
         "C": "clarify_inject",
     })
     graph.add_edge("clarify_inject", "master_reply_pm")
     graph.add_conditional_edges("pm_write_criteria", lambda s: s.get("judge_result", ""), {
+        "review_pm_criteria": "review_pm_criteria",
+        "pm_write_criteria": "pm_write_criteria",
+    })
+    graph.add_conditional_edges("review_pm_criteria", lambda s: s.get("judge_result", ""), {
         "pm_write_doc": "pm_write_doc",
         "pm_write_criteria": "pm_write_criteria",
     })
@@ -1028,10 +1193,19 @@ def build_graph(runtime) -> StateGraph:
     graph.add_edge("dev_handoff", "dev_align")
     graph.add_edge("dev_align", "dev_write_criteria")
     graph.add_conditional_edges("dev_write_criteria", lambda s: s.get("judge_result", ""), {
+        "review_dev_criteria": "review_dev_criteria",
+        "dev_write_criteria": "dev_write_criteria",
+    })
+    graph.add_conditional_edges("review_dev_criteria", lambda s: s.get("judge_result", ""), {
         "dev_write_design": "dev_write_design",
         "dev_write_criteria": "dev_write_criteria",
     })
-    graph.add_edge("dev_write_design", END)
+    graph.add_edge("dev_write_design", "dev_write_plan")
+    graph.add_edge("dev_write_plan", "dev_review_plan")
+    graph.add_conditional_edges("dev_review_plan", lambda s: s.get("judge_result", ""), {
+        END: END,
+        "dev_write_plan": "dev_write_plan",
+    })
 
     return graph.compile(checkpointer=MemorySaver())
 
