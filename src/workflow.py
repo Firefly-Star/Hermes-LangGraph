@@ -532,7 +532,8 @@ def pm_write_criteria(state: WorkflowState) -> dict:
         "- PM 将按这些标准撰写 PRD 和 prototype\n"
         "- Reviewer 将按这些标准审查 PM 产出\n\n"
         "## 要求\n"
-        "每条标准必须具体、可衡量，且写明审查方法（如何使用tool或者skill判断通过/不通过）。\n"
+        "每条标准必须具体、可衡量，且写明审查方法（如何使用tool或者skill判断通过/不通过）。"
+        "（对于原型的审核，优先考虑Playwright可以验收的标准，不需要你编写playwright标准，但是需要体现playwright脚本可审核的标准）。\n"
         "确保标准不是模板化的文字堆砌，而是真正能为审查提供 actionable 的判断依据。\n"
         "请具体、可操作，避免空泛描述。"
     )
@@ -671,10 +672,21 @@ def review_pm_output(state: WorkflowState) -> dict:
     prompt += f"PM的产出：\n PRD 在：{prd_path}\n\n"
     prompt += f"Prototype 在：{proto_path}\n\n"
 
-    prompt += ("逐条对照审核标准检查，输出审查结果。\n"
-               "明确列出每个不通过项及其原因。\n"
-               "如果全部通过，最后一行回复 == PASS ==\n"
-               "如果有不通过项，最后一行回复 == FAIL ==")
+    prompt += (
+        "## 审查步骤\n"
+        "1. 先阅读 PRD，对照审核标准中的需求完整性、MVP 边界、逻辑自洽性等维度检查，输出结论\n"
+        "2. 针对 prototype，编写一个 Playwright 脚本并执行。\n"
+        "   脚本必须逐条覆盖审核标准中所有交互/UI 相关的条目，包括但不限于：\n"
+        "   - 页面结构：登录页、注册页、主页面要素是否完整\n"
+        "   - 表单校验：空输入、非法字符、密码长度等\n"
+        "   - 交互流程：注册 → 自动登录 → 登出 → 重新登录\n"
+        "   - 边界情况：重复注册、密码错误、未登录访问保护页面\n"
+        "   - 数据一致性：注册后可用新账号登录、大小写用户名区分\n"
+        "   每个测试用例用 test() 块组织，断言预期结果。\n"
+        "3. 综合 PRD 审查结论和 Playwright 脚本执行结果，逐条输出审查结论。\n"
+        "明确列出每个不通过项及其原因。\n"
+        "如果全部通过，最后一行回复 == PASS ==\n"
+        "如果有不通过项，最后一行回复 == FAIL ==")
 
     conv = _conv_name("reviewer")
     reply = call_agent(runtime, "reviewer", conv, prompt)
@@ -1126,10 +1138,136 @@ def dev_review_plan(state: WorkflowState) -> dict:
 
     runtime.logger.log_event("plan_reviewed",
         detail=f"Dev 计划审查{'通过' if passed else '不通过'}")
+
+    if passed:
+        plan_path = os.path.join(runtime.workspace, "Dev", "plan.md")
+        total = _count_steps(plan_path)
+        runtime.context.set_ctx("dev_step_index", "0")
+        runtime.context.set_ctx("dev_total_steps", str(total))
+
     return {
         "phase": "plan_review_done" if passed else "plan_review_fail",
         "judge_result": "dev_exec" if passed else "dev_write_plan",
     }
+
+
+def _get_step_from_plan(plan_path: str, step_idx: int) -> str:
+    """从 plan.md 中提取第 step_idx 步的内容（0-indexed）。"""
+    if not os.path.exists(plan_path):
+        return ""
+    with open(plan_path, "r", encoding="utf-8") as f:
+        text = f.read()
+    sections = text.split("## Step ")
+    if step_idx + 1 >= len(sections):
+        return ""
+    return "## Step " + sections[step_idx + 1].strip()
+
+
+def _count_steps(plan_path: str) -> int:
+    """统计 plan.md 中的总步数。"""
+    if not os.path.exists(plan_path):
+        return 0
+    with open(plan_path, "r", encoding="utf-8") as f:
+        text = f.read()
+    return text.count("## Step ")
+
+
+def dev_exec_step(state: WorkflowState) -> dict:
+    """依次执行 Dev plan 中的每一步。Master 写信 → Dev 实现。"""
+    runtime = getattr(dev_exec_step, "_runtime", None)
+    master_conv = runtime.context.get_ctx("master_conv")
+    dev_conv = runtime.context.get_ctx("dev_conv") or _conv_name("dev-exec")
+    runtime.context.set_ctx("dev_conv", dev_conv)
+
+    step_idx = int(runtime.context.get_ctx("dev_step_index") or "0")
+    plan_path = os.path.join(runtime.workspace, "Dev", "plan.md")
+    design_path = os.path.join(runtime.workspace, "Dev", "design.md")
+
+    step_content = _get_step_from_plan(plan_path, step_idx)
+    if not step_content:
+        print(f"\n  ✗ 未找到 Step {step_idx + 1}，计划文件：{plan_path}")
+        return {"phase": "dev_exec_error", "judge_result": "dev_exec_step"}
+
+    print(f"\n{'='*60}\n  ==> Dev 执行 Step {step_idx + 1}\n{'='*60}")
+    runtime.logger.log_event("phase_started", detail=f"Dev 执行 Step {step_idx + 1}")
+
+    # 如有上一轮审查反馈，注入帮助改进
+    prev_review = runtime.context.get_ctx("dev_step_review_feedback")
+    feedback = ""
+    if prev_review:
+        feedback = f"\n\n## 上一轮审查反馈（需修复）\n{prev_review}"
+
+    dev_dir = os.path.join(runtime.workspace, "Dev")
+    os.makedirs(dev_dir, exist_ok=True)
+
+    letter_path = _letter_path(runtime, f"master-step-{step_idx + 1}")
+    write_letter(runtime, "master", master_conv, letter_path,
+                 f"Step {step_idx + 1} 实现说明",
+                 f"请以 Master 的身份给 Dev 写信，要求 Dev 实现以下步骤。\n\n"
+                 f"## 待实现的步骤\n{step_content}\n\n"
+                 f"## 上下文\n"
+                 f"这是第 {step_idx + 1} 步。\n"
+                 f"详细设计方案：{design_path}\n"
+                 f"所有之前的步骤已完成，请在此基础上继续开发。\n"
+                 f"完成实现后自行验证验收方法。"
+                 + feedback)
+    read_letter(runtime, "dev", dev_conv, letter_path,
+                "按信中要求实现当前步骤。完成实现后，运行该步骤的验收方法确认通过。")
+
+    return {"phase": "dev_exec", "judge_result": "dev_review_step"}
+
+
+def dev_review_step(state: WorkflowState) -> dict:
+    """Reviewer 按验收标准审查当前 Step 的实现。"""
+    runtime = getattr(dev_review_step, "_runtime", None)
+    print(f"\n{'='*60}\n  ==> Reviewer 审查 Step\n{'='*60}")
+
+    step_idx = int(runtime.context.get_ctx("dev_step_index") or "0")
+    total = int(runtime.context.get_ctx("dev_total_steps") or "0")
+    plan_path = os.path.join(runtime.workspace, "Dev", "plan.md")
+    design_path = os.path.join(runtime.workspace, "Dev", "design.md")
+
+    step_content = _get_step_from_plan(plan_path, step_idx)
+    if not step_content:
+        return {"phase": "review_step_error", "judge_result": "dev_exec_step"}
+
+    review = call_agent(runtime, "reviewer", _conv_name(f"review-step-{step_idx + 1}"),
+        "请审查 Dev 的最新实现。\n\n"
+        "## 验收标准\n"
+        f"来自计划的当前步骤：\n{step_content}\n\n"
+        f"## 参考设计文档\n{design_path}\n\n"
+        "逐条检查：\n"
+        "1. 实现是否满足该步骤的验收方法？\n"
+        "2. 实现是否与详细设计方案一致？\n"
+        "3. 代码质量和错误处理是否合理？\n\n"
+        "最后一行输出 == PASS == 或 == FAIL ==。\n"
+        "如果 FAIL，写明需要修正的具体问题和原因。",
+        stream=False)
+
+    print(f"\n── Reviewer 审查结果 ──\n{review}\n")
+
+    last_line = review.strip().split("\n")[-1].strip()
+    passed = "PASS" in last_line
+
+    if passed:
+        new_idx = step_idx + 1
+        runtime.context.set_ctx("dev_step_index", str(new_idx))
+        runtime.context.set_ctx("dev_step_review_feedback", "")
+        runtime.logger.log_event("step_completed",
+            detail=f"Step {step_idx + 1} 通过（{new_idx}/{total}）")
+
+        if new_idx >= total:
+            print(f"\n  ✓ 所有步骤完成！")
+            runtime.logger.log_event("phase_completed", detail="Dev 执行全部完成")
+            return {"phase": "dev_exec_done", "judge_result": "done"}
+        else:
+            print(f"\n  ✓ Step {step_idx + 1} 通过，进入 Step {new_idx + 1}")
+            return {"phase": "step_pass", "judge_result": "dev_exec_step"}
+    else:
+        runtime.context.set_ctx("dev_step_review_feedback", review)
+        runtime.logger.log_event("step_failed",
+            detail=f"Step {step_idx + 1} 未通过")
+        return {"phase": "step_fail", "judge_result": "dev_exec_step"}
 
 
 def build_graph(runtime) -> StateGraph:
@@ -1140,7 +1278,8 @@ def build_graph(runtime) -> StateGraph:
               review_pm_output, human_review,
               dev_handoff, dev_align, dev_write_criteria, dev_write_design,
               dev_write_plan, dev_review_plan,
-              review_pm_criteria, review_dev_criteria]:
+              review_pm_criteria, review_dev_criteria,
+              dev_exec_step, dev_review_step]:
         f._runtime = runtime
 
     graph = StateGraph(WorkflowState)
@@ -1162,6 +1301,8 @@ def build_graph(runtime) -> StateGraph:
     graph.add_node("dev_review_plan", dev_review_plan)
     graph.add_node("review_pm_criteria", review_pm_criteria)
     graph.add_node("review_dev_criteria", review_dev_criteria)
+    graph.add_node("dev_exec_step", dev_exec_step)
+    graph.add_node("dev_review_step", dev_review_step)
 
     graph.set_entry_point("pre_flight_clarify")
     graph.add_edge("pre_flight_clarify", "pm_handoff")
@@ -1203,8 +1344,13 @@ def build_graph(runtime) -> StateGraph:
     graph.add_edge("dev_write_design", "dev_write_plan")
     graph.add_edge("dev_write_plan", "dev_review_plan")
     graph.add_conditional_edges("dev_review_plan", lambda s: s.get("judge_result", ""), {
-        END: END,
+        "dev_exec": "dev_exec_step",
         "dev_write_plan": "dev_write_plan",
+    })
+    graph.add_edge("dev_exec_step", "dev_review_step")
+    graph.add_conditional_edges("dev_review_step", lambda s: s.get("judge_result", ""), {
+        "dev_exec_step": "dev_exec_step",
+        "done": END,
     })
 
     return graph.compile(checkpointer=MemorySaver())
