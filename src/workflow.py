@@ -436,7 +436,9 @@ def master_reply_pm(state: WorkflowState) -> dict:
             "不要猜测，明确写出需要向用户确认的具体问题\n\n"
             "你的回复中需明确区分两部分：\n"
             "- 你对 PM 的答复/纠正\n"
-            "- 需要向用户确认的问题（如无则说'无需向用户提问'）")
+            "- 需要向用户确认的问题（如无则说'无需向用户提问'）\n"
+            "4. 如果 PM 已经没有疑问且确保 PM 没有任何理解错误，则告诉 PM 它的理解已经完全正确。无需再向用户汇报以及请求许可，但也别立刻让 PM 编写相关产出.\n"
+            "后续用户会主动指示让你编写对 PM 产出的审核标准以及对 PM 的prompt信件。")
 
     pm_reply_path = runtime.context.get_ctx("pm_reply_path")
     if pm_reply_path and os.path.exists(pm_reply_path):
@@ -455,14 +457,15 @@ def master_reply_pm(state: WorkflowState) -> dict:
 
 
 def judge_master_reply(state: WorkflowState) -> dict:
-    """判读 Master 能否独立回答 PM，还是需要问用户。"""
+    """判读 Master 的回复，路由到下一步。"""
     runtime = getattr(judge_master_reply, "_runtime", None)
     master_reply = runtime.context.get_ctx("master_reply")
 
     print("  ── judge: Master 回复 ──")
     result = judge_reply(runtime, "Master", master_reply, [
-        "B. Master 有对 PM 的答复或对 PM 指出的问题，需要转发给 PM 继续确认 → 回 PM",
-        "C. Master 有无法判定的问题，需要向用户确认",
+        "A. Master 已明确确认 PM 理解完全正确，且无任何需要再向PM说明或向用户提问的内容 → 进入下一阶段",
+        "B. Master 有对 PM 的答复或纠正，需要转发给 PM 继续对齐 → 回 pm_align",
+        "C. Master 有无法判定的问题，需要向用户确认 → 进入 clarify_inject",
     ], "judge-master-reply")
     return {"judge_result": result.strip()}
 
@@ -486,17 +489,17 @@ def clarify_inject(state: WorkflowState) -> dict:
 
 
 def _write_criteria(runtime, master_conv, title: str, file_path: str,
-                     file_header: str, prompt: str, context_key: str):
-    """通用审核标准编写。Master 编写并写入文件。"""
+                     prompt: str, context_key: str):
+    """通用审核标准编写。告诉 Master 路径让 Master 自己写入文件。"""
     print(f"\n  ── {title} ──")
 
-    criteria = call_agent(runtime, "master", master_conv, prompt)
-
-    runtime.context.set_ctx(context_key, criteria)
-
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
-    with open(file_path, "w", encoding="utf-8") as f:
-        f.write(file_header + "\n\n" + criteria)
+    call_agent(runtime, "master", master_conv,
+               f"{prompt}\n\n请将审核标准完整写入文件：{file_path}")
+
+    if not os.path.exists(file_path):
+        raise RuntimeError(f"Master 未生成审核标准文件：{file_path}")
+
     runtime.context.set_ctx(f"{context_key}_path", file_path)
     print(f"  ✓ 审核标准已写入 {file_path}")
 
@@ -542,7 +545,6 @@ def pm_write_criteria(state: WorkflowState) -> dict:
         runtime, master_conv,
         title="Master 制定 PM 审核标准",
         file_path=os.path.join(runtime.workspace, "criteria-pm.md"),
-        file_header="# PM 产出审核标准",
         prompt=prompt,
         context_key="pm_criteria",
     )
@@ -562,13 +564,13 @@ def review_pm_criteria(state: WorkflowState) -> dict:
     review = call_agent(runtime, "reviewer", _conv_name("review-pm-criteria"),
         "请审查以下审核标准。\n\n"
         "逐条检查：\n"
-        "1. 每条标准是否具体、可衡量(审核标准不能带有“恰当”，“合理”等主观判断)？\n"
+        "1. 每条标准是否具体、可衡量(审核标准不能带有\"恰当\"，\"合理\"等主观判断)？\n"
         "2. 每条标准是否写明了审查方法？(agent可以使用tool如file_read等方法进行审查)\n"
         "3. 标准是否覆盖了所有应覆盖的维度？\n"
         f"审核标准文件在：{criteria_path}\n\n"
         "逐条给出评价，最后一行输出 == PASS == 或 == FAIL ==。\n"
         "如果 FAIL，写明需要修正的具体问题。",
-        stream=False)
+        stream=True)
 
     last_line = review.strip().split("\n")[-1].strip()
     passed = "PASS" in last_line
@@ -663,6 +665,8 @@ def review_pm_output(state: WorkflowState) -> dict:
     project_context_path = runtime.context.get_bg("project_context_path") or ""
 
     human_feedback = runtime.context.get_ctx("human_feedback") or "(无人工反馈)"
+    reviewer_dir = os.path.join(runtime.workspace, "reviewer")
+    script_dir = os.path.join(reviewer_dir, "pm")
 
     prompt = "你是一个项目审查员。请根据以下材料审查 PM 的产出。\n"
     prompt += f"## 审核标准在：{criteria_path}\n"
@@ -675,14 +679,21 @@ def review_pm_output(state: WorkflowState) -> dict:
     prompt += (
         "## 审查步骤\n"
         "1. 先阅读 PRD，对照审核标准中的需求完整性、MVP 边界、逻辑自洽性等维度检查，输出结论\n"
-        "2. 针对 prototype，编写一个 Playwright 脚本并执行。\n"
-        "   脚本必须逐条覆盖审核标准中所有交互/UI 相关的条目，包括但不限于：\n"
-        "   - 页面结构：登录页、注册页、主页面要素是否完整\n"
-        "   - 表单校验：空输入、非法字符、密码长度等\n"
-        "   - 交互流程：注册 → 自动登录 → 登出 → 重新登录\n"
-        "   - 边界情况：重复注册、密码错误、未登录访问保护页面\n"
-        "   - 数据一致性：注册后可用新账号登录、大小写用户名区分\n"
-        "   每个测试用例用 test() 块组织，断言预期结果。\n"
+        f"2. 针对 prototype，在以下目录编写 Playwright 脚本并执行。所有脚本保存到：{script_dir}\n"
+        "   a. 首次执行 Playwright 前，先初始化运行环境：\n"
+        f"      cd \"{reviewer_dir}\" && npm init -y\n"
+        f"      cd \"{reviewer_dir}\" && npm install playwright\n"
+        "   b. 检查 package.json 是否已存在，如已存在则跳过 npm init\n"
+        "   c. 脚本必须逐条覆盖审核标准中所有交互/UI 相关的条目，包括但不限于：\n"
+        "      - 页面结构：登录页、注册页、主页面要素是否完整\n"
+        "      - 表单校验：空输入、非法字符、密码长度等\n"
+        "      - 交互流程：注册 → 自动登录 → 登出 → 重新登录\n"
+        "      - 边界情况：重复注册、密码错误、未登录访问保护页面\n"
+        "      - 数据一致性：注册后可用新账号登录、大小写用户名区分\n"
+        "   d. 命名格式：pm-prototype.spec.js\n"
+        "   e. 运行脚本验证 prototype 行为是否符合预期\n"
+        "   f. 系统已经npx playwright install chrome预安装过兼容的chrome无头浏览器\n"
+        "   g. 如果测试不通过，请优先检查是否是plwywright脚本的问题。\n"
         "3. 综合 PRD 审查结论和 Playwright 脚本执行结果，逐条输出审查结论。\n"
         "明确列出每个不通过项及其原因。\n"
         "如果全部通过，最后一行回复 == PASS ==\n"
@@ -945,7 +956,6 @@ def dev_write_criteria(state: WorkflowState) -> dict:
         runtime, master_conv,
         title="Master 制定 Dev 设计审核标准",
         file_path=os.path.join(ws, "criteria-design.md"),
-        file_header="# Dev 详细设计审核标准",
         prompt=prompt,
         context_key="dev_criteria",
     )
@@ -969,9 +979,10 @@ def review_dev_criteria(state: WorkflowState) -> dict:
         "2. 每条标准是否写明了审查方法？(agent可以使用tool如file_read等方法进行审查)\n"
         "3. 标准是否覆盖了所有应覆盖的维度？\n"
         f"审核标准文件在：{criteria_path}\n\n"
-        "逐条给出评价，最后一行输出 == PASS == 或 == FAIL ==。\n"
+        "逐条给出评价，如果完全没有任何问题，且没有任何可以提高的建议，则最后一行输出 == PASS =="
+        "如果有任何问题或有任何建议则输出 == FAIL ==。\n"
         "如果 FAIL，写明需要修正的具体问题。",
-        stream=False)
+        stream=True)
 
     last_line = review.strip().split("\n")[-1].strip()
     passed = "PASS" in last_line
@@ -1130,7 +1141,7 @@ def dev_review_plan(state: WorkflowState) -> dict:
     )
 
     review = call_agent(runtime, "reviewer", _conv_name("review-plan"),
-                        prompt, stream=False)
+                        prompt, stream=True)
     print(f"\n── Reviewer 审查结果 ──\n{review}\n")
 
     last_line = review.strip().split("\n")[-1].strip()
@@ -1242,7 +1253,7 @@ def dev_review_step(state: WorkflowState) -> dict:
         "3. 代码质量和错误处理是否合理？\n\n"
         "最后一行输出 == PASS == 或 == FAIL ==。\n"
         "如果 FAIL，写明需要修正的具体问题和原因。",
-        stream=False)
+        stream=True)
 
     print(f"\n── Reviewer 审查结果 ──\n{review}\n")
 
@@ -1310,6 +1321,7 @@ def build_graph(runtime) -> StateGraph:
     graph.add_edge("pm_align", "master_reply_pm")
     graph.add_edge("master_reply_pm", "judge_master_reply")
     graph.add_conditional_edges("judge_master_reply", lambda s: s.get("judge_result", ""), {
+        "A": "pm_write_criteria",
         "B": "pm_align",
         "C": "clarify_inject",
     })
