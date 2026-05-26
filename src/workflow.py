@@ -515,6 +515,13 @@ def pm_write_criteria(state: WorkflowState) -> dict:
 
     runtime.logger.log_event("phase_started", detail="PM 审核标准制定")
 
+    # 如果有上一轮审查反馈信，让 Master 先读
+    feedback_path = runtime.context.get_ctx("pm_criteria_feedback_path") or ""
+    if feedback_path and os.path.exists(feedback_path):
+        read_letter(runtime, "master", master_conv, feedback_path,
+                    "根据反馈意见重新制定审核标准")
+        runtime.context.set_ctx("pm_criteria_feedback_path", "")
+
     prompt = (
         "你即将为 PM 产出的 PRD 和 prototype 制定审核标准。\n\n"
         "## 上游约束\n"
@@ -574,6 +581,17 @@ def review_pm_criteria(state: WorkflowState) -> dict:
 
     last_line = review.strip().split("\n")[-1].strip()
     passed = "PASS" in last_line
+
+    if passed:
+        runtime.context.set_ctx("pm_criteria_feedback_path", "")
+    else:
+        feedback_path = _letter_path(runtime, "reviewer-pm-criteria-feedback")
+        write_letter(runtime, "reviewer", _conv_name("review-pm-criteria-feedback"),
+                     feedback_path, "PM 审核标准审查反馈",
+                     f"以下是你在上一轮审查中给出的评审意见，请整理成一封反馈信。\n\n"
+                     f"## 你的审查意见\n{review}")
+        runtime.context.set_ctx("pm_criteria_feedback_path", feedback_path)
+
     runtime.logger.log_event("criteria_reviewed",
         detail=f"PM 审核标准审查{'通过' if passed else '不通过'}")
     return {
@@ -633,6 +651,8 @@ def pm_write_doc(state: WorkflowState) -> dict:
     # Call 2 — Master 写信要求原型，PM 直接写入 proto_path
     proto_path = os.path.join(pm_dir, "prototype.html")
     proto_letter_path = _letter_path(runtime, "master-prototype")
+    pm_agent_dir = os.path.join(runtime.workspace, "pm")
+    pm_script_dir = os.path.join(pm_agent_dir, "tests")
     write_letter(runtime, "master", master_conv, proto_letter_path,
                  "原型编写说明",
                  "请以 Master 的身份给 PM 写信，要求 PM 基于 PRD 产出 prototype.html 并写入指定文件。\n"
@@ -644,7 +664,14 @@ def pm_write_doc(state: WorkflowState) -> dict:
                  "3. 确保产出不是模板化的文字堆砌，而是真正能为下游提供 actionable 的原型。\n"
                  "4. 确保具体、可操作，避免空泛占位符。")
     read_letter(runtime, "pm", pm_conv, proto_letter_path,
-                f"按信中要求编写 prototype.html，写入文件 {proto_path}。")
+                f"按信中要求编写 prototype.html，写入文件 {proto_path}。\n\n"
+                "编写完成后如果需要进行自测，使用 Playwright 脚本测试，不要使用 Playwright MCP 交互式测试。\n"
+                f"Playwright 环境搭建在 {pm_agent_dir}，脚本保存到 {pm_script_dir}。\n"
+                f"  a. 首次运行：cd \"{pm_agent_dir}\" && npm init -y && cd \"{pm_agent_dir}\" && npm install playwright\n"
+                "  b. 检查 package.json 是否已存在，如已存在则跳过 npm init\n"
+                "  c. 脚本命名格式：pm-test.spec.js\n"
+                "  d. 运行脚本验证 prototype 行为是否符合预期\n"
+                "  e. 系统已预装兼容的 Chrome 无头浏览器，无需 npx playwright install")
 
     print(f"  ✓ {prd_path}")
     print(f"  ✓ {proto_path}")
@@ -930,6 +957,13 @@ def dev_write_criteria(state: WorkflowState) -> dict:
 
     runtime.logger.log_event("phase_started", detail="Dev 设计审核标准制定")
 
+    # 如果有上一轮审查反馈信，让 Master 先读
+    feedback_path = runtime.context.get_ctx("dev_criteria_feedback_path") or ""
+    if feedback_path and os.path.exists(feedback_path):
+        read_letter(runtime, "master", master_conv, feedback_path,
+                    "根据反馈意见重新制定审核标准")
+        runtime.context.set_ctx("dev_criteria_feedback_path", "")
+
     prompt = (
         "你即将为 Dev 的详细设计方案制定审核标准。\n\n"
         "## 上游约束\n"
@@ -986,6 +1020,17 @@ def review_dev_criteria(state: WorkflowState) -> dict:
 
     last_line = review.strip().split("\n")[-1].strip()
     passed = "PASS" in last_line
+
+    if passed:
+        runtime.context.set_ctx("dev_criteria_feedback_path", "")
+    else:
+        feedback_path = _letter_path(runtime, "reviewer-dev-criteria-feedback")
+        write_letter(runtime, "reviewer", _conv_name("review-dev-criteria-feedback"),
+                     feedback_path, "Dev 审核标准审查反馈",
+                     f"以下是你在上一轮审查中给出的评审意见，请整理成一封反馈信。\n\n"
+                     f"## 你的审查意见\n{review}")
+        runtime.context.set_ctx("dev_criteria_feedback_path", feedback_path)
+
     runtime.logger.log_event("criteria_reviewed",
         detail=f"Dev 审核标准审查{'通过' if passed else '不通过'}")
     return {
