@@ -33,33 +33,26 @@ def _read_json(path: str) -> dict:
 def _write_json(path: str, data: dict):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+        json.dump(_clean_surrogates(data), f, indent=2, ensure_ascii=False)
+
+def _clean_surrogates(obj):
+    """递归清除 dict/list 中字符串的非法代理对字符。"""
+    if isinstance(obj, str):
+        return obj.encode("utf-8", errors="replace").decode("utf-8")
+    if isinstance(obj, dict):
+        return {k: _clean_surrogates(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_clean_surrogates(v) for v in obj]
+    return obj
 
 def _append_jsonl(path: str, record: dict):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        f.write(json.dumps(_clean_surrogates(record), ensure_ascii=False) + "\n")
 
 # ============================================================
 # 结果类型
 # ============================================================
-
-@dataclass
-class CreateAgentResult:
-    success: bool
-    message: str
-    status: str          # "running" | "stopped"
-
-@dataclass
-class RunGatewayResult:
-    success: bool
-    message: str
-    pid: Optional[int] = None
-
-@dataclass
-class StopGatewayResult:
-    success: bool
-    message: str
 
 @dataclass
 class DropAgentResult:
@@ -96,7 +89,7 @@ class ProgressReport:
 # ============================================================
 
 class AgentManager:
-    """Agent 注册、Gateway 生命周期管理。"""
+    """Agent registry CRUD。不管理进程。"""
 
     def __init__(self, runtime_dir: str, hermes_home: str):
         self._runtime_dir = runtime_dir
@@ -114,7 +107,6 @@ class AgentManager:
         return os.path.isdir(self._profile_path(profile))
 
     def _create_profile(self, profile: str, source: str = "cg"):
-        """创建 Hermes Profile。"""
         hermes_cli = os.path.join(self._hermes_home, "hermes-agent", "venv", "Scripts", "hermes")
         subprocess.run(
             [hermes_cli, "profile", "create", profile, "--clone-from", source],
@@ -122,7 +114,6 @@ class AgentManager:
         )
 
     def _write_env(self, profile: str, port: int, api_key: str):
-        """写 profile 的 .env 文件。"""
         env_path = os.path.join(self._profile_path(profile), ".env")
         os.makedirs(os.path.dirname(env_path), exist_ok=True)
         existing = {}
@@ -138,122 +129,40 @@ class AgentManager:
             for k, v in existing.items():
                 f.write(f"{k}={v}\n")
 
-    def _detect_gateway(self, port: int, api_key: str, expected_profile: str) -> tuple[str, str]:
-        """
-        检测端口上的 Gateway，返回 (status, detail)。
-        status: "running" | "stopped"
-        """
-        try:
-            r = requests.get(f"http://127.0.0.1:{port}/health", timeout=3)
-            if r.status_code != 200:
-                return "stopped", f"health 返回 {r.status_code}"
-            body = r.json()
-            if body.get("platform") != "hermes-agent":
-                return "stopped", "不是 Hermes Gateway"
-            r2 = requests.post(
-                f"http://127.0.0.1:{port}/v1/responses",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={"input": "ping", "conversation": "__verify__"},
-                timeout=10,
-            )
-            if r2.status_code != 200:
-                return "stopped", f"API 返回 {r2.status_code}"
-            actual = r2.json().get("model", "?")
-            if actual == expected_profile:
-                return "running", f"profile=✓({actual})"
-            else:
-                return "stopped", f"profile=✗(期望{expected_profile}, 实际{actual})"
-        except requests.ConnectionError:
-            return "stopped", "端口无响应"
-        except Exception as e:
-            return "stopped", f"检测异常: {e}"
-
     # ── 公开接口 ──────────────────────────────────────
 
-    def create_agent(self, name: str, profile: str, port: int, api_key: str = "kaguya") -> CreateAgentResult:
-        if name in self._data.get("agents", {}):
-            return CreateAgentResult(False, f"agent {name} 已存在", "stopped")
-        # 创建 profile
+    def register(self, name: str, profile: str, port: int, api_key: str = "kaguya"):
+        """注册 agent 到 registry，初始化为 stopped。覆盖已有条目。"""
         if not self._profile_exists(profile):
             self._create_profile(profile)
         self._write_env(profile, port, api_key)
-        # 检测 Gateway
-        status, detail = self._detect_gateway(port, api_key, profile)
-        # 写入 registry
         self._data.setdefault("agents", {})[name] = {
             "profile": profile,
             "port": port,
             "api_key": api_key,
-            "status": status,
+            "status": "stopped",
             "pid": None,
             "conversations": [],
         }
         self._save()
-        return CreateAgentResult(True, detail, status)
 
-    def run_gateway(self, agent: str) -> RunGatewayResult:
-        cfg = self._data.get("agents", {}).get(agent)
-        if not cfg:
-            return RunGatewayResult(False, f"agent {agent} 不存在")
-        if cfg["status"] == "running":
-            return RunGatewayResult(True, f"已在运行", cfg.get("pid"))
-        env = os.environ.copy()
-        env["API_SERVER_PORT"] = str(cfg["port"])
-        env["API_SERVER_ENABLED"] = "true"
-        env["API_SERVER_KEY"] = cfg.get("api_key", "kaguya")
-        hermes_cli = os.path.join(self._hermes_home, "hermes-agent", "venv", "Scripts", "hermes")
-        cmd = [hermes_cli, "--profile", cfg["profile"], "gateway", "run"]
-        proc = subprocess.Popen(
-            cmd, env=env,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            creationflags=subprocess.CREATE_NEW_CONSOLE,
-        )
-        for _ in range(30):
-            time.sleep(1)
-            try:
-                r = requests.get(f"http://127.0.0.1:{cfg['port']}/health", timeout=2)
-                if r.status_code == 200:
-                    cfg["status"] = "running"
-                    cfg["pid"] = proc.pid
-                    self._save()
-                    return RunGatewayResult(True, f"就绪 (PID={proc.pid})", proc.pid)
-            except:
-                pass
-        return RunGatewayResult(False, "启动超时")
-
-    def stop_gateway(self, agent: str) -> StopGatewayResult:
-        cfg = self._data.get("agents", {}).get(agent)
-        if not cfg:
-            return StopGatewayResult(False, f"agent {agent} 不存在")
-        if cfg["status"] != "running":
-            return StopGatewayResult(True, "未运行")
-        pid = cfg.get("pid")
-        if pid:
-            try:
-                subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, timeout=5)
-            except:
-                pass
-        cfg["status"] = "stopped"
-        cfg["pid"] = None
-        cfg["conversations"] = []
+    def set_port_status(self, port: int, status: str):
+        """更新同一端口所有 agent 的状态。"""
+        for a in self._data.get("agents", {}).values():
+            if a["port"] == port:
+                a["status"] = status
         self._save()
-        return StopGatewayResult(True, "已停止")
+
+    def set_pid(self, name: str, pid: int):
+        cfg = self._data.get("agents", {}).get(name)
+        if cfg:
+            cfg["pid"] = pid
+            self._save()
 
     def drop_agent(self, agent: str) -> DropAgentResult:
-        self.stop_gateway(agent)
         self._data.get("agents", {}).pop(agent, None)
         self._save()
         return DropAgentResult(True, f"agent {agent} 已删除")
-
-    def health(self, agent: str) -> bool:
-        cfg = self._data.get("agents", {}).get(agent)
-        if not cfg:
-            return False
-        try:
-            r = requests.get(f"http://127.0.0.1:{cfg['port']}/health", timeout=3)
-            return r.status_code == 200
-        except:
-            return False
 
     def list_agents(self) -> list[dict]:
         agents = self._data.get("agents", {})
@@ -265,6 +174,84 @@ class AgentManager:
 
     def get_config(self, agent: str) -> Optional[dict]:
         return self._data.get("agents", {}).get(agent)
+
+
+class GatewayManager:
+    """Gateway 进程生命周期和端口检测。不碰 registry。"""
+
+    def __init__(self, hermes_home: str):
+        self._hermes_home = hermes_home
+
+    def _hermes_cli(self) -> str:
+        return os.path.join(self._hermes_home, "hermes-agent", "venv", "Scripts", "hermes")
+
+    def health(self, port: int) -> bool:
+        try:
+            r = requests.get(f"http://127.0.0.1:{port}/health", timeout=3)
+            return r.status_code == 200
+        except:
+            return False
+
+    def detect(self, port: int, api_key: str, expected_profile: str) -> tuple[str, str]:
+        """检测端口上的 Gateway 是否可用。返回 ("running"|"stopped", detail)。"""
+        try:
+            r = requests.get(f"http://127.0.0.1:{port}/health", timeout=3)
+            if r.status_code != 200:
+                return "stopped", f"health 返回 {r.status_code}"
+            body = r.json()
+            if body.get("platform") != "hermes-agent":
+                return "stopped", "不是 Hermes Gateway"
+            try:
+                r2 = requests.post(
+                    f"http://127.0.0.1:{port}/v1/responses",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={"input": "ping", "conversation": f"verify-{int(time.time())}"},
+                    timeout=10,
+                )
+                if r2.status_code == 200:
+                    actual = r2.json().get("model", "?")
+                    if actual == expected_profile:
+                        return "running", f"profile=✓({actual})"
+                    else:
+                        return "stopped", f"profile=✗(期望{expected_profile}, 实际{actual})"
+            except:
+                pass
+            return "running", "health 确认 Hermes Gateway"
+        except requests.ConnectionError:
+            return "stopped", "端口无响应"
+        except Exception as e:
+            return "stopped", f"检测异常: {e}"
+
+    def run(self, profile: str, port: int, api_key: str) -> tuple[bool, str, Optional[int]]:
+        """启动 Gateway 进程，等待就绪。返回 (success, message, pid)。"""
+        env = os.environ.copy()
+        env["API_SERVER_PORT"] = str(port)
+        env["API_SERVER_ENABLED"] = "true"
+        env["API_SERVER_KEY"] = api_key
+        cmd = [self._hermes_cli(), "--profile", profile, "gateway", "run"]
+        proc = subprocess.Popen(
+            cmd, env=env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NEW_CONSOLE,
+        )
+        for _ in range(30):
+            time.sleep(1)
+            try:
+                r = requests.get(f"http://127.0.0.1:{port}/health", timeout=2)
+                if r.status_code == 200:
+                    return True, f"就绪 (PID={proc.pid})", proc.pid
+            except:
+                pass
+        return False, "启动超时", None
+
+    def stop(self, pid: int):
+        """强制停止进程。"""
+        if not pid:
+            return
+        try:
+            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, timeout=5)
+        except:
+            pass
 
 
 # ============================================================
@@ -674,7 +661,10 @@ class Checkpoint:
             print(f"（输入 {end_word} 结束多行输入）")
             lines = []
             while True:
-                line = input()
+                try:
+                    line = input()
+                except EOFError:
+                    break
                 if line.strip() == end_word:
                     break
                 lines.append(line)
@@ -697,7 +687,6 @@ class AgentRuntime:
     """聚合全部模块，提供统一入口。可通过 config_path 加载配置。"""
 
     def __init__(self, config_path: str = None):
-        # 加载用户配置
         cfg = self._load_config(config_path) if config_path else {}
         runtime_dir = cfg.get("runtime_dir") or cfg.get("pool_dir", ".agent_runtime")
         hermes_home = cfg.get("hermes_home", self._detect_hermes_home())
@@ -709,10 +698,40 @@ class AgentRuntime:
         self.workspace = workspace
         self.config = Config(config_path or os.path.join(os.getcwd(), "runtime_config.json"))
         self.logger = Logger(runtime_dir)
+        self._hermes_home = hermes_home
         self.agents = AgentManager(runtime_dir, hermes_home)
+        self._gateway = GatewayManager(hermes_home)
         self.context = ContextManager(runtime_dir)
         self.conversations = ConversationManager(self.agents, self.logger, self.config, runtime_dir)
         self.checkpoint = Checkpoint()
+
+    def run_all(self, configs: dict):
+        """注册所有 agent，逐端口检测/启动 gateway。"""
+        for name, cfg in configs.items():
+            self.agents.register(name, cfg["profile"], cfg["port"],
+                                api_key=cfg.get("api_key", "kaguya"))
+
+        ports = {}
+        for name, cfg in configs.items():
+            port = cfg["port"]
+            ports.setdefault(port, []).append(name)
+
+        for port, names in ports.items():
+            if self._gateway.health(port):
+                status, detail = self._gateway.detect(port, "kaguya", configs[names[0]]["profile"])
+                if status != "running":
+                    raise RuntimeError(f"端口 {port} 已被占用但不是 Hermes Gateway: {detail}")
+                self.agents.set_port_status(port, "running")
+                print(f"  {', '.join(names)} gateway 就绪（已有）")
+            else:
+                profile = configs[names[0]]["profile"]
+                ok, msg, pid = self._gateway.run(profile, port, "kaguya")
+                if not ok:
+                    raise RuntimeError(f"启动 {names[0]} gateway 失败: {msg}")
+                self.agents.set_port_status(port, "running")
+                for n in names:
+                    self.agents.set_pid(n, pid)
+                print(f"  {', '.join(names)} gateway 就绪")
 
     @staticmethod
     def _load_config(config_path: str) -> dict:
@@ -738,8 +757,7 @@ class AgentRuntime:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """退出时停止所有 Gateway。"""
         for a in self.agents.list_agents():
             if a["status"] == "running":
-                self.agents.stop_gateway(a["name"])
+                self._gateway.stop(a.get("pid"))
         return False

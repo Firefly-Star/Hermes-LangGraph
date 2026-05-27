@@ -193,7 +193,12 @@ def call_agent(runtime, agent: str, conversation: str, prompt: str,
         print(flush=True)
         text_parts = []
         def on_chunk(chunk):
-            print(chunk, end="", flush=True)
+            try:
+                print(chunk, end="", flush=True)
+            except UnicodeEncodeError:
+                enc = sys.stdout.encoding or "utf-8"
+                sys.stdout.buffer.write(chunk.encode(enc, errors="replace"))
+                sys.stdout.flush()
             text_parts.append(chunk)
         result = runtime.conversations.call(
             agent, conversation, prompt, timeout=timeout,
@@ -228,6 +233,17 @@ def _letter_path(runtime, name: str) -> str:
     return os.path.join(handoff_dir, f"{name}-{ws}-{ts}.md")
 
 
+def _ensure_write_file(runtime, receiver, conv, file_path, max_retry=2):
+    """检查文件是否存在，不存在则提醒 agent 写入。"""
+    for attempt in range(max_retry):
+        if os.path.exists(file_path):
+            return True
+        call_agent(runtime, receiver, conv,
+                   f"（提醒）文件尚未被创建：{file_path}\n\n"
+                   "请使用 write_file 工具将你的回复内容完整写入该文件，不要只在对话中回复。")
+    return os.path.exists(file_path)
+
+
 def write_letter(runtime, sender, conv, letter_path, title, prompt):
     """sender 在 conv 对话中写一封信到 letter_path。"""
     call_agent(runtime, sender, conv,
@@ -235,8 +251,8 @@ def write_letter(runtime, sender, conv, letter_path, title, prompt):
                f"## 信件标题\n{title}\n\n"
                f"## 要求\n{prompt}\n\n"
                f"请将信件完整写入文件：{letter_path}")
-    if not os.path.exists(letter_path):
-        raise RuntimeError(f"{sender} 未生成信件：{letter_path}")
+    if not _ensure_write_file(runtime, sender, conv, letter_path):
+        raise RuntimeError(f"{sender} 仍未生成信件：{letter_path}")
 
 
 def read_letter(runtime, receiver, conv, letter_path, task):
@@ -263,30 +279,15 @@ def read_and_write_letter(runtime, receiver, conv,
                f"## 信件标题\n{title}\n\n"
                f"## 要求\n{instruction}\n\n"
                f"请将信件完整写入文件：{output_letter_path}")
-    if not os.path.exists(output_letter_path):
-        raise RuntimeError(f"{receiver} 未生成回信：{output_letter_path}")
+    if not _ensure_write_file(runtime, receiver, conv, output_letter_path):
+        raise RuntimeError(f"{receiver} 仍未生成回信：{output_letter_path}")
     os.remove(input_letter_path)
 
 
 def setup_runtime(config_path: str = None) -> ap.AgentRuntime:
     """初始化 AgentRuntime，启动 Master Gateway。"""
     runtime = ap.AgentRuntime(config_path)
-
-    started_ports = set()
-    for name, cfg in AGENT_CONFIGS.items():
-        result = runtime.agents.create_agent(name, cfg["profile"], cfg["port"])
-        if not result.success and "已存在" not in result.message:
-            print(f"  [WARN] {name} 注册: {result.message}")
-        port = cfg["port"]
-        if port not in started_ports:
-            if result.status != "running":
-                sr = runtime.agents.run_gateway(name)
-                if not sr.success:
-                    print(f"  [WARN] {name} gateway: {sr.message}")
-                else:
-                    print(f"  {name} gateway 就绪")
-            started_ports.add(port)
-
+    runtime.run_all(AGENT_CONFIGS)
     runtime.logger.log_event("workflow_started")
 
     # 持久化 Master system prompt，供后续 flush 重建对话时注入
@@ -497,7 +498,7 @@ def _write_criteria(runtime, master_conv, title: str, file_path: str,
     call_agent(runtime, "master", master_conv,
                f"{prompt}\n\n请将审核标准完整写入文件：{file_path}")
 
-    if not os.path.exists(file_path):
+    if not _ensure_write_file(runtime, "master", master_conv, file_path):
         raise RuntimeError(f"Master 未生成审核标准文件：{file_path}")
 
     runtime.context.set_ctx(f"{context_key}_path", file_path)
@@ -671,7 +672,13 @@ def pm_write_doc(state: WorkflowState) -> dict:
                 "  b. 检查 package.json 是否已存在，如已存在则跳过 npm init\n"
                 "  c. 脚本命名格式：pm-test.spec.js\n"
                 "  d. 运行脚本验证 prototype 行为是否符合预期\n"
-                "  e. 系统已预装兼容的 Chrome 无头浏览器，无需 npx playwright install")
+                "  e. 系统已预装兼容的 Chrome 无头浏览器，无需 npx playwright install\n"
+                "  f. 测试失败时，先诊断是测试脚本的问题还是原型本身的问题：\n"
+                "     - 页面交互与预期不符（如点按纽触发错误行为） → 检查原型 HTML/CSS/JS 逻辑\n"
+                "     - 测试脚本选择器或交互方式不当 → 修正测试脚本\n"
+                "     - 明确说明本轮修复的是什么问题\n"
+                "  g. 每次只修复一个根因，不要同时改脚本又改原型\n"
+                "  h. 同一问题连续调试 3 轮仍未通过，使用 Playwright MCP 工具确认问题，不要继续改脚本")
 
     print(f"  ✓ {prd_path}")
     print(f"  ✓ {proto_path}")
@@ -720,7 +727,12 @@ def review_pm_output(state: WorkflowState) -> dict:
         "   d. 命名格式：pm-prototype.spec.js\n"
         "   e. 运行脚本验证 prototype 行为是否符合预期\n"
         "   f. 系统已经npx playwright install chrome预安装过兼容的chrome无头浏览器\n"
-        "   g. 如果测试不通过，请优先检查是否是plwywright脚本的问题。\n"
+        "   g. 测试失败时，先诊断是测试脚本的问题还是原型本身的问题：\n"
+        "      - 页面交互与预期不符 → 检查原型 HTML/CSS/JS 逻辑\n"
+        "      - 脚本选择器或交互方式不当 → 修正测试脚本\n"
+        "      - 明确说明本轮修复的是什么问题\n"
+        "   h. 每次只修复一个根因，不要同时改脚本又改原型\n"
+        "   i. 同一问题连续调试 3 轮仍未通过，使用 Playwright MCP 工具确认问题\n"
         "3. 综合 PRD 审查结论和 Playwright 脚本执行结果，逐条输出审查结论。\n"
         "明确列出每个不通过项及其原因。\n"
         "如果全部通过，最后一行回复 == PASS ==\n"
@@ -1426,6 +1438,8 @@ def parse_args():
 
 
 def main():
+    if sys.stdout.encoding and sys.stdout.encoding.lower() in ("gbk", "gb2312", "gb18030"):
+        sys.stdout.reconfigure(errors="replace")
     print("=" * 60)
     print("  AI Coding 工作流框架 — 骨架")
     print("=" * 60)
