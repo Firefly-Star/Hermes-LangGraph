@@ -258,6 +258,21 @@ class GatewayManager:
 # 2. ConversationManager
 # ============================================================
 
+def _resolve_file_refs(text: str) -> str:
+    """将 prompt 中的 {文件路径} 替换为文件内容，非文件路径保留原样。"""
+    import re
+    def _replacer(m):
+        path = m.group(1)
+        if os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return f.read()
+            except Exception:
+                return m.group(0)
+        return m.group(0)
+    return re.sub(r'\{([^}]+)\}', _replacer, text)
+
+
 class ConversationManager:
     """对话调用、初始化、关闭。"""
 
@@ -279,6 +294,7 @@ class ConversationManager:
         port = cfg["port"]
         api_key = cfg.get("api_key", "kaguya")
         t0 = time.time()
+        input_text = _resolve_file_refs(input_text)
 
         if stream_callback:
             return self._call_stream(agent, conversation, input_text, port, api_key, timeout, stream_callback, t0, tool_callback)
