@@ -132,8 +132,10 @@ pm_handoff → pm_align → master_reply_pm → judge_master_reply
                            PASS     FAIL
                              │       │
                              ▼       ▼
-                            END   review_pm_output
+                    dev_handoff   review_pm_output
 ```
+
+> human_review PASS 后进入 Phase 2（dev_handoff），不是流程终止。
 
 #### 各节点说明
 
@@ -166,45 +168,62 @@ pm_handoff → pm_align → master_reply_pm → judge_master_reply
 | 文件 | 路径 |
 |:-----|:-----|
 | 项目顶层决策 | `{runtime_dir}/project_context.md` |
-| 审核标准 | `{workspace}/criteria.md` |
+| 审核标准（PM） | `{workspace}/criteria-pm.md` |
+| 审核标准（Dev） | `{workspace}/criteria-dev.md` |
 | PRD | `{workspace}/PM/PRD.md` |
 | Prototype | `{workspace}/PM/prototype.html` |
+| Dev 详细设计 | `{workspace}/Dev/design.md` |
+| Dev 实现计划 | `{workspace}/Dev/plan.md` |
 | Handoff 信件 | `{runtime_dir}/handoffs/{name}-{ws}-{ts}.md` |
 
-### Phase 2: Dev 出详细设计（预留，暂不实现）
+### Phase 2: Dev 对齐 + 出设计 + 执行
 
 ```
-[dev_design]
-[dev_design_criteria]
-[dev_design_review]
-→ 审核通过 → phase = "dev_plan"
+dev_handoff → dev_align → dev_write_criteria → review_dev_criteria
+                                                   │ PASS   │ FAIL
+                                                   ▼         │
+                                              dev_write_design│
+                                                   │          │
+                                                   ▼          │
+                                              dev_write_plan  │
+                                                   │          │
+                                                   ▼          │
+                                              dev_review_plan │
+                                                │ PASS │ FAIL │
+                                                ▼       └─────┘
+                                           dev_exec_step → dev_review_step
+                                                           │ PASS │ FAIL
+                                                           ▼       │
+                                                          END  dev_exec_step
 ```
 
-### Phase 3: Dev 出实现计划（预留）
+#### 各节点说明
+
+**dev_handoff**：Master 写 handoff 信给 Dev，包含项目概况、已产出的 PM 文档路径（PRD、prototype）。
+
+**dev_align**：Dev ↔ PM / Master 对齐循环。Dev 先产出理解总结 + 疑问清单，PM 审查答疑，有争议升级 Master。无需对齐则结束。
+
+**dev_write_criteria**：Master 制定 Dev 产出的审核标准（架构合理性、功能完整性、数据流正确性、可实现性、可测试性、边界与异常），自检循环直至通过才放行。
+
+**review_dev_criteria**：Reviewer 对照标准审查，PASS 进入设计，FAIL 回修标准。
+
+**dev_write_design**：Master 写信指令 → Dev 产出详细设计方案（`Dev/design.md`），含系统架构、数据流、路由/API 定义、组件结构。
+
+**dev_write_plan**：Master 写信指令 → Dev 产出分步实现计划（`Dev/plan.md`），每步含可执行的验收方法。
+
+**dev_review_plan**：Reviewer 审查计划完整性、步骤粒度、验收可执行性。PASS 进入执行，FAIL 回修计划。
+
+**dev_exec_step**：从 plan.md 依次取一步，Master 写信给 Dev 实现该步骤，Dev 自验证。
+
+**dev_review_step**：Reviewer 审查当前步骤的实现。PASS → 下一步或完成，FAIL → 回修当前步骤。
+
+### Phase 3: QA 测试（预留，暂不实现）
 
 ```
-[dev_plan]
-[dev_plan_criteria]
-[dev_plan_review]
-→ 审核通过 → phase = "dev_exec"
+[qa_plan] → [qa_plan_review] → [qa_exec] → [dev_fix] → [qa_verify]
 ```
 
-### Phase 4: Dev 执行循环（预留）
-
-```
-[dev_exec] ↔ [dev_review_step]
-→ 全部完成 → phase = "align_dev_qa"
-```
-
-### Phase 5: QA 对齐 + 出测试计划（预留）
-
-```
-[align_dev_qa] → [qa_plan] → [qa_plan_review] → phase = "qa_exec"
-```
-
-### Phase 6: QA 测试循环（预留）
-
-### Phase 7: 交付（预留）
+### Phase 4: 交付（预留，暂不实现）
 
 ---
 

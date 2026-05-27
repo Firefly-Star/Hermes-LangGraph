@@ -30,6 +30,14 @@
   - 路径不可写 → 抛出 `PermissionError`
   - `data` 含不可序列化类型（如 datetime）→ 抛出 `TypeError`
 
+### `_clean_surrogates(obj)`
+递归清除 dict/list 中字符串的非法代理对字符（\ud800-\udfff），防止 JSON 序列化时因非法 Unicode 崩溃。
+- **参数：** `obj` — 任意可递归对象
+- **输出：** 清洗后的对象
+- **边界情况：**
+  - 字符串含代理对 → 用 `utf-8 errors=replace` 替换为 U+FFFD
+  - 非 dict/list/str 类型 → 原样返回
+
 ### `_append_jsonl(path: str, record: dict)`
 向 JSONL 文件追加一行。
 - **参数：** `path` — 文件路径，`record` — 要追加的记录
@@ -42,26 +50,6 @@
 ---
 
 ## 结果类型（Dataclass）
-
-### `CreateAgentResult`
-| 字段 | 类型 | 说明 |
-|:-----|:-----|:------|
-| `success` | `bool` | 是否成功 |
-| `message` | `str` | 结果描述 |
-| `status` | `str` | `"running"` 或 `"stopped"` |
-
-### `RunGatewayResult`
-| 字段 | 类型 | 说明 |
-|:-----|:-----|:------|
-| `success` | `bool` | 是否成功 |
-| `message` | `str` | 结果描述 |
-| `pid` | `Optional[int]` | 进程 ID，失败时为 `None` |
-
-### `StopGatewayResult`
-| 字段 | 类型 | 说明 |
-|:-----|:-----|:------|
-| `success` | `bool` | 是否成功 |
-| `message` | `str` | 结果描述 |
 
 ### `DropAgentResult`
 | 字段 | 类型 | 说明 |
@@ -107,77 +95,74 @@
 
 ## 1. AgentManager
 
-负责 Agent 注册、Gateway 生命周期管理。
+负责 Agent 注册信息的 CRUD，不管理 Gateway 进程。Gateway 生命周期由 GatewayManager 负责。
 
-### `__init__(runtime_dir: str, hermes_home: str)`
-- **参数：**
-  - `runtime_dir` — `.agent_runtime` 目录路径
-  - `hermes_home` — Hermes 安装根目录
+### `__init__(runtime_dir: str)`
+- **参数：** `runtime_dir` — `.agent_runtime` 目录路径
 - **行为：** 从 `registry.json` 加载已注册的 agent 列表。
 - **边界情况：**
   - `registry.json` 不存在 → 视为空注册表
   - `registry.json` 内容损坏 → 抛出 `json.JSONDecodeError`
 
-### `create_agent(name, profile, port, api_key="kaguya") -> CreateAgentResult`
+### `register(name, profile, port, api_key="kaguya")`
 注册一个新 agent。
-- **参数：** `name` — agent 名，`profile` — Hermes profile 名，`port` — gateway 端口，`api_key` — API 密钥
-- **行为：**
-  1. 检查 `name` 是否已存在
-  2. 如果 profile 不存在，自动创建（clone from `cg`）
-  3. 写 `.env` 文件到 profile 目录（注入 `API_SERVER_PORT` / `API_SERVER_ENABLED` / `API_SERVER_KEY`）
-  4. 检测端口上是否有已运行的 Gateway
-  5. 写入 `registry.json`
-- **边界情况：**
-  - `name` 已存在 → 返回 `success=False, message="agent xxx 已存在"`
-  - profile 不存在且 `hermes` CLI 不可用 → `subprocess` 抛出 `FileNotFoundError`
-  - 端口上已有其他服务 → 检测失败，status 为 `"stopped"`
-  - port 被占用且是 Hermes Gateway → 自动识别为 `"running"` 并校验 profile 是否匹配
+- **行为：** 写入 `registry.json`，status 置为 `"stopped"`。
+- **边界情况：** `name` 已存在 → 覆盖。
 
-### `run_gateway(agent) -> RunGatewayResult`
-启动指定 agent 的 Gateway 进程。
-- **参数：** `agent` — agent 名
-- **行为：**
-  1. 从 registry 读取 port/profile/api_key
-  2. 设置环境变量 `API_SERVER_PORT` / `API_SERVER_ENABLED` / `API_SERVER_KEY`
-  3. 用 `subprocess.Popen` 启动 `hermes --profile xxx gateway run`
-  4. 轮询 30 秒，每秒检查 `/health` 端点
-  5. 就绪后更新 registry 的 status 和 pid
-- **边界情况：**
-  - agent 不存在 → `success=False, "agent xxx 不存在"`
-  - 已在运行 → `success=True, "已在运行", pid=xxx`
-  - 30 秒内未就绪 → `success=False, "启动超时"`
-  - Windows 平台用 `CREATE_NEW_CONSOLE`，会弹出新控制台窗口
+### `set_port_status(port, status)`
+更新 registry 中所有使用该端口的 agent 的 status。
+- **边界情况：** port 不存在 → 静默跳过。
 
-### `stop_gateway(agent) -> StopGatewayResult`
-停止 Gateway 进程。
-- **参数：** `agent` — agent 名
-- **行为：** 用 `taskkill /F /PID xxx` 强制终止进程，清空 conversations 列表。
-- **边界情况：**
-  - agent 不存在 → `success=False`
-  - 未运行 → `success=True, "未运行"`
-  - 进程已不存在（被外部杀死）→ `except` 静默忽略，registry 仍更新为 stopped
+### `set_pid(name, pid)`
+更新指定 agent 的 pid。
+- **边界情况：** agent 不存在 → 静默跳过。
 
 ### `drop_agent(agent) -> DropAgentResult`
-物理删除 agent。
-- **行为：** 先 `stop_gateway`，再从 registry 中移除整条记录。
-- **边界情况：** 同 `stop_gateway`。如果 agent 不存在，先尝试 stop（返回 false），再 pop 会静默跳过。
-
-### `health(agent) -> bool`
-检查 Gateway 是否存活。
-- **行为：** GET `/health`，超时 3 秒。
-- **边界情况：**
-  - agent 不存在 → `False`
-  - 连接失败/超时 → `False`（所有异常被 except 捕获）
+从 registry 中移除 agent 记录。
+- **边界情况：** agent 不存在 → `success=False`。
 
 ### `list_agents() -> list[dict]`
 返回所有 agent 列表。
-- **输出：** `[{"name", "profile", "port", "status", "conversations"}, ...]`
+- **输出：** `[{"name", "profile", "port", "status", "pid", "conversations"}, ...]`
 - **边界情况：** registry 为空 → `[]`
 
 ### `get_config(agent) -> Optional[dict]`
 返回 agent 的配置 dict。
 - **边界情况：** agent 不存在 → `None`
 
+---
+
+## 1b. GatewayManager
+
+负责 Gateway 进程的生命周期和端口检测。不碰 registry。
+
+### `__init__(hermes_home: str)`
+- **参数：** `hermes_home` — Hermes 安装根目录
+
+### `health(port) -> bool`
+检查端口的 Gateway 是否存活。
+- **行为：** GET `/health`，超时 3 秒。
+
+### `detect(port, api_key, expected_profile) -> tuple[str, str]`
+检测端口上的 Gateway 是否可用。返回 `("running"|"stopped", detail)`。
+- **行为：**
+  1. GET `/health` — 不是 Hermes Gateway 则返回 stopped
+  2. POST `/v1/responses`（可选）— 验证 profile 是否匹配
+  3. API 探测失败时（如旧版 Gateway 不兼容）仍返回 running（health 已确认）
+- **边界情况：** 端口无响应 → `("stopped", "端口无响应")`
+
+### `run(profile, port, api_key) -> tuple[bool, str, Optional[int]]`
+启动 Gateway 进程。
+- **行为：** 设环境变量 → `subprocess.Popen` → 轮询 30 秒等 `/health` 就绪
+- **边界情况：** 30 秒内未就绪 → `(False, "启动超时", None)`
+
+### `stop(pid)`
+强制停止进程（`taskkill /F /PID`）。
+- **边界情况：** pid 为 None → 静默返回
+
+---
+
+## 2. ConversationManager
 ---
 
 ## 2. ConversationManager
@@ -367,7 +352,7 @@ DEFAULTS = {
   - 其他 → `action="modify", message=用户输入`
   - 多行模式：累积到 end_word 后合并，按以上规则解析
 - **边界情况：**
-  - 非交互式终端（无 stdin）→ `input()` 抛出 `EOFError`
+  - 非交互式终端（无 stdin）→ `input()` 抛出 `EOFError`，被捕获后视为空输入（continue）
   - 输入仅为空白字符 → 视为 continue
   - 大小写不敏感（`REJECT` / `Reject` 都算 reject）
 
@@ -414,8 +399,18 @@ DEFAULTS = {
 - **检测依据：** 目录下存在 `profiles/` 子目录
 - **兜底：** 返回 `~/AppData/Local/hermes`
 
+### `run_all(configs: dict)`
+注册所有 agent，逐端口检测/启动 gateway。
+- **参数：** `configs` — `{agent名: {"profile": str, "port": int, "api_key": str}}`
+- **行为：**
+  1. 遍历 configs 注册全部 agent（registry 写入）
+  2. 按端口去重，逐个健康检测
+  3. 已有 Hermes Gateway → 检测 profile 匹配
+  4. 无服务 → 启动新 gateway 进程
+- **边界情况：** 端口被非 Hermes 服务占用 → 抛出 RuntimeError
+
 ### `__enter__ / __exit__`
-上下文管理器。退出时遍历所有 agent，对 status 为 `"running"` 的调用 `stop_gateway`。
+上下文管理器。退出时遍历所有 agent，对 status 为 `"running"` 的调用 `self._gateway.stop(pid)`。
 - **边界情况：** `__exit__` 始终返回 `False`（不抑制异常）
 
 ---
@@ -426,8 +421,8 @@ DEFAULTS = {
 AgentRuntime
 ├── Config(config_path)            # 读写 runtime_config.json
 ├── Logger(runtime_dir)            # 读写 calls.jsonl + events.jsonl
-├── AgentManager(runtime_dir, hh)  # 读写 registry.json
-│   └── 依赖: hermes CLI + profiles 目录
+├── AgentManager(runtime_dir)        # 读写 registry.json（纯 CRUD）
+├── GatewayManager(hermes_home)      # gateway 进程生命周期
 ├── ContextManager(runtime_dir)    # 读写 context.json
 ├── ConversationManager(agents, logger, config, runtime_dir)
 │   └── 读写 registry.json（close_conversation / _track_conversation）

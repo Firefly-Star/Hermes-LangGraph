@@ -1,4 +1,4 @@
-# LangGraph 工作流编排设计 v2
+# LangGraph 工作流编排设计 v2（已被取代）
 
 ## 依赖关系
 

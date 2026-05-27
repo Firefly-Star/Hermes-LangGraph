@@ -24,6 +24,7 @@ AGENT_CONFIGS = {
     "pm":     {"profile": "pm", "port": 8643},
     "dev":    {"profile": "dev", "port": 8644},
     "reviewer": {"profile": "cg", "port": 8642},
+    "qa":     {"profile": "qa", "port": 8645},
 }
 
 
@@ -255,25 +256,39 @@ def write_letter(runtime, sender, conv, letter_path, title, prompt):
         raise RuntimeError(f"{sender} 仍未生成信件：{letter_path}")
 
 
-def read_letter(runtime, receiver, conv, letter_path, task):
-    """receiver 读 letter_path 后执行 task。读完删信。返回 receiver 回复。"""
-    if not os.path.exists(letter_path):
-        raise RuntimeError(f"信件不存在：{letter_path}")
+def _resolve_paths(path):
+    """统一处理单个路径或多个路径，返回列表。"""
+    return [path] if isinstance(path, str) else list(path)
+
+
+def read_letter(runtime, receiver, conv, letter_path, task, keep=False):
+    """receiver 读 letter_path（支持单路径或列表）后执行 task。默认读完删信。"""
+    paths = _resolve_paths(letter_path)
+    for p in paths:
+        if not os.path.exists(p):
+            raise RuntimeError(f"信件不存在：{p}")
+    paths_text = "\n".join(f"- {p}" for p in paths)
     reply = call_agent(runtime, receiver, conv,
-                       f"请阅读以下信件，然后{task}\n\n## 信件路径\n{letter_path}")
-    os.remove(letter_path)
+                       f"请阅读以下信件，然后{task}\n\n## 信件路径\n{paths_text}")
+    if not keep:
+        for p in paths:
+            if os.path.exists(p):
+                os.remove(p)
     return reply
 
 
 def read_and_write_letter(runtime, receiver, conv,
                           input_letter_path, output_letter_path,
-                          title, instruction, task):
-    """读 input_letter（给路径让 agent 自读），让 receiver 按要求写回信到 output_letter_path。"""
-    if not os.path.exists(input_letter_path):
-        raise RuntimeError(f"信件不存在：{input_letter_path}")
+                          title, instruction, task, keep=False):
+    """读 input_letter（支持单路径或列表），让 receiver 按要求写回信。默认读完删信。"""
+    paths = _resolve_paths(input_letter_path)
+    for p in paths:
+        if not os.path.exists(p):
+            raise RuntimeError(f"信件不存在：{p}")
+    paths_text = "\n".join(f"- {p}" for p in paths)
     call_agent(runtime, receiver, conv,
                f"请阅读以下信件，然后{task}\n\n"
-               f"## 信件路径\n{input_letter_path}\n\n"
+               f"## 信件路径\n{paths_text}\n\n"
                f"## 回复方式\n"
                f"请以 **{receiver}** 的身份写一封回信。\n\n"
                f"## 信件标题\n{title}\n\n"
@@ -281,7 +296,10 @@ def read_and_write_letter(runtime, receiver, conv,
                f"请将信件完整写入文件：{output_letter_path}")
     if not _ensure_write_file(runtime, receiver, conv, output_letter_path):
         raise RuntimeError(f"{receiver} 仍未生成回信：{output_letter_path}")
-    os.remove(input_letter_path)
+    if not keep:
+        for p in paths:
+            if os.path.exists(p):
+                os.remove(p)
 
 
 def setup_runtime(config_path: str = None) -> ap.AgentRuntime:
@@ -745,8 +763,6 @@ def review_pm_output(state: WorkflowState) -> dict:
     passed = "PASS" in last_line
 
     runtime.context.set_ctx("review_result", reply)
-    if passed:
-        runtime.context.set_ctx("human_feedback", "")
 
     runtime.logger.log_event("review_completed", detail=f"审查{'通过' if passed else '不通过'}")
     print(f"  {'✓ Reviewer 审查通过' if passed else '✗ Reviewer 审查不通过'}")
@@ -782,10 +798,16 @@ def human_review(state: WorkflowState) -> dict:
         runtime.logger.log_event("human_review_passed")
         return {"phase": "done", "judge_result": END}
 
-    runtime.context.set_ctx("human_feedback", feedback)
+    round_num = runtime.context.get_ctx("human_feedback_round") or 0
+    round_num += 1
+    runtime.context.set_ctx("human_feedback_round", round_num)
+    entry = f"第 {round_num} 次人工反馈:\n{feedback}"
+    prev = runtime.context.get_ctx("human_feedback") or ""
+    runtime.context.set_ctx("human_feedback",
+                            prev + "\n\n---\n\n" + entry if prev else entry)
     runtime.logger.log_event("human_review_rejected", detail=feedback)
     print(f"  ⚠ 人工审核不通过，反馈已记录")
-    return {"phase": "human_review_rejected", "judge_result": "review_pm_output"}
+    return {"phase": "human_review_rejected", "judge_result": "pm_write_doc"}
 
 
 def dev_handoff(state: WorkflowState) -> dict:
@@ -1338,6 +1360,209 @@ def dev_review_step(state: WorkflowState) -> dict:
         return {"phase": "step_fail", "judge_result": "dev_exec_step"}
 
 
+def qa_handoff(state: WorkflowState) -> dict:
+    """Phase 3a: Master 写 handoff 信给 QA。"""
+    runtime = getattr(qa_handoff, "_runtime", None)
+    print(f"\n{'='*60}\n  ==> Phase 3a: Master 写信给 QA\n{'='*60}")
+
+    master_conv = runtime.context.get_ctx("master_conv")
+    if not master_conv:
+        raise RuntimeError("master conversation 不存在")
+
+    ws = runtime.workspace
+    qa_dir = os.path.join(ws, "QA")
+    os.makedirs(qa_dir, exist_ok=True)
+
+    letter_path = _letter_path(runtime, "master-to-qa")
+    write_letter(runtime, "master", master_conv, letter_path,
+                 "Master 给 QA 的信",
+                 f"介绍项目上下文。信件需包含：\n"
+                 "1. 开宗明义：这是 Master 给 QA 的信\n"
+                 "2. 项目概况和核心需求（简要描述）\n"
+                 f"3. 项目决策记录：{runtime.context.get_bg('project_context_path')}\n"
+                 f"4. PRD：{ws}/PM/PRD.md\n"
+                 f"5. 详细设计：{ws}/Dev/design.md\n"
+                 f"6. 实现计划：{ws}/Dev/plan.md\n"
+                 "7. 要求 QA：先阅读所有文档，写出你对项目的理解"
+                 "和初步测试思路大纲（测什么、怎么测），"
+                 "得到 PM 和 Dev 确认后才能开始写详细测试计划\n"
+                 "8. 强调：在确认之前，不得开始写测试用例或执行测试")
+
+    runtime.context.set_ctx("qa_letter_path", letter_path)
+    print(f"\n  ── Master 给 QA 的信件已就绪 ──")
+    return {"phase": "qa_handoff_done"}
+
+
+def qa_align(state: WorkflowState) -> dict:
+    """Phase 3b: QA↔PM/Dev/Master 对齐循环。
+
+    QA 写理解+测试思路，PM 审范围，Dev 审技术可行性，需升级则 Master 介入。"""
+    runtime = getattr(qa_align, "_runtime", None)
+    master_conv = runtime.context.get_ctx("master_conv")
+    ws = runtime.workspace
+
+    qa_conv = _conv_name("qa-align")
+    pm_conv = runtime.context.get_ctx("pm_conv") or _conv_name("pm-align")
+    dev_conv = runtime.context.get_ctx("dev_conv") or _conv_name("dev-align")
+
+    runtime.logger.log_event("phase_started", detail="QA 对齐")
+    print(f"\n{'='*60}\n  ==> Phase 3b: QA 对齐（QA ↔ PM / Dev / Master）\n{'='*60}")
+
+    is_first = True
+    last_qa_reply = ""  # 缓存 QA 最后一版理解，避免文件被删后读不到
+    while True:
+        if is_first:
+            handoff_path = runtime.context.get_ctx("qa_letter_path")
+            if not handoff_path:
+                raise RuntimeError("没有 handoff 信件路径")
+            qa_reply_path = _letter_path(runtime, "qa-understanding")
+            read_and_write_letter(runtime, "qa", qa_conv,
+                                  handoff_path, qa_reply_path,
+                                  "From QA, Re: Master 的委托",
+                                  "阅读所有项目文档后，"
+                                  "写出你对项目的理解总结，"
+                                  "以及初步的测试思路大纲。\n\n"
+                                  "测试思路大纲需覆盖：\n"
+                                  "- 测试范围（功能模块、边界场景）\n"
+                                  "- 每个模块的测试方法（E2E / API / 单元）\n"
+                                  "- 不清楚或有疑问的地方\n\n"
+                                  "注意：这是大纲阶段，不要写详细测试用例。",
+                                  "在 PM 和 Dev 明确许可之前，不得开始写测试用例")
+            is_first = False
+        else:
+            feedback_path = runtime.context.get_ctx("qa_feedback_path")
+            if not feedback_path or not os.path.exists(feedback_path):
+                raise RuntimeError("QA 反馈信缺失")
+            qa_reply_path = _letter_path(runtime, "qa-understanding")
+            read_and_write_letter(runtime, "qa", qa_conv,
+                                  feedback_path, qa_reply_path,
+                                  "From QA, Re: 修订后的理解与测试思路",
+                                  "根据上轮反馈修订你的理解总结和测试思路大纲，"
+                                  "如果有新的疑问也一并提出。"
+                                  "如果已经没有疑问，明确说明已无疑问。",
+                                  "在 PM 和 Dev 明确许可之前，不得开始写测试用例")
+        # 缓存 QA 理解内容（PM/Dev 读信后会删信）
+        if os.path.exists(qa_reply_path):
+            with open(qa_reply_path, "r", encoding="utf-8") as f:
+                last_qa_reply = f.read()
+
+        # PM 审范围（keep=True 保留信给 Dev 读）
+        pm_review_path = _letter_path(runtime, "pm-review-qa")
+        read_and_write_letter(runtime, "pm", pm_conv,
+                              qa_reply_path, pm_review_path,
+                              "From PM, Re: QA 的理解与测试思路",
+                              instruction="逐一检查 QA 的理解是否正确，测试范围是否覆盖了所有功能点。\n"
+                                          "回答 QA 的疑问。\n"
+                                          "有无法回答的问题，在对应处标记 ❓需要升级。\n"
+                                          "如果 QA 的理解完全正确且测试范围无遗漏，也请明确说明。\n"
+                                          "注意：如果需要升级到 Master，你的回信中必须包含"
+                                          "QA 的全部理解和全部疑问清单"
+                                          "（包括你已解答的和需要升级给 Master 的），"
+                                          "以便 Master 掌握完整上下文。",
+                              task="审 QA 的理解和测试范围",
+                              keep=True)
+
+        # Dev 审技术可行性
+        dev_review_path = _letter_path(runtime, "dev-review-qa")
+        read_and_write_letter(runtime, "dev", dev_conv,
+                              qa_reply_path, dev_review_path,
+                              "From Dev, Re: QA 的测试思路大纲",
+                              "逐一检查 QA 的测试方法在技术实现上是否可行。\n"
+                              "如果测试方案涉及当前未实现的接口或功能点，需明确指出。\n"
+                              "如果测试环境配置有问题，也请指出。\n"
+                              "回答 QA 的疑问。\n"
+                              "有无法回答的问题，在对应处标记 ❓需要升级。\n"
+                              "如果 QA 的测试思路完全可行，也请明确说明。\n"
+                              "注意：如果需要升级到 Master，你的回信中必须包含"
+                              "QA 的全部理解和全部疑问清单"
+                              "（包括你已解答的和需要升级给 Master 的），"
+                              "以便 Master 掌握完整上下文。",
+                              "审 QA 测试思路的技术可行性")
+
+        # 合并 PM 和 Dev 的反馈，判读是否需要升级
+        pm_review = ""
+        if os.path.exists(pm_review_path):
+            with open(pm_review_path, "r", encoding="utf-8") as f:
+                pm_review = f.read()
+        dev_review = ""
+        if os.path.exists(dev_review_path):
+            with open(dev_review_path, "r", encoding="utf-8") as f:
+                dev_review = f.read()
+
+        combined_review = f"## PM 的审查\n{pm_review}\n\n## Dev 的审查\n{dev_review}"
+        needs_upgrade = "❓" in combined_review
+
+        # 用 judge 判读 PM 和 Dev 的综合审查结果
+        judge_result = judge_reply(runtime, "PM/Dev", combined_review, [
+            "A. QA 理解完全正确且测试范围无遗漏，无需修改",
+            "B. PM 和 Dev 均没有需要升级到 Master 的问题，但有反馈需要 QA 修改",
+            "C. PM 或 Dev 有需要升级到 Master 的问题",
+        ], "judge-qa-align")
+
+        if judge_result in ("C",) or needs_upgrade:
+            print(f"\n  ── 升级到 Master ──")
+            master_reply_path = _letter_path(runtime, "master-reply-qa")
+            read_and_write_letter(runtime, "master", master_conv,
+                                  [pm_review_path, dev_review_path], master_reply_path,
+                                  "From Master, Re: QA 对齐中的争议",
+                                  "阅读 PM 和 Dev 的审查报告，逐条回答他们无法解决的问题。\n"
+                                  "如果报告中有你无法判定的问题，明确写出需要向用户确认。\n"
+                                  "你的回复中将包含 QA 的全部理解和全部疑问清单，"
+                                  "确保 QA 收到后掌握完整的对齐结论。",
+                                  "回答 QA 对齐中升级上来的问题")
+
+            master_reply = ""
+            if os.path.exists(master_reply_path):
+                with open(master_reply_path, "r", encoding="utf-8") as f:
+                    master_reply = f.read()
+
+            master_judge = judge_reply(runtime, "Master", master_reply, [
+                "A. Master 已解决所有问题",
+                "B. Master 还有疑问需要向用户确认",
+            ], "judge-qa-master")
+
+            if master_judge == "B" or "❓" in master_reply:
+                print(f"\n  ── Master 需要向用户确认 ──")
+
+                def _close(reason: str):
+                    pc_path = runtime.context.get_bg("project_context_path")
+                    call_agent(runtime, "master", master_conv,
+                               f"请将本轮确认的决策记录到项目顶层决策记录文件的合适位置中：{pc_path}")
+
+                _clarify_loop(runtime, master_conv, "== 向用户确认（QA 对齐）==",
+                             "Master 需要向用户确认 QA 对齐中的争议问题", _close)
+
+                final_path = _letter_path(runtime, "master-final-qa")
+                write_letter(runtime, "master", master_conv, final_path,
+                            "Master 给 QA 的最终答复",
+                            "根据用户确认的决策以及你的分析，"
+                            "写出对 QA 对齐中所有问题的最终答复。")
+                runtime.context.set_ctx("qa_feedback_path", final_path)
+            else:
+                runtime.context.set_ctx("qa_feedback_path", master_reply_path)
+
+        elif judge_result == "B":
+            # 合并 PM 和 Dev 的反馈作为 QA 修改依据
+            feedback_dir = os.path.join(runtime.runtime_dir, "handoffs")
+            combined_path = os.path.join(feedback_dir, f"qa-combined-feedback-{int(time.time())}.md")
+            with open(combined_path, "w", encoding="utf-8") as f:
+                f.write(combined_review)
+            runtime.context.set_ctx("qa_feedback_path", combined_path)
+
+        else:  # A
+            # 对齐完成，保存 QA 理解文件
+            qa_dir = os.path.join(ws, "QA")
+            os.makedirs(qa_dir, exist_ok=True)
+            understanding_path = os.path.join(qa_dir, "understanding.md")
+            with open(understanding_path, "w", encoding="utf-8") as f:
+                f.write(last_qa_reply)
+
+            runtime.context.set_ctx("qa_understanding_path", understanding_path)
+            runtime.logger.log_event("phase_completed", detail="QA 对齐完成")
+            print(f"\n  ✓ QA 对齐完成，理解已写入 {understanding_path}")
+            return {"phase": "qa_align_done"}
+
+
 def build_graph(runtime) -> StateGraph:
     """构建 LangGraph StateGraph。"""
     for f in [pre_flight_clarify, pm_handoff, pm_align,
@@ -1347,7 +1572,8 @@ def build_graph(runtime) -> StateGraph:
               dev_handoff, dev_align, dev_write_criteria, dev_write_design,
               dev_write_plan, dev_review_plan,
               review_pm_criteria, review_dev_criteria,
-              dev_exec_step, dev_review_step]:
+              dev_exec_step, dev_review_step,
+              qa_handoff, qa_align]:
         f._runtime = runtime
 
     graph = StateGraph(WorkflowState)
@@ -1419,8 +1645,10 @@ def build_graph(runtime) -> StateGraph:
     graph.add_edge("dev_exec_step", "dev_review_step")
     graph.add_conditional_edges("dev_review_step", lambda s: s.get("judge_result", ""), {
         "dev_exec_step": "dev_exec_step",
-        "done": END,
+        "done": "qa_handoff",
     })
+    graph.add_edge("qa_handoff", "qa_align")
+    graph.add_edge("qa_align", END)
 
     return graph.compile(checkpointer=MemorySaver())
 
