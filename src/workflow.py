@@ -113,7 +113,7 @@ def judge_reply(runtime, target_role: str, reply: str, options: list[str],
     keys = "/".join(opt.strip()[0] for opt in options if opt.strip())
     conv = _conv_name(tag or f"judge-{target_role.lower()}")
     prompt = (
-        "你是一个流程裁判。以下是 {target_role} 的回复。\n\n"
+        f"你是一个流程裁判。以下是 {target_role} 的回复。\n\n"
         f"## {target_role} 的回复\n{reply}\n\n"
         "判定当前状态是以下哪一种：\n"
         f"{options_text}\n\n"
@@ -561,7 +561,7 @@ def pm_write_criteria(state: WorkflowState) -> dict:
         "- PM 将按这些标准撰写 PRD 和 prototype\n"
         "- Reviewer 将按这些标准审查 PM 产出\n\n"
         "## 要求\n"
-        "每条标准必须具体、可衡量，且写明审查方法（如何使用tool或者skill判断通过/不通过）。"
+        "文件中只需要写测什么以及怎么样算是测试完成，不需要写审查方法（reviewer 自己知道怎么测）。\n"
         "（对于原型的审核，优先考虑Playwright可以验收的标准，不需要你编写playwright标准，但是需要体现playwright脚本可审核的标准）。\n"
         "确保标准不是模板化的文字堆砌，而是真正能为审查提供 actionable 的判断依据。\n"
         "请具体、可操作，避免空泛描述。"
@@ -598,8 +598,11 @@ def review_pm_criteria(state: WorkflowState) -> dict:
         "如果 FAIL，写明需要修正的具体问题。",
         stream=True)
 
-    last_line = review.strip().split("\n")[-1].strip()
-    passed = "PASS" in last_line
+    judge_result = judge_reply(runtime, "Reviewer", review, [
+        "PASS. 审查通过，满足所有条件。",
+        "FAIL. 审查不通过，存在问题需要修正。",
+    ], tag="judge-pm-criteria")
+    passed = judge_result.strip() == "P"
 
     if passed:
         runtime.context.set_ctx("pm_criteria_feedback_path", "")
@@ -662,7 +665,10 @@ def pm_write_doc(state: WorkflowState) -> dict:
                  "2. 它的下游是谁，会如何从它的产出中获得约束和信息。\n"
                  "3. 确保产出不是模板化的文字堆砌，而是真正能为下游提供 actionable 的信息。\n"
                  "4. 确保具体、可操作，避免空泛描述\n"
-                 "5. 在这个阶段中，只要求它产出PRD.md，原型需要等你进一步下达指令后再进行产出。"
+                 "5. 在这个阶段中，只要求它产出PRD.md，原型需要等你进一步下达指令后再进行产出。\n"
+                 "6. 数据流描述必须覆盖每个角色的完整链路。例如不能只写「前端解析」，"
+                 "而要写「前端解析 JWT payload 中的哪个字段、做什么用」。\n"
+                 "7. 异常状态的 UI 描述必须和你将要产出的 prototype 的实际设计保持一致。"
                  + criteria_ref + feedback_ref)
     read_letter(runtime, "pm", pm_conv, prd_letter_path,
                 f"按信中的要求编写 PRD.md，写入文件 {prd_path}。")
@@ -684,6 +690,8 @@ def pm_write_doc(state: WorkflowState) -> dict:
                  "4. 确保具体、可操作，避免空泛占位符。")
     read_letter(runtime, "pm", pm_conv, proto_letter_path,
                 f"按信中要求编写 prototype.html，写入文件 {proto_path}。\n\n"
+                "编写完成后，对照 PRD 自检：所有 PRD 中定义的 UI 状态（包括异常状态）"
+                "是否都有对应的页面展示。\n\n"
                 "编写完成后如果需要进行自测，使用 Playwright 脚本测试，不要使用 Playwright MCP 交互式测试。\n"
                 f"Playwright 环境搭建在 {pm_agent_dir}，脚本保存到 {pm_script_dir}。\n"
                 f"  a. 首次运行：cd \"{pm_agent_dir}\" && npm init -y && cd \"{pm_agent_dir}\" && npm install playwright\n"
@@ -759,8 +767,11 @@ def review_pm_output(state: WorkflowState) -> dict:
     conv = _conv_name("reviewer")
     reply = call_agent(runtime, "reviewer", conv, prompt)
 
-    last_line = reply.strip().split("\n")[-1].strip()
-    passed = "PASS" in last_line
+    judge_result = judge_reply(runtime, "Reviewer", reply, [
+        "PASS. 审查通过，满足所有条件。",
+        "FAIL. 审查不通过，存在问题需要修正。",
+    ], tag="judge-pm-output")
+    passed = judge_result.strip() == "P"
 
     runtime.context.set_ctx("review_result", reply)
 
@@ -1016,7 +1027,7 @@ def dev_write_criteria(state: WorkflowState) -> dict:
         "- Dev 将按这些标准撰写详细设计方案\n"
         "- Reviewer 将按这些标准审查 Dev 的设计\n\n"
         "## 要求\n"
-        "每条标准必须具体、可衡量，且写明审查方法。\n"
+        "文件中只需要写测什么以及怎么样算是测试完成，不需要写审查方法（reviewer 自己知道怎么测）。\n"
         "请具体、可操作，避免空泛描述。"
     )
 
@@ -1052,8 +1063,11 @@ def review_dev_criteria(state: WorkflowState) -> dict:
         "如果 FAIL，写明需要修正的具体问题。",
         stream=True)
 
-    last_line = review.strip().split("\n")[-1].strip()
-    passed = "PASS" in last_line
+    judge_result = judge_reply(runtime, "Reviewer", review, [
+        "PASS. 审查通过，所有标准具体可衡量。",
+        "FAIL. 审查不通过，标准需要修正。",
+    ], tag="judge-dev-criteria")
+    passed = judge_result.strip() == "P"
 
     if passed:
         runtime.context.set_ctx("dev_criteria_feedback_path", "")
@@ -1173,6 +1187,7 @@ def dev_write_plan(state: WorkflowState) -> dict:
                  "4. 覆盖设计文档中的所有功能点\n"
                  "5. 这个阶段只要求产出计划文档，"
                  "代码实现需要等进一步指令后再进行。\n"
+                 f"Plan需要约束未来所有代码的产出至{dev_dir}\n"
                  f"审核标准文件参考：{criteria_path}")
     read_letter(runtime, "dev", dev_conv, plan_letter_path,
                 f"按信中的要求编写分步实现计划，写入文件 {plan_path}。")
@@ -1223,8 +1238,11 @@ def dev_review_plan(state: WorkflowState) -> dict:
                         prompt, stream=True)
     print(f"\n── Reviewer 审查结果 ──\n{review}\n")
 
-    last_line = review.strip().split("\n")[-1].strip()
-    passed = "PASS" in last_line
+    judge_result = judge_reply(runtime, "Reviewer", review, [
+        "PASS. 计划审查通过。",
+        "FAIL. 计划审查不通过，需要修改。",
+    ], tag="judge-dev-plan")
+    passed = judge_result.strip() == "P"
 
     runtime.logger.log_event("plan_reviewed",
         detail=f"Dev 计划审查{'通过' if passed else '不通过'}")
@@ -1234,11 +1252,35 @@ def dev_review_plan(state: WorkflowState) -> dict:
         total = _count_steps(plan_path)
         runtime.context.set_ctx("dev_step_index", "0")
         runtime.context.set_ctx("dev_total_steps", str(total))
+        runtime.context.set_ctx("dev_step_fail_count", "0")
+        runtime.context.set_ctx("dev_step_has_failed", "false")
 
     return {
         "phase": "plan_review_done" if passed else "plan_review_fail",
         "judge_result": "dev_exec" if passed else "dev_write_plan",
     }
+
+
+def dev_git_init(state: WorkflowState) -> dict:
+    """Dev 在 Dev/ 目录下初始化 Git 仓库。"""
+    runtime = getattr(dev_git_init, "_runtime", None)
+    dev_conv = runtime.context.get_ctx("dev_conv") or _conv_name("dev-git-init")
+    runtime.context.set_ctx("dev_conv", dev_conv)
+
+    dev_dir = os.path.join(runtime.workspace, "Dev")
+    print(f"\n  ── Dev 初始化 Git 仓库 ──")
+
+    call_agent(runtime, "dev", dev_conv,
+        f"请在 {dev_dir} 目录下初始化 Git 仓库：\n"
+        "1. cd 到该目录\n"
+        "2. git init\n"
+        "3. git config user.name 'Dev Agent'\n"
+        "4. git config user.email 'dev@agent.local'\n"
+        "5. git commit --allow-empty -m 'Initial empty commit'\n\n"
+        "以上所有操作都完成后回复确认。")
+
+    runtime.logger.log_event("phase_completed", detail="Dev Git 仓库初始化完成")
+    return {"phase": "git_initted", "judge_result": "pass"}
 
 
 def _get_step_from_plan(plan_path: str, step_idx: int) -> str:
@@ -1287,6 +1329,12 @@ def dev_exec_step(state: WorkflowState) -> dict:
     if prev_review:
         feedback = f"\n\n## 上一轮审查反馈（需修复）\n{prev_review}"
 
+    # 如有升级人工决策的指令，注入
+    escalation_decision = runtime.context.get_ctx("dev_escalation_decision")
+    if escalation_decision:
+        feedback += f"\n\n## 人工决策\n{escalation_decision}"
+        runtime.context.set_ctx("dev_escalation_decision", "")
+
     dev_dir = os.path.join(runtime.workspace, "Dev")
     os.makedirs(dev_dir, exist_ok=True)
 
@@ -1298,11 +1346,17 @@ def dev_exec_step(state: WorkflowState) -> dict:
                  f"## 上下文\n"
                  f"这是第 {step_idx + 1} 步。\n"
                  f"详细设计方案：{design_path}\n"
+                 f"所有代码文件必须放在 {dev_dir} 目录下。\n"
                  f"所有之前的步骤已完成，请在此基础上继续开发。\n"
                  f"完成实现后自行验证验收方法。"
                  + feedback)
     read_letter(runtime, "dev", dev_conv, letter_path,
-                "按信中要求实现当前步骤。完成实现后，运行该步骤的验收方法确认通过。")
+                "按信中要求实现当前步骤。所有代码产出必须放在 Dev/ 目录下，"
+                "不要将文件生成到项目根目录或其他地方。"
+                "完成实现后，运行该步骤的验收方法确认通过。\n\n"
+                "## Git 操作限制\n"
+                "没有允许不要做任何 git 操作（包括 git add、git commit、git push 等），"
+                "代码只需要写在文件中即可。")
 
     return {"phase": "dev_exec", "judge_result": "dev_review_step"}
 
@@ -1336,10 +1390,16 @@ def dev_review_step(state: WorkflowState) -> dict:
 
     print(f"\n── Reviewer 审查结果 ──\n{review}\n")
 
-    last_line = review.strip().split("\n")[-1].strip()
-    passed = "PASS" in last_line
+    judge_result = judge_reply(runtime, "Reviewer", review, [
+        "PASS. 实现满足所有验收标准。",
+        "FAIL. 实现存在问题，需要修正。",
+    ], tag=f"judge-step-{step_idx + 1}")
+    passed = judge_result.strip() == "P"
 
     if passed:
+        runtime.context.set_ctx("dev_step_fail_count", "0")
+        runtime.context.set_ctx("dev_step_has_failed", "false")
+
         new_idx = step_idx + 1
         runtime.context.set_ctx("dev_step_index", str(new_idx))
         runtime.context.set_ctx("dev_step_review_feedback", "")
@@ -1349,15 +1409,146 @@ def dev_review_step(state: WorkflowState) -> dict:
         if new_idx >= total:
             print(f"\n  ✓ 所有步骤完成！")
             runtime.logger.log_event("phase_completed", detail="Dev 执行全部完成")
-            return {"phase": "dev_exec_done", "judge_result": "done"}
         else:
             print(f"\n  ✓ Step {step_idx + 1} 通过，进入 Step {new_idx + 1}")
-            return {"phase": "step_pass", "judge_result": "dev_exec_step"}
+        return {"phase": "dev_exec_done" if new_idx >= total else "step_pass",
+                "judge_result": "dev_commit"}
     else:
         runtime.context.set_ctx("dev_step_review_feedback", review)
+
+        # 计数逻辑：第一次 FAIL 不计数，后续每次 +1
+        has_failed_before = runtime.context.get_ctx("dev_step_has_failed") == "true"
+        if not has_failed_before:
+            runtime.context.set_ctx("dev_step_has_failed", "true")
+            count = 0
+        else:
+            count = int(runtime.context.get_ctx("dev_step_fail_count") or "0") + 1
+            runtime.context.set_ctx("dev_step_fail_count", str(count))
+
+        # 阈值检查
+        rollback_threshold = runtime.config.get("fail_rollback_threshold")
+        escalation_threshold = runtime.config.get("fail_escalation_threshold")
+        if rollback_threshold is None:
+            raise RuntimeError("config 中缺少 fail_rollback_threshold")
+        if escalation_threshold is None:
+            raise RuntimeError("config 中缺少 fail_escalation_threshold")
+
         runtime.logger.log_event("step_failed",
-            detail=f"Step {step_idx + 1} 未通过")
-        return {"phase": "step_fail", "judge_result": "dev_exec_step"}
+            detail=f"Step {step_idx + 1} 未通过（fail_count={count}）")
+
+        if count >= escalation_threshold:
+            print(f"\n  ⚠ Step {step_idx + 1} 失败 {count} 次，升级人工决策")
+            return {"phase": "step_escalate", "judge_result": "dev_escalate"}
+        elif count >= rollback_threshold:
+            print(f"\n  ⚠ Step {step_idx + 1} 失败 {count} 次，触发回滚")
+            return {"phase": "step_rollback", "judge_result": "dev_rollback"}
+        else:
+            print(f"\n  ✗ Step {step_idx + 1} 未通过（fail_count={count}），重新执行")
+            return {"phase": "step_fail", "judge_result": "step_retry"}
+
+
+def dev_commit(state: WorkflowState) -> dict:
+    """Dev 审查通过后提交代码到 Git。"""
+    runtime = getattr(dev_commit, "_runtime", None)
+    dev_conv = runtime.context.get_ctx("dev_conv")
+    step_idx = int(runtime.context.get_ctx("dev_step_index") or "0")
+    total = int(runtime.context.get_ctx("dev_total_steps") or "0")
+
+    print(f"\n  ── Dev 提交 Step {step_idx} 的代码 ──")
+
+    call_agent(runtime, "dev", dev_conv,
+        f"你的 Step {step_idx} 已通过审查，请将改动提交到 Git：\n"
+        "1. cd 到 Dev/ 目录\n"
+        "2. git add 相关文件——不要将测试中间产物、缓存文件等无关内容 add 进去\n"
+        "3. git commit -m \"Step {step_idx}: <提交说明>\"\n\n"
+        "完成后回复确认。")
+
+    runtime.logger.log_event("phase_completed", detail=f"Dev Step {step_idx} 代码已提交")
+
+    if step_idx >= total:
+        return {"phase": "dev_commit_done", "judge_result": "done"}
+    else:
+        return {"phase": "dev_commit_done", "judge_result": "dev_exec_step"}
+
+
+def dev_rollback(state: WorkflowState) -> dict:
+    """Dev 失败次数过多，回滚到上一个 commit 重新开始。"""
+    runtime = getattr(dev_rollback, "_runtime", None)
+    dev_conv = runtime.context.get_ctx("dev_conv")
+    step_idx = int(runtime.context.get_ctx("dev_step_index") or "0")
+
+    print(f"\n{'='*60}\n  ==> Dev Step {step_idx + 1} 回滚中...\n{'='*60}")
+
+    call_agent(runtime, "dev", dev_conv,
+        f"当前 Step {step_idx + 1} 已失败多次，执行以下操作：\n"
+        "1. 注意：你的改动将被回滚至上一个提交，重新开始实现这个 Step\n"
+        "2. cd Dev/ && git reset --hard HEAD\n"
+        "3. 确认工作区已清理干净\n"
+        "4. 重新实现 Step\n\n"
+        "完成后回复确认。")
+
+    runtime.logger.log_event("phase_started", detail=f"Dev Step {step_idx + 1} 回滚重来")
+    return {"phase": "step_rollback", "judge_result": "dev_exec_step"}
+
+
+def dev_escalate(state: WorkflowState) -> dict:
+    """Dev 失败次数过多，升级到用户对话。Dev 简述 → 用户对话 → Dev 总结。"""
+    runtime = getattr(dev_escalate, "_runtime", None)
+    dev_conv = runtime.context.get_ctx("dev_conv")
+    step_idx = int(runtime.context.get_ctx("dev_step_index") or "0")
+    total = int(runtime.context.get_ctx("dev_total_steps") or "0")
+    end_word = runtime.config.get("input_end_word") or None
+
+    print(f"\n{'='*50}")
+    print(f"【Dev Step {step_idx + 1}/{total} 多次失败，进入人工对话】")
+    print(f"{'='*50}")
+
+    # Step 1: Dev 简述 plan、当前 step、问题
+    dev_summary = call_agent(runtime, "dev", dev_conv,
+        "请用简短的篇幅向用户说明以下信息：\n"
+        f"1. 整体计划概述\n"
+        f"2. 当前 Step {step_idx + 1} 的内容和进展\n"
+        "3. 最近一次审查反馈中指出的问题\n"
+        "4. 你认为可能的原因是什么\n\n"
+        "用户将与你对话帮助你解决问题。保持简洁。")
+    print(f"\n── Dev 的简述 ──\n{dev_summary}\n")
+
+    # Step 2: 对话循环，用户 EOF 结束
+    print("进入对话模式。输入你的意见／修改要求，Dev 将回应。直接 EOF 结束对话。\n")
+
+    round_num = 0
+    while True:
+        round_num += 1
+        hint = "输入你的意见（直接 EOF 结束）："
+        cp = runtime.checkpoint.wait(
+            f"与 Dev 对话（Step {step_idx + 1}）",
+            hint,
+            prompt="", end_word=end_word,
+        )
+        user_input = cp.message.strip()
+        if not user_input:
+            print("对话结束。\n")
+            break
+
+        call_agent(runtime, "dev", dev_conv,
+            f"用户说：{user_input}\n\n"
+            "请回应用户的意见。如果需要修改计划或其他文档，可以直接修改。\n"
+            "保持对话简洁、有建设性。")
+
+    # Step 3: Dev 总结决策
+    decision = call_agent(runtime, "dev", dev_conv,
+        "对话已结束。请总结用户最终的决策：\n"
+        "1. 计划需要如何调整？是否已修改 Dev/plan.md？\n"
+        "2. 下一步应该怎么做？\n"
+        "3. 是否需要修改其他文档？\n\n"
+        "输出决策总结。")
+
+    print(f"\n── Dev 决策总结 ──\n{decision}\n")
+    runtime.context.set_ctx("dev_escalation_decision", decision)
+
+    runtime.logger.log_event("phase_escalated",
+        detail=f"Dev Step {step_idx + 1} 升级人工对话")
+    return {"phase": "step_escalated", "judge_result": "dev_exec_step"}
 
 
 def qa_handoff(state: WorkflowState) -> dict:
@@ -1426,6 +1617,8 @@ def qa_align(state: WorkflowState) -> dict:
                                   "- 测试范围（功能模块、边界场景）\n"
                                   "- 每个模块的测试方法（E2E / API / 单元）\n"
                                   "- 不清楚或有疑问的地方\n\n"
+                                  "你的信件会被 PM 和 Dev 查看(PM 检查测试的范围，Dev 检查测试的可行性)"
+                                  "并且由他们回复你的问题"
                                   "注意：这是大纲阶段，不要写详细测试用例。",
                                   "在 PM 和 Dev 明确许可之前，不得开始写测试用例")
             is_first = False
@@ -1572,7 +1765,8 @@ def build_graph(runtime) -> StateGraph:
               dev_handoff, dev_align, dev_write_criteria, dev_write_design,
               dev_write_plan, dev_review_plan,
               review_pm_criteria, review_dev_criteria,
-              dev_exec_step, dev_review_step,
+              dev_git_init, dev_exec_step, dev_review_step,
+              dev_commit, dev_rollback, dev_escalate,
               qa_handoff, qa_align]:
         f._runtime = runtime
 
@@ -1595,8 +1789,14 @@ def build_graph(runtime) -> StateGraph:
     graph.add_node("dev_review_plan", dev_review_plan)
     graph.add_node("review_pm_criteria", review_pm_criteria)
     graph.add_node("review_dev_criteria", review_dev_criteria)
+    graph.add_node("dev_git_init", dev_git_init)
     graph.add_node("dev_exec_step", dev_exec_step)
     graph.add_node("dev_review_step", dev_review_step)
+    graph.add_node("dev_commit", dev_commit)
+    graph.add_node("dev_rollback", dev_rollback)
+    graph.add_node("dev_escalate", dev_escalate)
+    graph.add_node("qa_handoff", qa_handoff)
+    graph.add_node("qa_align", qa_align)
 
     graph.set_entry_point("pre_flight_clarify")
     graph.add_edge("pre_flight_clarify", "pm_handoff")
@@ -1639,14 +1839,23 @@ def build_graph(runtime) -> StateGraph:
     graph.add_edge("dev_write_design", "dev_write_plan")
     graph.add_edge("dev_write_plan", "dev_review_plan")
     graph.add_conditional_edges("dev_review_plan", lambda s: s.get("judge_result", ""), {
-        "dev_exec": "dev_exec_step",
+        "dev_exec": "dev_git_init",
         "dev_write_plan": "dev_write_plan",
     })
+    graph.add_edge("dev_git_init", "dev_exec_step")
     graph.add_edge("dev_exec_step", "dev_review_step")
     graph.add_conditional_edges("dev_review_step", lambda s: s.get("judge_result", ""), {
+        "dev_commit": "dev_commit",
+        "step_retry": "dev_exec_step",
+        "dev_rollback": "dev_rollback",
+        "dev_escalate": "dev_escalate",
+    })
+    graph.add_conditional_edges("dev_commit", lambda s: s.get("judge_result", ""), {
         "dev_exec_step": "dev_exec_step",
         "done": "qa_handoff",
     })
+    graph.add_edge("dev_rollback", "dev_exec_step")
+    graph.add_edge("dev_escalate", "dev_exec_step")
     graph.add_edge("qa_handoff", "qa_align")
     graph.add_edge("qa_align", END)
 
