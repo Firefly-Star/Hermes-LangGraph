@@ -19,8 +19,8 @@ def dev_handoff(state: WorkflowState) -> dict:
     project_context_path = runtime.context.get_bg("project_context_path")
     ws = runtime.workspace
 
-    letter_path = letter_path(runtime, "master-to-dev")
-    write_letter(runtime, "master", master_conv, letter_path,
+    lpath = letter_path(runtime, "master-to-dev")
+    write_letter(runtime, "master", master_conv, lpath,
                  "Master 给 Dev 的信",
                  f"介绍项目上下文。信件需包含：\n"
                  "1. 开宗明义：这是 Master 给 Dev 的信\n"
@@ -34,7 +34,7 @@ def dev_handoff(state: WorkflowState) -> dict:
                  "6. 在 PM 明确许可之前，不得开始写详细设计\n\n"
                  "信件要有 Master 的口吻，是上级对下级的沟通与任务委派。")
 
-    runtime.context.set_ctx("devletter_path", letter_path)
+    runtime.context.set_ctx("devletter_path", lpath)
     print(f"\n  ── Master 给 Dev 的信件已就绪 ──")
     return {"phase": "dev_handoff_done"}
 
@@ -343,17 +343,19 @@ def dev_write_plan(state: WorkflowState) -> dict:
                  "### 改动文件\n"
                  "- 列出需要新增或修改的文件路径\n"
                  "### 验收方法\n"
+                 "编写测试代码验证此步骤，验收时运行：\n"
                  "```bash\n"
-                 "<一条可执行的命令，能独立验证此步骤完成>\n"
+                 "<运行测试的命令>\n"
                  "```\n"
                  "### 前置条件\n"
                  "- 列出需要上一步已完成的前提（如果有）\n"
                  "```\n\n"
                  "## 要求\n"
                  "1. 每个 Step 的改动不超过 3-5 个文件\n"
-                 "2. 验收方法必须是可直接运行的命令（pytest、curl、python -c 等），"
-                 "或是可使用tools或playwright脚本进行e2e验证的方法(如需要此方法验收，需要细致地写明验证方式)，"
-                 "如果有必要的话，鼓励编写测试代码来进行验收，"
+                 "2. 每个 Step 必须编写测试代码来验证实现。"
+                 "前端代码需编写组件级单元测试（vitest/jest），仅编译检查不算验收通过。"
+                 "后端代码使用 pytest / mvn test 等单元测试框架。"
+                 "验收方法模板中写明运行这些测试的命令，测试代码作为改动文件的一部分。"
                  "每一步的验收需要覆盖这一 Step 中的所有改动。"
                  "不允许主观描述（如'确认代码正确'、'检查逻辑'）\n"
                  "3. 步骤必须按依赖顺序排列\n"
@@ -411,8 +413,8 @@ def dev_review_plan(state: WorkflowState) -> dict:
     print(f"\n── Reviewer 审查结果 ──\n{review}\n")
 
     judge_result = judge_reply(runtime, "Reviewer", review, [
-        "PASS. 计划审查通过。",
-        "FAIL. 计划审查不通过，需要修改。",
+        "P. 计划审查通过。",
+        "F. 计划审查不通过，需要修改。",
     ], tag="judge-dev-plan")
     passed = judge_result.strip() == "P"
 
@@ -487,8 +489,8 @@ def dev_exec_step(state: WorkflowState) -> dict:
     dev_dir = os.path.join(runtime.workspace, "Dev")
     os.makedirs(dev_dir, exist_ok=True)
 
-    letter_path = letter_path(runtime, f"master-step-{step_idx + 1}")
-    write_letter(runtime, "master", master_conv, letter_path,
+    lpath = letter_path(runtime, f"master-step-{step_idx + 1}")
+    write_letter(runtime, "master", master_conv, lpath,
                  f"Step {step_idx + 1} 实现说明",
                  f"请以 Master 的身份给 Dev 写信，要求 Dev 实现以下步骤。\n\n"
                  f"## 待实现的步骤\n{step_content}\n\n"
@@ -499,7 +501,7 @@ def dev_exec_step(state: WorkflowState) -> dict:
                  f"所有之前的步骤已完成，请在此基础上继续开发。\n"
                  f"完成实现后自行验证验收方法。"
                  + feedback)
-    read_letter(runtime, "dev", dev_conv, letter_path,
+    read_letter(runtime, "dev", dev_conv, lpath,
                 "按信中要求实现当前步骤。所有代码产出必须放在 Dev/ 目录下，"
                 "不要将文件生成到项目根目录或其他地方。"
                 "完成实现后，运行该步骤的验收方法确认通过。\n\n"
@@ -540,8 +542,8 @@ def dev_review_step(state: WorkflowState) -> dict:
     print(f"\n── Reviewer 审查结果 ──\n{review}\n")
 
     judge_result = judge_reply(runtime, "Reviewer", review, [
-        "PASS. 实现满足所有验收标准。",
-        "FAIL. 实现存在问题，需要修正。",
+        "P. 实现满足所有验收标准。",
+        "F. 实现存在问题，需要修正。",
     ], tag=f"judge-step-{step_idx + 1}")
     passed = judge_result.strip() == "P"
 

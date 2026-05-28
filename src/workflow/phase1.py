@@ -22,8 +22,8 @@ def pm_handoff(state: WorkflowState) -> dict:
     if not master_conv:
         raise RuntimeError("clarify conversation 不存在")
 
-    letter_path = letter_path(runtime, "master-to-pm")
-    write_letter(runtime, "master", master_conv, letter_path,
+    lpath = letter_path(runtime, "master-to-pm")
+    write_letter(runtime, "master", master_conv, lpath,
                  "Master 给 PM 的信",
                  f"介绍项目上下文。信件需包含：\n"
                  "1. 开宗明义：这是 Master 给 PM 的信\n"
@@ -33,7 +33,7 @@ def pm_handoff(state: WorkflowState) -> dict:
                  "5. 强调：在确认之前，不得开始写 PRD 或原型\n\n"
                  "信件要有 Master 的口吻，是上级对下级的沟通与任务委派。")
 
-    runtime.context.set_ctx("pmletter_path", letter_path)
+    runtime.context.set_ctx("pmletter_path", lpath)
     print(f"\n  ── Master 给 PM 的信件已就绪 ──")
     return {"phase": "pm_handoff_done"}
 
@@ -71,11 +71,11 @@ def pm_align(state: WorkflowState) -> dict:
                               "如有新的疑问也一并提出。如果已没有疑问，也需要明确说明没有疑问，并重新详细讲述自己对项目的了解。",
                               "在 Master 明确许可之前，不得开始写 PRD 或原型。")
     else:
-        letter_path = runtime.context.get_ctx("pmletter_path")
-        if not letter_path:
+        lpath = runtime.context.get_ctx("pmletter_path")
+        if not lpath:
             raise RuntimeError("没有 handoff 信件路径")
         read_and_write_letter(runtime, "pm", pm_conv,
-                              letter_path, pm_reply_path,
+                              lpath, pm_reply_path,
                               "From PM, Re: Master 的委托",
                               "写一封回信汇报你对项目的理解和疑问。"
                               "列出不清楚或需要 Master 确认的地方。",

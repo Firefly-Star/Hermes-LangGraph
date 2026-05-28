@@ -20,8 +20,8 @@ def qa_handoff(state: WorkflowState) -> dict:
     qa_dir = os.path.join(ws, "QA")
     os.makedirs(qa_dir, exist_ok=True)
 
-    letter_path = letter_path(runtime, "master-to-qa")
-    write_letter(runtime, "master", master_conv, letter_path,
+    lpath = letter_path(runtime, "master-to-qa")
+    write_letter(runtime, "master", master_conv, lpath,
                  "Master 给 QA 的信",
                  f"介绍项目上下文。信件需包含：\n"
                  "1. 开宗明义：这是 Master 给 QA 的信\n"
@@ -35,7 +35,7 @@ def qa_handoff(state: WorkflowState) -> dict:
                  "得到 PM 和 Dev 确认后才能开始写详细测试计划\n"
                  "8. 强调：在确认之前，不得开始写测试用例或执行测试")
 
-    runtime.context.set_ctx("qaletter_path", letter_path)
+    runtime.context.set_ctx("qaletter_path", lpath)
     print(f"\n  ── Master 给 QA 的信件已就绪 ──")
     return {"phase": "qa_handoff_done"}
 

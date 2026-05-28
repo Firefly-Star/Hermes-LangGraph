@@ -2,7 +2,7 @@
 import os, json, time, shutil
 from typing import Optional
 
-from .config import FLUSH_CONTINUATION_NOTE, CHECKPOINT_FILE
+from .config import FLUSH_CONTINUATION_NOTE, CHECKPOINT_FILE, HANDOFFS_DIR
 from .utils import conv_name, open_master_conv
 
 
@@ -73,9 +73,9 @@ def _restore_dev_conv(runtime):
 
 
 def _clean_next_phase(runtime, resume_node):
-    """清理下一阶段的产出目录，避免上次失败的残留干扰重连。"""
+    """清理下一阶段的产出目录 + handoff 信件，避免上次失败的残留干扰重连。"""
     ws = runtime.workspace
-    targets = []
+    targets = [os.path.join(runtime.runtime_dir, HANDOFFS_DIR)]
     if resume_node == "pm_handoff":
         targets.append(os.path.join(ws, "PM"))
         targets.append(os.path.join(ws, "criteria-pm.md"))
