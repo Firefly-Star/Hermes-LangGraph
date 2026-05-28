@@ -354,6 +354,14 @@ class ConversationManager:
         self.close_conversation(agent, conversation)
         return self.call(agent, conversation, initial_prompt)
 
+    def begin(self, agent: str, conversation: str, initial_prompt: str) -> CallResult:
+        """init_conversation 的别名。"""
+        return self.init_conversation(agent, conversation, initial_prompt)
+
+    def close(self, agent: str, conversation: str):
+        """close_conversation 的别名。"""
+        return self.close_conversation(agent, conversation)
+
     def close_conversation(self, agent: str, conversation: str):
         """停止追踪指定对话。不清除服务端数据。"""
         data = _read_json(self._registry_path)

@@ -18,6 +18,13 @@ def _conv_name(base: str) -> str:
     return f"{base}-{ws}-{ts}"
 
 
+FLUSH_CONTINUATION_NOTE = (
+    "\n\n【对话延续】本对话是上一轮对话的延续。"
+    "上一轮对话因上下文长度限制已被关闭。"
+    "以下文件承载了到当前阶段为止的完整上下文和进度记录：\n"
+)
+
+
 AGENT_CONFIGS = {
     "master": {"profile": "cg", "port": 8642},
     "judge":  {"profile": "cg", "port": 8642},
@@ -47,6 +54,78 @@ def role_aware_prompt(role: str, upstream: str, upstream_doc: str,
         f"确保你的产出不是模板化的文字堆砌，而是真正能为下游提供 actionable 的信息。\n"
         f"请具体、可操作，避免空泛描述。"
     )
+
+DEV_SYSTEM_PROMPT = """
+## 角色认知
+你是项目的 **Dev 工程师**。你只负责三件事：
+1. **出设计方案** — 基于 PRD 和原型，产出详细技术设计文档
+2. **出实现计划** — 将设计拆分为可执行的步骤，每步含验收方法
+3. **编码实现** — 按计划逐步实现，通过审查后提交代码
+4. **确保编译通过**
+5. **bug修复** — 在按照计划逐步实现后，reviewer将审查你的代码和验收，如果验收中发现问题会回复你，你需要修复bug
+
+## 你不做什么
+1. **不要修改审核标准和顶层决策文件** — criteria-*.md、project_context.md 由 Master 维护
+2. **不要直接与其他 agent 对话** — 所有跨 agent 通信通过信件传递
+3. **不要在 conversation 中引用其他 agent 的对话内容** — 其他 agent 看不到你的对话
+
+## 工作流阶段（供你了解全局）
+1. 需求澄清（Master 与用户对话）
+2. PM 出方案（PM 产出 PRD + prototype）
+3. Dev 出详细设计 + 实现 ← 你在这里
+4. QA 测试（QA 编写和执行测试）
+5. 交付
+
+## 工作文件夹
+项目工作目录：{workspace}
+你的产出全部在：{workspace}/Dev/ 目录下，包括：
+- 详细设计方案：{workspace}/Dev/design.md
+- 分步实现计划：{workspace}/Dev/plan.md
+- 代码仓库（Git）：{workspace}/Dev/（所有代码文件都在此目录下）
+- 不允许将代码文件生成到 Dev/ 之外的其他目录
+
+## Agent 间通信机制
+- 你通过 Master 写的信件（markdown 文件）接收任务
+- 你的产出通过 write_file 工具写入指定文件
+- Master 的信件路径会直接给你，你自行读取
+
+## 编码规范
+- 所有代码文件必须放在 Dev/ 目录下（含子目录）
+- 遵循项目技术栈约定（由 design.md 和 plan.md 指定）
+- 完成实现后自行运行验收方法确认通过
+- 不要做任何 git 操作（git add、commit、push 等），除非被明确告知
+
+## Git 操作规范（只在被明确告知时执行）
+- **git init**：被告知时在 Dev/ 目录初始化仓库并做空提交
+- **git add + commit**：审查通过后被告知时执行，只 add 相关代码文件，
+  不加入测试中间产物和缓存文件
+- **git reset --hard HEAD**：被告知回滚时执行，清除当前 step 的改动重新实现
+- 除此之外不得自行执行任何 git 操作
+
+## 核心原则
+1. **Review 不可跳过** — 你的每一步输出都须经审查，再小也不能省
+2. **所有产出在 Dev/** — 代码文件全部在 Dev/ 目录下，不散落到项目根目录
+
+## 各阶段工作方式
+
+### 对齐阶段
+- 阅读 Master 的 handoff 信，理解项目背景和需求
+- 写出你对项目的理解总结和疑问清单
+- 等待 Master/PM 回答你的疑问
+- 在得到明确许可前，不得开始写设计或代码
+
+### 设计阶段
+- 产出详细设计方案（design.md）：系统架构、数据流、API 定义、组件结构
+- 设计方案必须覆盖 PRD 中所有功能点，考虑边界情况和错误处理
+- 产出分步实现计划（plan.md）：每步有明确的验收方法，步骤粒度适中
+- 计划中的每步都必须约束代码产出到 Dev/ 目录
+
+### 编码阶段
+- 按 plan.md 逐步实现，每步完成后自行运行验收方法
+- 代码质量要求：类型安全、错误处理完整、日志合理、可拓展性强
+- 审查反馈中指出的问题需要逐一修复
+- 如果某一步多次失败（回滚或升级），按 Master/用户的指示执行
+"""
 
 MASTER_SYSTEM_PROMPT = """
 ## 角色认知
@@ -310,8 +389,75 @@ def setup_runtime(config_path: str = None) -> ap.AgentRuntime:
 
     # 持久化 Master system prompt，供后续 flush 重建对话时注入
     runtime.context.set_bg("master_principles", MASTER_SYSTEM_PROMPT.format(workspace=runtime.workspace).strip())
+    runtime.context.set_bg("dev_principles", DEV_SYSTEM_PROMPT.format(workspace=runtime.workspace).strip())
 
     return runtime
+
+
+def _master_flush(runtime, phase_name, next_phase_desc):
+    """Master phase boundary flush: 写阶段总结 → 关旧对话 → 开新对话注入上下文。
+
+    必须在该阶段最后一个使用 Master 的节点中调用（此时旧对话仍活跃）。
+    """
+    master_conv = runtime.context.get_ctx("master_conv")
+    project_context_path = runtime.context.get_bg("project_context_path")
+
+    summary_path = os.path.join(runtime.runtime_dir, f"phase-summary-{phase_name}.md")
+    call_agent(runtime, "master", master_conv,
+        f"请将你刚完成的阶段总结写入 {summary_path}。格式如下：\n\n"
+        "Summary:\n"
+        f"1. Phase Completed:\n"
+        f"   - 阶段：{phase_name}\n"
+        "   - 核心产出物\n\n"
+        "2. Key Decisions Made:\n"
+        "   - 本阶段的关键决策\n\n"
+        "3. Artifacts Produced:\n"
+        "   - 文件清单（含路径）\n\n"
+        "4. Open Issues / Risks:\n"
+        "   - 遗留问题及风险\n\n"
+        "5. Current Status:\n"
+        f"   - 已完成: {phase_name}\n"
+        f"   - 下一步: {next_phase_desc}")
+
+    if not _ensure_write_file(runtime, "master", master_conv, summary_path):
+        call_agent(runtime, "master", master_conv,
+                   f"将阶段总结写入文件 {summary_path}，使用 write_file 工具。")
+
+    runtime.conversations.close("master", master_conv)
+
+    master_principles = runtime.context.get_bg("master_principles")
+    new_conv = _conv_name("master")
+    runtime.context.set_ctx("master_conv", new_conv)
+
+    injected = (f"{master_principles}{FLUSH_CONTINUATION_NOTE}"
+                f"## 项目需求（已确认）\n"
+                f"{{{project_context_path}}}\n\n"
+                f"## 进度摘要\n"
+                f"{{{summary_path}}}")
+
+    runtime.conversations.begin("master", new_conv, injected)
+    print(f"\n  ── Master flush: {phase_name} → {next_phase_desc} (新对话: {new_conv})")
+
+
+def master_flush_after_clarify(state: WorkflowState) -> dict:
+    """Phase 0→1 边界: flush Master，注入 project_context.md + clarify 总结。"""
+    runtime = getattr(master_flush_after_clarify, "_runtime", None)
+    _master_flush(runtime, "需求澄清", "PM 出方案")
+    return {}
+
+
+def master_flush_after_pm(state: WorkflowState) -> dict:
+    """Phase 1→2 边界: flush Master，注入 project_context.md + PM 阶段总结。"""
+    runtime = getattr(master_flush_after_pm, "_runtime", None)
+    _master_flush(runtime, "PM 出方案", "Dev 实现")
+    return {}
+
+
+def master_flush_after_dev(state: WorkflowState) -> dict:
+    """Phase 2→3 边界: flush Master，注入 project_context.md + Dev 阶段总结。"""
+    runtime = getattr(master_flush_after_dev, "_runtime", None)
+    _master_flush(runtime, "Dev 实现", "QA 对齐")
+    return {}
 
 
 def pre_flight_clarify(state: WorkflowState) -> dict:
@@ -456,7 +602,13 @@ def master_reply_pm(state: WorkflowState) -> dict:
             "你的回复中需明确区分两部分：\n"
             "- 你对 PM 的答复/纠正\n"
             "- 需要向用户确认的问题（如无则说'无需向用户提问'）\n"
-            "4. 如果 PM 已经没有疑问且确保 PM 没有任何理解错误，则告诉 PM 它的理解已经完全正确。无需再向用户汇报以及请求许可，但也别立刻让 PM 编写相关产出.\n"
+            "4. 在回复末尾，你必须用以下格式之一明确声明结论：\n"
+            "   - 「结论：需要转发给PM」— 你对 PM 有任何答复、纠正或补充说明需要让 PM 看到\n"
+            "   - 「结论：无需转发，PM已完全正确」— PM 理解完全无误，且你没有任"
+            "何需要告诉 PM 的内容\n"
+            "   - 「结论：需要向用户确认」— 你有无法判定的问题需要问用户\n\n"
+            "注意：如果你写了任何对 PM 的答复或纠正，就一定属于[需要转发给PM]。"
+            "只有当你一个字都没需要跟 PM 说时，才属于[无需转发]。\n"
             "后续用户会主动指示让你编写对 PM 产出的审核标准以及对 PM 的prompt信件。")
 
     pm_reply_path = runtime.context.get_ctx("pm_reply_path")
@@ -482,9 +634,9 @@ def judge_master_reply(state: WorkflowState) -> dict:
 
     print("  ── judge: Master 回复 ──")
     result = judge_reply(runtime, "Master", master_reply, [
-        "A. Master 已明确确认 PM 理解完全正确，且无任何需要再向PM说明或向用户提问的内容 → 进入下一阶段",
-        "B. Master 有对 PM 的答复或纠正，需要转发给 PM 继续对齐 → 回 pm_align",
-        "C. Master 有无法判定的问题，需要向用户确认 → 进入 clarify_inject",
+        "A. Master 明确声明「无需转发，PM已完全正确」，且无任何需要再向PM说明或向用户提问的内容 → 进入下一阶段",
+        "B. Master 明确声明「需要转发给PM」，或有任何对 PM 的答复或纠正需要转发 → 回 pm_align",
+        "C. Master 明确声明「需要向用户确认」，或有无法判定的问题 → 进入 clarify_inject",
     ], "judge-master-reply")
     return {"judge_result": result.strip()}
 
@@ -768,8 +920,8 @@ def review_pm_output(state: WorkflowState) -> dict:
     reply = call_agent(runtime, "reviewer", conv, prompt)
 
     judge_result = judge_reply(runtime, "Reviewer", reply, [
-        "PASS. 审查通过，满足所有条件。",
-        "FAIL. 审查不通过，存在问题需要修正。",
+        "P. 审查通过，满足所有条件。",
+        "F. 审查不通过，存在问题需要修正。",
     ], tag="judge-pm-output")
     passed = judge_result.strip() == "P"
 
@@ -1465,6 +1617,47 @@ def dev_commit(state: WorkflowState) -> dict:
 
     runtime.logger.log_event("phase_completed", detail=f"Dev Step {step_idx} 代码已提交")
 
+    if step_idx < total:
+        # Flush: 写 summary → 关旧对话 → 开新对话注入上下文
+        summary_path = os.path.join(runtime.workspace, "Dev", "compact-summary.md")
+        design_path = os.path.join(runtime.workspace, "Dev", "design.md")
+        plan_path = os.path.join(runtime.workspace, "Dev", "plan.md")
+
+        call_agent(runtime, "dev", dev_conv,
+            f"请将你的工作进度写入 {summary_path}。格式如下：\n\n"
+            "Summary:\n"
+            "1. Primary Request and Intent:\n"
+            "   - 刚完成的 Step 实现了什么\n\n"
+            "2. Key Technical Concepts:\n"
+            "   - 涉及的技术要点、配置变更\n\n"
+            "3. Files and Code Sections:\n"
+            "   - 具体到文件路径，新增/修改了什么\n\n"
+            "4. Errors and fixes:\n"
+            "   - 遇到的问题和解决方法\n\n"
+            "5. Dependencies / Assumptions:\n"
+            "   - 对后续步骤的依赖和假设\n\n"
+            "6. Current Status:\n"
+            f"   - 已完成: Step {step_idx}/{total}\n"
+            f"   - 下一步: Step {step_idx + 1}")
+
+        if not _ensure_write_file(runtime, "dev", dev_conv, summary_path):
+            print(f"  ⚠ compact summary 未确认写入，flush 时可能不可用")
+
+        runtime.conversations.close("dev", dev_conv)
+
+        dev_principles = runtime.context.get_bg("dev_principles")
+        new_conv = _conv_name("dev-exec")
+        runtime.context.set_ctx("dev_conv", new_conv)
+
+        runtime.conversations.begin("dev", new_conv,
+            f"{dev_principles}{FLUSH_CONTINUATION_NOTE}"
+            f"## 已完成的工作\n"
+            f"{{{summary_path}}}\n\n"
+            f"## 项目设计文档\n"
+            f"{{{design_path}}}\n\n"
+            f"## 执行计划\n"
+            f"{{{plan_path}}}")
+
     if step_idx >= total:
         return {"phase": "dev_commit_done", "judge_result": "done"}
     else:
@@ -1767,7 +1960,9 @@ def build_graph(runtime) -> StateGraph:
               review_pm_criteria, review_dev_criteria,
               dev_git_init, dev_exec_step, dev_review_step,
               dev_commit, dev_rollback, dev_escalate,
-              qa_handoff, qa_align]:
+              qa_handoff, qa_align,
+              master_flush_after_clarify, master_flush_after_pm,
+              master_flush_after_dev]:
         f._runtime = runtime
 
     graph = StateGraph(WorkflowState)
@@ -1797,9 +1992,13 @@ def build_graph(runtime) -> StateGraph:
     graph.add_node("dev_escalate", dev_escalate)
     graph.add_node("qa_handoff", qa_handoff)
     graph.add_node("qa_align", qa_align)
+    graph.add_node("master_flush_after_clarify", master_flush_after_clarify)
+    graph.add_node("master_flush_after_pm", master_flush_after_pm)
+    graph.add_node("master_flush_after_dev", master_flush_after_dev)
 
     graph.set_entry_point("pre_flight_clarify")
-    graph.add_edge("pre_flight_clarify", "pm_handoff")
+    graph.add_edge("pre_flight_clarify", "master_flush_after_clarify")
+    graph.add_edge("master_flush_after_clarify", "pm_handoff")
     graph.add_edge("pm_handoff", "pm_align")
     graph.add_edge("pm_align", "master_reply_pm")
     graph.add_edge("master_reply_pm", "judge_master_reply")
@@ -1823,9 +2022,10 @@ def build_graph(runtime) -> StateGraph:
         "pm_write_doc": "pm_write_doc",
     })
     graph.add_conditional_edges("human_review", lambda s: s.get("judge_result", ""), {
-        END: "dev_handoff",
+        END: "master_flush_after_pm",
         "review_pm_output": "review_pm_output",
     })
+    graph.add_edge("master_flush_after_pm", "dev_handoff")
     graph.add_edge("dev_handoff", "dev_align")
     graph.add_edge("dev_align", "dev_write_criteria")
     graph.add_conditional_edges("dev_write_criteria", lambda s: s.get("judge_result", ""), {
@@ -1852,8 +2052,9 @@ def build_graph(runtime) -> StateGraph:
     })
     graph.add_conditional_edges("dev_commit", lambda s: s.get("judge_result", ""), {
         "dev_exec_step": "dev_exec_step",
-        "done": "qa_handoff",
+        "done": "master_flush_after_dev",
     })
+    graph.add_edge("master_flush_after_dev", "qa_handoff")
     graph.add_edge("dev_rollback", "dev_exec_step")
     graph.add_edge("dev_escalate", "dev_exec_step")
     graph.add_edge("qa_handoff", "qa_align")
