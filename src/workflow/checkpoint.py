@@ -3,7 +3,7 @@ import os, json, time, shutil
 from typing import Optional
 
 from .config import FLUSH_CONTINUATION_NOTE, CHECKPOINT_FILE, HANDOFFS_DIR
-from .utils import conv_name, open_master_conv
+from .utils import conv_name, call_agent, open_master_conv
 
 
 def _cp_path(runtime) -> str:
@@ -89,7 +89,7 @@ def _restore_dev_conv(runtime, step_idx):
                 f"## 项目设计文档\n{design_text}\n\n"
                 f"## 执行计划\n{plan_text}")
     new_conv = conv_name("dev-exec")
-    runtime.conversations.begin("dev", new_conv, injected)
+    call_agent(runtime, "dev", new_conv, injected)
     runtime.context.set_ctx("dev_conv", new_conv)
 
     runtime.context.set_ctx("dev_step_index", str(step_idx))
