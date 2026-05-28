@@ -73,6 +73,7 @@ def interruptible(func):
             rt = wrapper._runtime
             rt.context.set_ctx("interrupted_node", func.__name__)
             # 内联调用用户介入，不走图路由（固定边无法路由到 user_intervention_node）
+            user_intervention_node._runtime = rt
             user_intervention_node(state)
             # 用户结束后从头重入当前节点
             return func(state)
