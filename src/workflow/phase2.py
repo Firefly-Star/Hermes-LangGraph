@@ -1,10 +1,10 @@
 """Phase 2: Dev 出设计 + 编码执行阶段。"""
 import os
 
-from .utils import (WorkflowState, _conv_name, call_agent, _letter_path,
-                    _ensure_write_file, write_letter, read_letter,
-                    read_and_write_letter, judge_reply, _clarify_loop,
-                    _write_criteria, _get_step_from_plan, _count_steps)
+from .utils import (WorkflowState, conv_name, call_agent, letter_path,
+                    ensure_write_file, write_letter, read_letter,
+                    read_and_write_letter, judge_reply, clarify_loop,
+                    write_criteria, get_step_from_plan, count_steps)
 from .config import DEV_SYSTEM_PROMPT, FLUSH_CONTINUATION_NOTE
 from .checkpoint import save_checkpoint
 from langgraph.graph import END
@@ -19,7 +19,7 @@ def dev_handoff(state: WorkflowState) -> dict:
     project_context_path = runtime.context.get_bg("project_context_path")
     ws = runtime.workspace
 
-    letter_path = _letter_path(runtime, "master-to-dev")
+    letter_path = letter_path(runtime, "master-to-dev")
     write_letter(runtime, "master", master_conv, letter_path,
                  "Master 给 Dev 的信",
                  f"介绍项目上下文。信件需包含：\n"
@@ -34,7 +34,7 @@ def dev_handoff(state: WorkflowState) -> dict:
                  "6. 在 PM 明确许可之前，不得开始写详细设计\n\n"
                  "信件要有 Master 的口吻，是上级对下级的沟通与任务委派。")
 
-    runtime.context.set_ctx("dev_letter_path", letter_path)
+    runtime.context.set_ctx("devletter_path", letter_path)
     print(f"\n  ── Master 给 Dev 的信件已就绪 ──")
     return {"phase": "dev_handoff_done"}
 
@@ -47,12 +47,12 @@ def dev_align(state: WorkflowState) -> dict:
 
     dev_conv = runtime.context.get_ctx("dev_conv")
     if not dev_conv:
-        dev_conv = _conv_name("dev-align")
+        dev_conv = conv_name("dev-align")
         runtime.context.set_ctx("dev_conv", dev_conv)
 
     pm_conv = runtime.context.get_ctx("pm_conv")
     if not pm_conv:
-        pm_conv = _conv_name("pm-align")
+        pm_conv = conv_name("pm-align")
         runtime.context.set_ctx("pm_conv", pm_conv)
 
     runtime.logger.log_event("phase_started", detail="Dev 对齐")
@@ -61,10 +61,10 @@ def dev_align(state: WorkflowState) -> dict:
     is_first = True
     while True:
         if is_first:
-            handoff_path = runtime.context.get_ctx("dev_letter_path")
+            handoff_path = runtime.context.get_ctx("devletter_path")
             if not handoff_path:
                 raise RuntimeError("没有 handoff 信件路径")
-            dev_reply_path = _letter_path(runtime, "dev-understanding")
+            dev_reply_path = letter_path(runtime, "dev-understanding")
             read_and_write_letter(runtime, "dev", dev_conv,
                                   handoff_path, dev_reply_path,
                                   "From Dev, Re: Master 的委托",
@@ -77,7 +77,7 @@ def dev_align(state: WorkflowState) -> dict:
             feedback_path = runtime.context.get_ctx("dev_feedback_path")
             if not feedback_path or not os.path.exists(feedback_path):
                 raise RuntimeError("Dev 反馈信缺失")
-            dev_reply_path = _letter_path(runtime, "dev-understanding")
+            dev_reply_path = letter_path(runtime, "dev-understanding")
             read_and_write_letter(runtime, "dev", dev_conv,
                                   feedback_path, dev_reply_path,
                                   "From Dev, Re: 修订后的理解",
@@ -86,7 +86,7 @@ def dev_align(state: WorkflowState) -> dict:
                                   "如果已经没有疑问，明确说明已无疑问。",
                                   "在 PM 明确许可之前，不得开始写详细设计")
 
-        pm_reply_path = _letter_path(runtime, "pm-reply-dev")
+        pm_reply_path = letter_path(runtime, "pm-reply-dev")
         read_and_write_letter(runtime, "pm", pm_conv,
                               dev_reply_path, pm_reply_path,
                               "From PM, Re: Dev 的理解与疑问",
@@ -116,7 +116,7 @@ def dev_align(state: WorkflowState) -> dict:
 
         if judge_result in ("C",) or needs_upgrade:
             print(f"\n  ── 升级到 Master ──")
-            master_reply_path = _letter_path(runtime, "master-reply-dev")
+            master_reply_path = letter_path(runtime, "master-reply-dev")
             read_and_write_letter(runtime, "master", master_conv,
                                   pm_reply_path, master_reply_path,
                                   "From Master, Re: Dev 对齐中的争议",
@@ -145,10 +145,10 @@ def dev_align(state: WorkflowState) -> dict:
                     call_agent(runtime, "master", master_conv,
                                f"请将本轮确认的决策记录到项目顶层决策记录文件的合适位置中：{pc_path}")
 
-                _clarify_loop(runtime, master_conv, "== 向用户确认（Dev 对齐）==",
+                clarify_loop(runtime, master_conv, "== 向用户确认（Dev 对齐）==",
                              "Master 需要向用户确认 Dev 对齐中的争议问题", _close)
 
-                final_path = _letter_path(runtime, "master-final-dev")
+                final_path = letter_path(runtime, "master-final-dev")
                 write_letter(runtime, "master", master_conv, final_path,
                             "Master 给 Dev 的最终答复",
                             "根据用户确认的决策以及你的分析，"
@@ -168,9 +168,9 @@ def dev_align(state: WorkflowState) -> dict:
             return {"phase": "dev_align_done"}
 
 
-def dev_write_criteria(state: WorkflowState) -> dict:
+def devwrite_criteria(state: WorkflowState) -> dict:
     """Master 制定 Dev 详细设计的审核标准。"""
-    runtime = getattr(dev_write_criteria, "_runtime", None)
+    runtime = getattr(devwrite_criteria, "_runtime", None)
     master_conv = runtime.context.get_ctx("master_conv")
     project_context_path = runtime.context.get_bg("project_context_path")
     ws = runtime.workspace
@@ -205,7 +205,7 @@ def dev_write_criteria(state: WorkflowState) -> dict:
         "请具体、可操作，避免空泛描述。"
     )
 
-    _write_criteria(
+    write_criteria(
         runtime, master_conv,
         title="Master 制定 Dev 设计审核标准",
         file_path=os.path.join(ws, "criteria-design.md"),
@@ -223,9 +223,9 @@ def review_dev_criteria(state: WorkflowState) -> dict:
 
     if not criteria_path or not os.path.exists(criteria_path):
         print(f"  ✗ Dev 审核标准文件不存在：{criteria_path}")
-        return {"phase": "review_criteria_fail", "judge_result": "dev_write_criteria"}
+        return {"phase": "review_criteria_fail", "judge_result": "devwrite_criteria"}
 
-    review = call_agent(runtime, "reviewer", _conv_name("review-dev-criteria"),
+    review = call_agent(runtime, "reviewer", conv_name("review-dev-criteria"),
         "请审查以下审核标准。\n\n"
         "逐条检查：\n"
         "1. 每条标准是否具体、可衡量(审核标准不能带有“恰当”，“合理”等主观判断)？\n"
@@ -238,16 +238,16 @@ def review_dev_criteria(state: WorkflowState) -> dict:
         stream=True)
 
     judge_result = judge_reply(runtime, "Reviewer", review, [
-        "PASS. 审查通过，所有标准具体可衡量。",
-        "FAIL. 审查不通过，标准需要修正。",
+        "P. 审查通过，所有标准具体可衡量。",
+        "F. 审查不通过，标准需要修正。",
     ], tag="judge-dev-criteria")
     passed = judge_result.strip() == "P"
 
     if passed:
         runtime.context.set_ctx("dev_criteria_feedback_path", "")
     else:
-        feedback_path = _letter_path(runtime, "reviewer-dev-criteria-feedback")
-        write_letter(runtime, "reviewer", _conv_name("review-dev-criteria-feedback"),
+        feedback_path = letter_path(runtime, "reviewer-dev-criteria-feedback")
+        write_letter(runtime, "reviewer", conv_name("review-dev-criteria-feedback"),
                      feedback_path, "Dev 审核标准审查反馈",
                      f"以下是你在上一轮审查中给出的评审意见，请整理成一封反馈信。\n\n"
                      f"## 你的审查意见\n{review}")
@@ -257,7 +257,7 @@ def review_dev_criteria(state: WorkflowState) -> dict:
         detail=f"Dev 审核标准审查{'通过' if passed else '不通过'}")
     return {
         "phase": "review_dev_criteria_done" if passed else "review_dev_criteria_fail",
-        "judge_result": "dev_write_design" if passed else "dev_write_criteria",
+        "judge_result": "dev_write_design" if passed else "devwrite_criteria",
     }
 
 
@@ -266,7 +266,7 @@ def dev_write_design(state: WorkflowState) -> dict:
     runtime = getattr(dev_write_design, "_runtime", None)
     dev_conv = runtime.context.get_ctx("dev_conv")
     if not dev_conv:
-        dev_conv = _conv_name("dev-design")
+        dev_conv = conv_name("dev-design")
         runtime.context.set_ctx("dev_conv", dev_conv)
 
     runtime.logger.log_event("phase_started", detail="Dev 出详细设计")
@@ -285,8 +285,8 @@ def dev_write_design(state: WorkflowState) -> dict:
         criteria_ref = f"\n审核标准文件（Dev 需对着这些标准写，Reviewer 将用来审查）：{criteria_path}"
 
     design_path = os.path.join(dev_dir, "design.md")
-    design_letter_path = _letter_path(runtime, "master-design")
-    write_letter(runtime, "master", master_conv, design_letter_path,
+    designletter_path = letter_path(runtime, "master-design")
+    write_letter(runtime, "master", master_conv, designletter_path,
                  "详细设计编写说明",
                  "请以 Master 的身份给 Dev 写信，要求 Dev 输出详细设计方案并写入指定文件。\n"
                  "需包含：系统架构、数据流设计、路由/API 定义、组件结构、关键实现逻辑。\n"
@@ -299,7 +299,7 @@ def dev_write_design(state: WorkflowState) -> dict:
                  "5. 在这个阶段中，只要求产出详细设计文档，"
                  "代码实现需要等进一步指令后再进行。"
                  + criteria_ref)
-    read_letter(runtime, "dev", dev_conv, design_letter_path,
+    read_letter(runtime, "dev", dev_conv, designletter_path,
                 f"按信中的要求编写详细设计方案，写入文件 {design_path}。")
 
     print(f"  ✓ {design_path}")
@@ -313,7 +313,7 @@ def dev_write_plan(state: WorkflowState) -> dict:
     runtime = getattr(dev_write_plan, "_runtime", None)
     dev_conv = runtime.context.get_ctx("dev_conv")
     if not dev_conv:
-        dev_conv = _conv_name("dev-plan")
+        dev_conv = conv_name("dev-plan")
         runtime.context.set_ctx("dev_conv", dev_conv)
 
     runtime.logger.log_event("phase_started", detail="Dev 出实现计划")
@@ -330,8 +330,8 @@ def dev_write_plan(state: WorkflowState) -> dict:
     criteria_path = runtime.context.get_ctx("dev_criteria_path") or ""
 
     plan_path = os.path.join(dev_dir, "plan.md")
-    plan_letter_path = _letter_path(runtime, "master-plan")
-    write_letter(runtime, "master", master_conv, plan_letter_path,
+    planletter_path = letter_path(runtime, "master-plan")
+    write_letter(runtime, "master", master_conv, planletter_path,
                  "分步实现计划编写说明",
                  "请以 Master 的身份给 Dev 写信，要求 Dev 输出分步实现的计划并写入指定文件。\n"
                  "告知 Dev，它的详细设计方案在：\n"
@@ -362,7 +362,7 @@ def dev_write_plan(state: WorkflowState) -> dict:
                  "代码实现需要等进一步指令后再进行。\n"
                  f"Plan需要约束未来所有代码的产出至{dev_dir}\n"
                  f"审核标准文件参考：{criteria_path}")
-    read_letter(runtime, "dev", dev_conv, plan_letter_path,
+    read_letter(runtime, "dev", dev_conv, planletter_path,
                 f"按信中的要求编写分步实现计划，写入文件 {plan_path}。")
 
     print(f"  ✓ {plan_path}")
@@ -406,7 +406,7 @@ def dev_review_plan(state: WorkflowState) -> dict:
         "如果 FAIL，写明需要修正的具体问题。"
     )
 
-    review = call_agent(runtime, "reviewer", _conv_name("review-plan"),
+    review = call_agent(runtime, "reviewer", conv_name("review-plan"),
                         prompt, stream=True)
     print(f"\n── Reviewer 审查结果 ──\n{review}\n")
 
@@ -421,7 +421,7 @@ def dev_review_plan(state: WorkflowState) -> dict:
 
     if passed:
         plan_path = os.path.join(runtime.workspace, "Dev", "plan.md")
-        total = _count_steps(plan_path)
+        total = count_steps(plan_path)
         runtime.context.set_ctx("dev_step_index", "0")
         runtime.context.set_ctx("dev_total_steps", str(total))
         runtime.context.set_ctx("dev_step_fail_count", "0")
@@ -436,7 +436,7 @@ def dev_review_plan(state: WorkflowState) -> dict:
 def dev_git_init(state: WorkflowState) -> dict:
     """Dev 在 Dev/ 目录下初始化 Git 仓库。"""
     runtime = getattr(dev_git_init, "_runtime", None)
-    dev_conv = runtime.context.get_ctx("dev_conv") or _conv_name("dev-git-init")
+    dev_conv = runtime.context.get_ctx("dev_conv") or conv_name("dev-git-init")
     runtime.context.set_ctx("dev_conv", dev_conv)
 
     dev_dir = os.path.join(runtime.workspace, "Dev")
@@ -459,14 +459,14 @@ def dev_exec_step(state: WorkflowState) -> dict:
     """依次执行 Dev plan 中的每一步。Master 写信 → Dev 实现。"""
     runtime = getattr(dev_exec_step, "_runtime", None)
     master_conv = runtime.context.get_ctx("master_conv")
-    dev_conv = runtime.context.get_ctx("dev_conv") or _conv_name("dev-exec")
+    dev_conv = runtime.context.get_ctx("dev_conv") or conv_name("dev-exec")
     runtime.context.set_ctx("dev_conv", dev_conv)
 
     step_idx = int(runtime.context.get_ctx("dev_step_index") or "0")
     plan_path = os.path.join(runtime.workspace, "Dev", "plan.md")
     design_path = os.path.join(runtime.workspace, "Dev", "design.md")
 
-    step_content = _get_step_from_plan(plan_path, step_idx)
+    step_content = get_step_from_plan(plan_path, step_idx)
     if not step_content:
         print(f"\n  ✗ 未找到 Step {step_idx + 1}，计划文件：{plan_path}")
         return {"phase": "dev_exec_error", "judge_result": "dev_exec_step"}
@@ -487,7 +487,7 @@ def dev_exec_step(state: WorkflowState) -> dict:
     dev_dir = os.path.join(runtime.workspace, "Dev")
     os.makedirs(dev_dir, exist_ok=True)
 
-    letter_path = _letter_path(runtime, f"master-step-{step_idx + 1}")
+    letter_path = letter_path(runtime, f"master-step-{step_idx + 1}")
     write_letter(runtime, "master", master_conv, letter_path,
                  f"Step {step_idx + 1} 实现说明",
                  f"请以 Master 的身份给 Dev 写信，要求 Dev 实现以下步骤。\n\n"
@@ -520,11 +520,11 @@ def dev_review_step(state: WorkflowState) -> dict:
     plan_path = os.path.join(runtime.workspace, "Dev", "plan.md")
     design_path = os.path.join(runtime.workspace, "Dev", "design.md")
 
-    step_content = _get_step_from_plan(plan_path, step_idx)
+    step_content = get_step_from_plan(plan_path, step_idx)
     if not step_content:
         return {"phase": "review_step_error", "judge_result": "dev_exec_step"}
 
-    review = call_agent(runtime, "reviewer", _conv_name(f"review-step-{step_idx + 1}"),
+    review = call_agent(runtime, "reviewer", conv_name(f"review-step-{step_idx + 1}"),
         "请审查 Dev 的最新实现。\n\n"
         "## 验收标准\n"
         f"来自计划的当前步骤：\n{step_content}\n\n"
@@ -634,7 +634,7 @@ def dev_commit(state: WorkflowState) -> dict:
             f"   - 已完成: Step {step_idx}/{total}\n"
             f"   - 下一步: Step {step_idx + 1}")
 
-        if not _ensure_write_file(runtime, "dev", dev_conv, summary_path):
+        if not ensure_write_file(runtime, "dev", dev_conv, summary_path):
             call_agent(runtime, "dev", dev_conv,
                        f"你刚才没有将工作进度写入文件 {summary_path}。"
                        "请使用 write_file 工具写入，不要只在对话中回复。")
@@ -642,7 +642,7 @@ def dev_commit(state: WorkflowState) -> dict:
         runtime.conversations.close("dev", dev_conv)
 
         dev_principles = runtime.context.get_bg("dev_principles")
-        new_conv = _conv_name("dev-exec")
+        new_conv = conv_name("dev-exec")
         runtime.context.set_ctx("dev_conv", new_conv)
 
         runtime.conversations.begin("dev", new_conv,

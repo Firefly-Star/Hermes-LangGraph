@@ -12,7 +12,7 @@ class WorkflowState(TypedDict):
     judge_result: str
 
 
-def _conv_name(base: str) -> str:
+def conv_name(base: str) -> str:
     """生成带时间戳和工作目录的对话名，避免跨运行冲突。"""
     ws = os.path.basename(os.getcwd())
     ts = time.strftime("%Y%m%d_%H%M%S")
@@ -68,7 +68,7 @@ def call_agent(runtime, agent: str, conversation: str, prompt: str,
     return result.text
 
 
-def _letter_path(runtime, name: str) -> str:
+def letter_path(runtime, name: str) -> str:
     """生成 handoff 信件路径。"""
     handoff_dir = os.path.join(runtime.runtime_dir, HANDOFFS_DIR)
     os.makedirs(handoff_dir, exist_ok=True)
@@ -77,7 +77,7 @@ def _letter_path(runtime, name: str) -> str:
     return os.path.join(handoff_dir, f"{name}-{ws}-{ts}.md")
 
 
-def _ensure_write_file(runtime, receiver, conv, file_path, max_retry=2):
+def ensure_write_file(runtime, receiver, conv, file_path, max_retry=2):
     """检查文件是否存在，不存在则提醒 agent 写入。"""
     for attempt in range(max_retry):
         if os.path.exists(file_path):
@@ -95,7 +95,7 @@ def write_letter(runtime, sender, conv, letter_path, title, prompt):
                f"## 信件标题\n{title}\n\n"
                f"## 要求\n{prompt}\n\n"
                f"请将信件完整写入文件：{letter_path}")
-    if not _ensure_write_file(runtime, sender, conv, letter_path):
+    if not ensure_write_file(runtime, sender, conv, letter_path):
         raise RuntimeError(f"{sender} 仍未生成信件：{letter_path}")
 
 
@@ -121,10 +121,10 @@ def read_letter(runtime, receiver, conv, letter_path, task, keep=False):
 
 
 def read_and_write_letter(runtime, receiver, conv,
-                          input_letter_path, output_letter_path,
+                          inputletter_path, outputletter_path,
                           title, instruction, task, keep=False):
     """读 input_letter（支持单路径或列表），让 receiver 按要求写回信。默认读完删信。"""
-    paths = _resolve_paths(input_letter_path)
+    paths = _resolve_paths(inputletter_path)
     for p in paths:
         if not os.path.exists(p):
             raise RuntimeError(f"信件不存在：{p}")
@@ -136,9 +136,9 @@ def read_and_write_letter(runtime, receiver, conv,
                f"请以 **{receiver}** 的身份写一封回信。\n\n"
                f"## 信件标题\n{title}\n\n"
                f"## 要求\n{instruction}\n\n"
-               f"请将信件完整写入文件：{output_letter_path}")
-    if not _ensure_write_file(runtime, receiver, conv, output_letter_path):
-        raise RuntimeError(f"{receiver} 仍未生成回信：{output_letter_path}")
+               f"请将信件完整写入文件：{outputletter_path}")
+    if not ensure_write_file(runtime, receiver, conv, outputletter_path):
+        raise RuntimeError(f"{receiver} 仍未生成回信：{outputletter_path}")
     if not keep:
         for p in paths:
             if os.path.exists(p):
@@ -150,19 +150,23 @@ def judge_reply(runtime, target_role: str, reply: str, options: list[str],
     """通用判读函数。judge agent 对 target_role 的回复进行分类路由。返回选项字母。"""
     options_text = "\n".join(f"{opt}" for opt in options)
     keys = "/".join(opt.strip()[0] for opt in options if opt.strip())
-    conv = _conv_name(tag or f"judge-{target_role.lower()}")
+    conv = conv_name(tag or f"judge-{target_role.lower()}")
     prompt = (
         f"你是一个流程裁判。以下是 {target_role} 的回复。\n\n"
         f"## {target_role} 的回复\n{reply}\n\n"
         "判定当前状态是以下哪一种：\n"
         f"{options_text}\n\n"
-        f"回复 {keys} 即可，不要输出其他内容。"
+        f"只回复单个字母（{keys}），不要包含标点或多余文字。"
     )
     result = call_agent(runtime, "judge", conv, prompt)
+    # 只取第一个字母，防止 agent 返回 "PASS" 而非 "P"
+    for ch in result.strip():
+        if ch.isalpha():
+            return ch
     return result.strip()
 
 
-def _clarify_loop(runtime, conv, title: str, first_hint: str, on_done):
+def clarify_loop(runtime, conv, title: str, first_hint: str, on_done):
     """通用澄清循环。用户↔Master↔judge↔确认。空输入（直接 EOF）视为确认。"""
     end_word = runtime.config.get("input_end_word") or None
 
@@ -220,7 +224,7 @@ def setup_runtime(config_path: str = None) -> ap.AgentRuntime:
     return runtime
 
 
-def _write_criteria(runtime, master_conv, title: str, file_path: str,
+def write_criteria(runtime, master_conv, title: str, file_path: str,
                      prompt: str, context_key: str):
     """通用审核标准编写。告诉 Master 路径让 Master 自己写入文件。"""
     print(f"\n  ── {title} ──")
@@ -229,7 +233,7 @@ def _write_criteria(runtime, master_conv, title: str, file_path: str,
     call_agent(runtime, "master", master_conv,
                f"{prompt}\n\n请将审核标准完整写入文件：{file_path}")
 
-    if not _ensure_write_file(runtime, "master", master_conv, file_path):
+    if not ensure_write_file(runtime, "master", master_conv, file_path):
         raise RuntimeError(f"Master 未生成审核标准文件：{file_path}")
 
     runtime.context.set_ctx(f"{context_key}_path", file_path)
@@ -239,7 +243,7 @@ def _write_criteria(runtime, master_conv, title: str, file_path: str,
         detail=f"{title}——已写入 {file_path}")
 
 
-def _get_step_from_plan(plan_path: str, step_idx: int) -> str:
+def get_step_from_plan(plan_path: str, step_idx: int) -> str:
     """从 plan.md 中提取第 step_idx 步的内容（0-indexed）。"""
     if not os.path.exists(plan_path):
         return ""
@@ -251,7 +255,7 @@ def _get_step_from_plan(plan_path: str, step_idx: int) -> str:
     return "## Step " + sections[step_idx + 1].strip()
 
 
-def _count_steps(plan_path: str) -> int:
+def count_steps(plan_path: str) -> int:
     """统计 plan.md 中的总步数。"""
     if not os.path.exists(plan_path):
         return 0
@@ -260,7 +264,7 @@ def _count_steps(plan_path: str) -> int:
     return text.count("## Step ")
 
 
-def _open_master_conv(runtime, summary_path=""):
+def open_master_conv(runtime, summary_path=""):
     """创建新的 Master 对话并注入上下文。供 flush 和断线重连共用。"""
     master_principles = runtime.context.get_bg("master_principles")
     project_context_path = runtime.context.get_bg("project_context_path")
@@ -283,7 +287,11 @@ def _open_master_conv(runtime, summary_path=""):
     if summary_text:
         injected += f"\n\n## 进度摘要\n{summary_text}"
 
-    new_conv = _conv_name("master")
-    runtime.conversations.begin("master", new_conv, injected)
+    new_conv = conv_name("master")
+    old_conv = runtime.context.get_ctx("master_conv")
+    if old_conv:
+        runtime.conversations.close("master", old_conv)
+
+    call_agent(runtime, "master", new_conv, injected)
     runtime.context.set_ctx("master_conv", new_conv)
     return new_conv

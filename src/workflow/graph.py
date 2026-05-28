@@ -8,9 +8,9 @@ from .utils import WorkflowState, setup_runtime
 from .phase0 import pre_flight_clarify
 from .phase1 import (pm_handoff, pm_align, master_reply_pm,
                      judge_master_reply, clarify_inject,
-                     pm_write_criteria, review_pm_criteria,
+                     pmwrite_criteria, review_pm_criteria,
                      pm_write_doc, review_pm_output, human_review)
-from .phase2 import (dev_handoff, dev_align, dev_write_criteria,
+from .phase2 import (dev_handoff, dev_align, devwrite_criteria,
                      review_dev_criteria, dev_write_design,
                      dev_write_plan, dev_review_plan,
                      dev_git_init, dev_exec_step, dev_review_step,
@@ -26,9 +26,9 @@ def build_graph(runtime) -> StateGraph:
     for f in [resume_router,
               pre_flight_clarify, pm_handoff, pm_align,
               master_reply_pm, judge_master_reply, clarify_inject,
-              pm_write_criteria, pm_write_doc,
+              pmwrite_criteria, pm_write_doc,
               review_pm_output, human_review,
-              dev_handoff, dev_align, dev_write_criteria, dev_write_design,
+              dev_handoff, dev_align, devwrite_criteria, dev_write_design,
               dev_write_plan, dev_review_plan,
               review_pm_criteria, review_dev_criteria,
               dev_git_init, dev_exec_step, dev_review_step,
@@ -46,13 +46,13 @@ def build_graph(runtime) -> StateGraph:
     graph.add_node("master_reply_pm", master_reply_pm)
     graph.add_node("judge_master_reply", judge_master_reply)
     graph.add_node("clarify_inject", clarify_inject)
-    graph.add_node("pm_write_criteria", pm_write_criteria)
+    graph.add_node("pmwrite_criteria", pmwrite_criteria)
     graph.add_node("pm_write_doc", pm_write_doc)
     graph.add_node("review_pm_output", review_pm_output)
     graph.add_node("human_review", human_review)
     graph.add_node("dev_handoff", dev_handoff)
     graph.add_node("dev_align", dev_align)
-    graph.add_node("dev_write_criteria", dev_write_criteria)
+    graph.add_node("devwrite_criteria", devwrite_criteria)
     graph.add_node("dev_write_design", dev_write_design)
     graph.add_node("dev_write_plan", dev_write_plan)
     graph.add_node("dev_review_plan", dev_review_plan)
@@ -84,18 +84,18 @@ def build_graph(runtime) -> StateGraph:
     graph.add_edge("pm_align", "master_reply_pm")
     graph.add_edge("master_reply_pm", "judge_master_reply")
     graph.add_conditional_edges("judge_master_reply", lambda s: s.get("judge_result", ""), {
-        "A": "pm_write_criteria",
+        "A": "pmwrite_criteria",
         "B": "pm_align",
         "C": "clarify_inject",
     })
     graph.add_edge("clarify_inject", "master_reply_pm")
-    graph.add_conditional_edges("pm_write_criteria", lambda s: s.get("judge_result", ""), {
+    graph.add_conditional_edges("pmwrite_criteria", lambda s: s.get("judge_result", ""), {
         "review_pm_criteria": "review_pm_criteria",
-        "pm_write_criteria": "pm_write_criteria",
+        "pmwrite_criteria": "pmwrite_criteria",
     })
     graph.add_conditional_edges("review_pm_criteria", lambda s: s.get("judge_result", ""), {
         "pm_write_doc": "pm_write_doc",
-        "pm_write_criteria": "pm_write_criteria",
+        "pmwrite_criteria": "pmwrite_criteria",
     })
     graph.add_edge("pm_write_doc", "review_pm_output")
     graph.add_conditional_edges("review_pm_output", lambda s: s.get("judge_result", ""), {
@@ -108,14 +108,14 @@ def build_graph(runtime) -> StateGraph:
     })
     graph.add_edge("master_flush_after_pm", "dev_handoff")
     graph.add_edge("dev_handoff", "dev_align")
-    graph.add_edge("dev_align", "dev_write_criteria")
-    graph.add_conditional_edges("dev_write_criteria", lambda s: s.get("judge_result", ""), {
+    graph.add_edge("dev_align", "devwrite_criteria")
+    graph.add_conditional_edges("devwrite_criteria", lambda s: s.get("judge_result", ""), {
         "review_dev_criteria": "review_dev_criteria",
-        "dev_write_criteria": "dev_write_criteria",
+        "devwrite_criteria": "devwrite_criteria",
     })
     graph.add_conditional_edges("review_dev_criteria", lambda s: s.get("judge_result", ""), {
         "dev_write_design": "dev_write_design",
-        "dev_write_criteria": "dev_write_criteria",
+        "devwrite_criteria": "devwrite_criteria",
     })
     graph.add_edge("dev_write_design", "dev_write_plan")
     graph.add_edge("dev_write_plan", "dev_review_plan")

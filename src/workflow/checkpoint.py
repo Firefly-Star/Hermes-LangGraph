@@ -3,7 +3,7 @@ import os, json, time, shutil
 from typing import Optional
 
 from .config import FLUSH_CONTINUATION_NOTE, CHECKPOINT_FILE
-from .utils import _conv_name, _open_master_conv
+from .utils import conv_name, open_master_conv
 
 
 def _cp_path(runtime) -> str:
@@ -24,6 +24,8 @@ def save_checkpoint(runtime, resume_node, phase_name, step_idx=0, summary_path="
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(cp, f, ensure_ascii=False, indent=2)
+    step_info = f" Step {step_idx}" if step_idx else ""
+    print(f"  ── Checkpoint 已保存: {resume_node}（{phase_name}）{step_info}")
     runtime.logger.log_event("checkpoint_saved",
                              detail=f"resume_at={resume_node}, phase={phase_name}")
 
@@ -65,7 +67,7 @@ def _restore_dev_conv(runtime):
                 f"## 已完成的工作\n{summary_text}\n\n"
                 f"## 项目设计文档\n{design_text}\n\n"
                 f"## 执行计划\n{plan_text}")
-    new_conv = _conv_name("dev-exec")
+    new_conv = conv_name("dev-exec")
     runtime.conversations.begin("dev", new_conv, injected)
     runtime.context.set_ctx("dev_conv", new_conv)
 
@@ -114,7 +116,7 @@ def resume_router(state) -> dict:
     if user_input in ("y", "yes"):
         resume_node = cp["resume_node"]
         _clean_next_phase(runtime, resume_node)
-        _open_master_conv(runtime, cp.get("summary_path", ""))
+        open_master_conv(runtime, cp.get("summary_path", ""))
         if resume_node == "dev_exec_step":
             _restore_dev_conv(runtime)
 

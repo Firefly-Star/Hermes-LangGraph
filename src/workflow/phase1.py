@@ -1,10 +1,10 @@
 """Phase 1: PM 出方案阶段。"""
 import os
 
-from .utils import (WorkflowState, _conv_name, call_agent, _letter_path,
-                    _ensure_write_file, write_letter, read_letter,
-                    read_and_write_letter, judge_reply, _clarify_loop,
-                    _write_criteria)
+from .utils import (WorkflowState, conv_name, call_agent, letter_path,
+                    ensure_write_file, write_letter, read_letter,
+                    read_and_write_letter, judge_reply, clarify_loop,
+                    write_criteria)
 from langgraph.graph import END
 
 
@@ -22,7 +22,7 @@ def pm_handoff(state: WorkflowState) -> dict:
     if not master_conv:
         raise RuntimeError("clarify conversation 不存在")
 
-    letter_path = _letter_path(runtime, "master-to-pm")
+    letter_path = letter_path(runtime, "master-to-pm")
     write_letter(runtime, "master", master_conv, letter_path,
                  "Master 给 PM 的信",
                  f"介绍项目上下文。信件需包含：\n"
@@ -33,7 +33,7 @@ def pm_handoff(state: WorkflowState) -> dict:
                  "5. 强调：在确认之前，不得开始写 PRD 或原型\n\n"
                  "信件要有 Master 的口吻，是上级对下级的沟通与任务委派。")
 
-    runtime.context.set_ctx("pm_letter_path", letter_path)
+    runtime.context.set_ctx("pmletter_path", letter_path)
     print(f"\n  ── Master 给 PM 的信件已就绪 ──")
     return {"phase": "pm_handoff_done"}
 
@@ -44,7 +44,7 @@ def pm_align(state: WorkflowState) -> dict:
 
     pm_conv = runtime.context.get_ctx("pm_conv")
     if not pm_conv:
-        pm_conv = _conv_name("pm-align")
+        pm_conv = conv_name("pm-align")
         runtime.context.set_ctx("pm_conv", pm_conv)
 
     round_num = int(runtime.context.get_ctx("pm_align_round") or 0)
@@ -52,11 +52,11 @@ def pm_align(state: WorkflowState) -> dict:
     runtime.logger.log_event("phase_started", detail="PM 对齐理解")
     print(f"\n  ── PM 对齐理解（第 {round_num + 1} 轮）──")
 
-    pm_reply_path = _letter_path(runtime, "pm-reply")
+    pm_reply_path = letter_path(runtime, "pm-reply")
     if round_num > 0:
         master_conv = runtime.context.get_ctx("master_conv")
-        master_letter_path = _letter_path(runtime, "master-to-pm-reply")
-        write_letter(runtime, "master", master_conv, master_letter_path,
+        masterletter_path = letter_path(runtime, "master-to-pm-reply")
+        write_letter(runtime, "master", master_conv, masterletter_path,
                      "Master 给 PM 的答复",
                      "你在刚才的分析中已核对了 PM 的理解并回答了疑问。"
                      "请将你的结论写成正式信件给 PM。\n"
@@ -65,13 +65,13 @@ def pm_align(state: WorkflowState) -> dict:
                      "要求 PM 再次汇报它对项目的理解和疑问。\n"
                      "强调：不得许可 PM 写 PRD 或原型\n\n")
         read_and_write_letter(runtime, "pm", pm_conv,
-                              master_letter_path, pm_reply_path,
+                              masterletter_path, pm_reply_path,
                               "From PM, Re: 对 Master 的答复",
                               "逐一回应 Master 的答复，确认清楚所有疑问。"
                               "如有新的疑问也一并提出。如果已没有疑问，也需要明确说明没有疑问，并重新详细讲述自己对项目的了解。",
                               "在 Master 明确许可之前，不得开始写 PRD 或原型。")
     else:
-        letter_path = runtime.context.get_ctx("pm_letter_path")
+        letter_path = runtime.context.get_ctx("pmletter_path")
         if not letter_path:
             raise RuntimeError("没有 handoff 信件路径")
         read_and_write_letter(runtime, "pm", pm_conv,
@@ -158,13 +158,13 @@ def clarify_inject(state: WorkflowState) -> dict:
                    f"请将本轮确认的决策记录到项目顶层决策记录文件的合适位置中：{project_context_path}")
         runtime.logger.log_event("clarification_done", detail=reason)
 
-    _clarify_loop(runtime, master_conv, "== 向用户确认 ==", "请回答 Master 的疑问", _close)
+    clarify_loop(runtime, master_conv, "== 向用户确认 ==", "请回答 Master 的疑问", _close)
     return {"phase": "clarify_done"}
 
 
-def pm_write_criteria(state: WorkflowState) -> dict:
+def pmwrite_criteria(state: WorkflowState) -> dict:
     """Master 制定 PM 产出的审核标准（PRD + prototype）。循环直至自检通过。"""
-    runtime = getattr(pm_write_criteria, "_runtime", None)
+    runtime = getattr(pmwrite_criteria, "_runtime", None)
     master_conv = runtime.context.get_ctx("master_conv")
     project_context_path = runtime.context.get_bg("project_context_path")
 
@@ -202,7 +202,7 @@ def pm_write_criteria(state: WorkflowState) -> dict:
         "请具体、可操作，避免空泛描述。"
     )
 
-    _write_criteria(
+    write_criteria(
         runtime, master_conv,
         title="Master 制定 PM 审核标准",
         file_path=os.path.join(runtime.workspace, "criteria-pm.md"),
@@ -220,9 +220,9 @@ def review_pm_criteria(state: WorkflowState) -> dict:
 
     if not criteria_path or not os.path.exists(criteria_path):
         print(f"  ✗ PM 审核标准文件不存在：{criteria_path}")
-        return {"phase": "review_criteria_fail", "judge_result": "pm_write_criteria"}
+        return {"phase": "review_criteria_fail", "judge_result": "pmwrite_criteria"}
 
-    review = call_agent(runtime, "reviewer", _conv_name("review-pm-criteria"),
+    review = call_agent(runtime, "reviewer", conv_name("review-pm-criteria"),
         "请审查以下审核标准。\n\n"
         "逐条检查：\n"
         "1. 每条标准是否具体、可衡量(审核标准不能带有\"恰当\"，\"合理\"等主观判断)？\n"
@@ -242,8 +242,8 @@ def review_pm_criteria(state: WorkflowState) -> dict:
     if passed:
         runtime.context.set_ctx("pm_criteria_feedback_path", "")
     else:
-        feedback_path = _letter_path(runtime, "reviewer-pm-criteria-feedback")
-        write_letter(runtime, "reviewer", _conv_name("review-pm-criteria-feedback"),
+        feedback_path = letter_path(runtime, "reviewer-pm-criteria-feedback")
+        write_letter(runtime, "reviewer", conv_name("review-pm-criteria-feedback"),
                      feedback_path, "PM 审核标准审查反馈",
                      f"以下是你在上一轮审查中给出的评审意见，请整理成一封反馈信。\n\n"
                      f"## 你的审查意见\n{review}")
@@ -253,7 +253,7 @@ def review_pm_criteria(state: WorkflowState) -> dict:
         detail=f"PM 审核标准审查{'通过' if passed else '不通过'}")
     return {
         "phase": "review_pm_criteria_done" if passed else "review_pm_criteria_fail",
-        "judge_result": "pm_write_doc" if passed else "pm_write_criteria",
+        "judge_result": "pm_write_doc" if passed else "pmwrite_criteria",
     }
 
 
@@ -262,7 +262,7 @@ def pm_write_doc(state: WorkflowState) -> dict:
     runtime = getattr(pm_write_doc, "_runtime", None)
     pm_conv = runtime.context.get_ctx("pm_conv")
     if not pm_conv:
-        pm_conv = _conv_name("pm-doc")
+        pm_conv = conv_name("pm-doc")
         runtime.context.set_ctx("pm_conv", pm_conv)
 
     runtime.logger.log_event("phase_started", detail="PM 出方案")
@@ -288,8 +288,8 @@ def pm_write_doc(state: WorkflowState) -> dict:
     criteria_ref = ""
     if criteria_path and os.path.exists(criteria_path):
         criteria_ref = f"\n审核标准文件（PM 需对着这些标准写，Reviewer 将用来审查）：{criteria_path}"
-    prd_letter_path = _letter_path(runtime, "master-prd")
-    write_letter(runtime, "master", master_conv, prd_letter_path,
+    prdletter_path = letter_path(runtime, "master-prd")
+    write_letter(runtime, "master", master_conv, prdletter_path,
                  "PRD 编写说明",
                  "请以 Master 的身份给 PM 写信，要求 PM 输出 PRD.md 并写入指定文件。\n"
                  "需包含：项目概述、功能需求、MVP 范围、页面结构、验收标准。\n"
@@ -303,14 +303,14 @@ def pm_write_doc(state: WorkflowState) -> dict:
                  "而要写「前端解析 JWT payload 中的哪个字段、做什么用」。\n"
                  "7. 异常状态的 UI 描述必须和你将要产出的 prototype 的实际设计保持一致。"
                  + criteria_ref + feedback_ref)
-    read_letter(runtime, "pm", pm_conv, prd_letter_path,
+    read_letter(runtime, "pm", pm_conv, prdletter_path,
                 f"按信中的要求编写 PRD.md，写入文件 {prd_path}。")
 
     proto_path = os.path.join(pm_dir, "prototype.html")
-    proto_letter_path = _letter_path(runtime, "master-prototype")
+    protoletter_path = letter_path(runtime, "master-prototype")
     pm_agent_dir = os.path.join(runtime.workspace, "pm")
     pm_script_dir = os.path.join(pm_agent_dir, "tests")
-    write_letter(runtime, "master", master_conv, proto_letter_path,
+    write_letter(runtime, "master", master_conv, protoletter_path,
                  "原型编写说明",
                  "请以 Master 的身份给 PM 写信，要求 PM 基于 PRD 产出 prototype.html 并写入指定文件。\n"
                  "需包含：核心交互、页面布局、导航流程。\n"
@@ -320,7 +320,7 @@ def pm_write_doc(state: WorkflowState) -> dict:
                  "2. 它的下游是谁，会如何从它的产出中获得约束和信息。\n"
                  "3. 确保产出不是模板化的文字堆砌，而是真正能为下游提供 actionable 的原型。\n"
                  "4. 确保具体、可操作，避免空泛占位符。")
-    read_letter(runtime, "pm", pm_conv, proto_letter_path,
+    read_letter(runtime, "pm", pm_conv, protoletter_path,
                 f"按信中要求编写 prototype.html，写入文件 {proto_path}。\n\n"
                 "编写完成后，对照 PRD 自检：所有 PRD 中定义的 UI 状态（包括异常状态）"
                 "是否都有对应的页面展示。\n\n"
@@ -396,7 +396,7 @@ def review_pm_output(state: WorkflowState) -> dict:
         "如果全部通过，最后一行回复 == PASS ==\n"
         "如果有不通过项，最后一行回复 == FAIL ==")
 
-    conv = _conv_name("reviewer")
+    conv = conv_name("reviewer")
     reply = call_agent(runtime, "reviewer", conv, prompt)
 
     judge_result = judge_reply(runtime, "Reviewer", reply, [

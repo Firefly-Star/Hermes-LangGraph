@@ -1,9 +1,9 @@
 """Phase 3: QA 对齐阶段。"""
 import os
 
-from .utils import (WorkflowState, _conv_name, call_agent, _letter_path,
+from .utils import (WorkflowState, conv_name, call_agent, letter_path,
                     write_letter, read_letter, read_and_write_letter,
-                    judge_reply, _clarify_loop)
+                    judge_reply, clarify_loop)
 from .checkpoint import clear_checkpoint
 
 
@@ -20,7 +20,7 @@ def qa_handoff(state: WorkflowState) -> dict:
     qa_dir = os.path.join(ws, "QA")
     os.makedirs(qa_dir, exist_ok=True)
 
-    letter_path = _letter_path(runtime, "master-to-qa")
+    letter_path = letter_path(runtime, "master-to-qa")
     write_letter(runtime, "master", master_conv, letter_path,
                  "Master 给 QA 的信",
                  f"介绍项目上下文。信件需包含：\n"
@@ -35,7 +35,7 @@ def qa_handoff(state: WorkflowState) -> dict:
                  "得到 PM 和 Dev 确认后才能开始写详细测试计划\n"
                  "8. 强调：在确认之前，不得开始写测试用例或执行测试")
 
-    runtime.context.set_ctx("qa_letter_path", letter_path)
+    runtime.context.set_ctx("qaletter_path", letter_path)
     print(f"\n  ── Master 给 QA 的信件已就绪 ──")
     return {"phase": "qa_handoff_done"}
 
@@ -46,9 +46,9 @@ def qa_align(state: WorkflowState) -> dict:
     master_conv = runtime.context.get_ctx("master_conv")
     ws = runtime.workspace
 
-    qa_conv = _conv_name("qa-align")
-    pm_conv = runtime.context.get_ctx("pm_conv") or _conv_name("pm-align")
-    dev_conv = runtime.context.get_ctx("dev_conv") or _conv_name("dev-align")
+    qa_conv = conv_name("qa-align")
+    pm_conv = runtime.context.get_ctx("pm_conv") or conv_name("pm-align")
+    dev_conv = runtime.context.get_ctx("dev_conv") or conv_name("dev-align")
 
     runtime.logger.log_event("phase_started", detail="QA 对齐")
     print(f"\n{'='*60}\n  ==> Phase 3b: QA 对齐（QA ↔ PM / Dev / Master）\n{'='*60}")
@@ -57,10 +57,10 @@ def qa_align(state: WorkflowState) -> dict:
     last_qa_reply = ""
     while True:
         if is_first:
-            handoff_path = runtime.context.get_ctx("qa_letter_path")
+            handoff_path = runtime.context.get_ctx("qaletter_path")
             if not handoff_path:
                 raise RuntimeError("没有 handoff 信件路径")
-            qa_reply_path = _letter_path(runtime, "qa-understanding")
+            qa_reply_path = letter_path(runtime, "qa-understanding")
             read_and_write_letter(runtime, "qa", qa_conv,
                                   handoff_path, qa_reply_path,
                                   "From QA, Re: Master 的委托",
@@ -80,7 +80,7 @@ def qa_align(state: WorkflowState) -> dict:
             feedback_path = runtime.context.get_ctx("qa_feedback_path")
             if not feedback_path or not os.path.exists(feedback_path):
                 raise RuntimeError("QA 反馈信缺失")
-            qa_reply_path = _letter_path(runtime, "qa-understanding")
+            qa_reply_path = letter_path(runtime, "qa-understanding")
             read_and_write_letter(runtime, "qa", qa_conv,
                                   feedback_path, qa_reply_path,
                                   "From QA, Re: 修订后的理解与测试思路",
@@ -92,7 +92,7 @@ def qa_align(state: WorkflowState) -> dict:
             with open(qa_reply_path, "r", encoding="utf-8") as f:
                 last_qa_reply = f.read()
 
-        pm_review_path = _letter_path(runtime, "pm-review-qa")
+        pm_review_path = letter_path(runtime, "pm-review-qa")
         read_and_write_letter(runtime, "pm", pm_conv,
                               qa_reply_path, pm_review_path,
                               "From PM, Re: QA 的理解与测试思路",
@@ -107,7 +107,7 @@ def qa_align(state: WorkflowState) -> dict:
                               task="审 QA 的理解和测试范围",
                               keep=True)
 
-        dev_review_path = _letter_path(runtime, "dev-review-qa")
+        dev_review_path = letter_path(runtime, "dev-review-qa")
         read_and_write_letter(runtime, "dev", dev_conv,
                               qa_reply_path, dev_review_path,
                               "From Dev, Re: QA 的测试思路大纲",
@@ -143,7 +143,7 @@ def qa_align(state: WorkflowState) -> dict:
 
         if judge_result in ("C",) or needs_upgrade:
             print(f"\n  ── 升级到 Master ──")
-            master_reply_path = _letter_path(runtime, "master-reply-qa")
+            master_reply_path = letter_path(runtime, "master-reply-qa")
             read_and_write_letter(runtime, "master", master_conv,
                                   [pm_review_path, dev_review_path], master_reply_path,
                                   "From Master, Re: QA 对齐中的争议",
@@ -171,10 +171,10 @@ def qa_align(state: WorkflowState) -> dict:
                     call_agent(runtime, "master", master_conv,
                                f"请将本轮确认的决策记录到项目顶层决策记录文件的合适位置中：{pc_path}")
 
-                _clarify_loop(runtime, master_conv, "== 向用户确认（QA 对齐）==",
+                clarify_loop(runtime, master_conv, "== 向用户确认（QA 对齐）==",
                              "Master 需要向用户确认 QA 对齐中的争议问题", _close)
 
-                final_path = _letter_path(runtime, "master-final-qa")
+                final_path = letter_path(runtime, "master-final-qa")
                 write_letter(runtime, "master", master_conv, final_path,
                             "Master 给 QA 的最终答复",
                             "根据用户确认的决策以及你的分析，"
