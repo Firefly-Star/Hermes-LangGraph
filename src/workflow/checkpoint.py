@@ -87,7 +87,9 @@ def _restore_dev_conv(runtime, step_idx):
     injected = (f"{dev_principles}{FLUSH_CONTINUATION_NOTE}"
                 f"## 已完成的工作\n{summary_text}\n\n"
                 f"## 项目设计文档\n{design_text}\n\n"
-                f"## 执行计划\n{plan_text}")
+                f"## 执行计划\n{plan_text}\n"
+                "在Master给你下达命令之前，你只能阅读上下文，不能进行任何产出，包括修改、创建任何文件，"
+                "后续Master会给你下达任务。")
     new_conv = conv_name("dev-exec")
     call_agent(runtime, "dev", new_conv, injected)
     runtime.context.set_ctx("dev_conv", new_conv)
