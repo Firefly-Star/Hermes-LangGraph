@@ -65,31 +65,20 @@ def _restore_dev_conv(runtime, step_idx):
     dev_principles = runtime.context.get_bg("dev_principles")
     dev_dir = os.path.join(runtime.workspace, "Dev")
 
-    try:
-        import subprocess
-        subprocess.run(["git", "reset", "--hard", "HEAD"],
-                       cwd=dev_dir, capture_output=True, timeout=15)
-        print(f"  → git reset --hard HEAD (clean)")
-    except Exception:
-        print(f"  → git reset 跳过（{dev_dir} 可能不是 git 仓库）")
-
-    def _read(p):
-        fp = os.path.join(dev_dir, p)
-        if os.path.exists(fp):
-            with open(fp, "r", encoding="utf-8") as f:
-                return f.read()
-        return ""
-
-    summary_text = _read("compact-summary.md")
-    design_text = _read("design.md")
-    plan_text = _read("plan.md")
+    summary_path = os.path.join(dev_dir, "compact-summary.md")
+    design_path = os.path.join(dev_dir, "design.md")
+    plan_path = os.path.join(dev_dir, "plan.md")
 
     injected = (f"{dev_principles}{FLUSH_CONTINUATION_NOTE}"
-                f"## 已完成的工作\n{summary_text}\n\n"
-                f"## 项目设计文档\n{design_text}\n\n"
-                f"## 执行计划\n{plan_text}\n"
-                "在Master给你下达命令之前，你只能阅读上下文，不能进行任何产出，包括修改、创建任何文件，"
-                "后续Master会给你下达任务。")
+                f"你的工作目录：{dev_dir}\n\n"
+                f"请先按顺序执行以下操作：\n"
+                f"1. 运行 git reset --hard HEAD 清理工作区（回滚所有未提交的改动至上一个commit节点）\n"
+                f"2. 阅读以下文件了解已完成的工作和计划：\n"
+                f"   - 已完成的工作：{{{summary_path}}}\n"
+                f"   - 项目设计文档：{{{design_path}}}\n"
+                f"   - 执行计划：{{{plan_path}}}\n\n"
+                "在Master给你下达命令之前，你只能阅读上下文，不能进行任何产"
+                "出，包括修改、创建任何文件，后续Master会给你下达任务。")
     new_conv = conv_name("dev-exec")
     call_agent(runtime, "dev", new_conv, injected)
     runtime.context.set_ctx("dev_conv", new_conv)

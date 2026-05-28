@@ -23,7 +23,7 @@ def pre_flight_clarify(state: WorkflowState) -> dict:
     project_context_path = os.path.join(artifacts_dir, "project_context.md")
 
     runtime.logger.log_event("phase_started", detail="需求澄清")
-    runtime.conversations.init_conversation("master", conv, MASTER_SYSTEM_PROMPT.format(workspace=runtime.workspace).strip())
+    call_agent(runtime, "master", conv, MASTER_SYSTEM_PROMPT.format(workspace=runtime.workspace).strip())
     runtime.context.set_ctx("master_conv", conv)
 
     def _close(reason: str):

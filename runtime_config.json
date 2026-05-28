@@ -8,5 +8,6 @@
   "max_bug_loop": 5,
   "input_end_word": "EOF",
   "fail_rollback_threshold": 3,
-  "fail_escalation_threshold": 5
+  "fail_escalation_threshold": 5,
+  "interrupt_hotkey": "ctrl+u"
 }

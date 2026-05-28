@@ -4,7 +4,8 @@ import os, sys
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
-from .utils import WorkflowState, setup_runtime
+from .utils import (WorkflowState, setup_runtime, interruptible,
+                    user_intervention_node)
 from .phase0 import pre_flight_clarify
 from .phase1 import (pm_handoff, pm_align, master_reply_pm,
                      judge_master_reply, clarify_inject,
@@ -23,17 +24,28 @@ from .checkpoint import (resume_router, resume_pm_handoff,
                          resume_dev_exec_step)
 
 NODES = [
-    resume_router,
-    resume_pm_handoff, resume_dev_handoff,
-    resume_qa_handoff, resume_dev_exec_step,
-    pre_flight_clarify,
-    pm_handoff, pm_align, master_reply_pm, judge_master_reply, clarify_inject,
-    pmwrite_criteria, review_pm_criteria, pm_write_doc, review_pm_output, human_review,
-    dev_handoff, dev_align, devwrite_criteria, review_dev_criteria,
-    dev_write_design, dev_write_plan, dev_review_plan,
-    dev_git_init, dev_exec_step, dev_review_step, dev_commit, dev_rollback, dev_escalate,
-    qa_handoff, qa_align,
-    master_flush_after_clarify, master_flush_after_pm, master_flush_after_dev,
+    interruptible(resume_router),
+    interruptible(resume_pm_handoff), interruptible(resume_dev_handoff),
+    interruptible(resume_qa_handoff), interruptible(resume_dev_exec_step),
+    interruptible(pre_flight_clarify),
+    interruptible(pm_handoff), interruptible(pm_align),
+    interruptible(master_reply_pm), interruptible(judge_master_reply),
+    interruptible(clarify_inject),
+    interruptible(pmwrite_criteria), interruptible(review_pm_criteria),
+    interruptible(pm_write_doc), interruptible(review_pm_output),
+    interruptible(human_review),
+    interruptible(dev_handoff), interruptible(dev_align),
+    interruptible(devwrite_criteria), interruptible(review_dev_criteria),
+    interruptible(dev_write_design), interruptible(dev_write_plan),
+    interruptible(dev_review_plan),
+    interruptible(dev_git_init), interruptible(dev_exec_step),
+    interruptible(dev_review_step), interruptible(dev_commit),
+    interruptible(dev_rollback), interruptible(dev_escalate),
+    interruptible(qa_handoff), interruptible(qa_align),
+    interruptible(master_flush_after_clarify),
+    interruptible(master_flush_after_pm),
+    interruptible(master_flush_after_dev),
+    user_intervention_node,
 ]
 
 
@@ -41,6 +53,9 @@ def build_graph(runtime) -> StateGraph:
     """构建 LangGraph StateGraph。"""
     for f in NODES:
         f._runtime = runtime
+        # interruptible 包装的函数，_runtime 也要透传给原始函数
+        if hasattr(f, '__wrapped__'):
+            f.__wrapped__._runtime = runtime
 
     graph = StateGraph(WorkflowState)
 
@@ -130,6 +145,12 @@ def build_graph(runtime) -> StateGraph:
     graph.add_edge("dev_rollback", "dev_exec_step")
     graph.add_edge("dev_escalate", "dev_exec_step")
 
+    # ── 用户介入（可通过 CTRL+U 从任意节点进入）──
+    _all_phases = {f.__name__: f.__name__ for f in NODES}
+    _all_phases[END] = END
+    graph.add_conditional_edges("user_intervention_node",
+                                lambda s: s.get("phase", ""), _all_phases)
+
     # ── Phase 3: QA ──
     graph.add_edge("master_flush_after_dev", "qa_handoff")
     graph.add_edge("qa_handoff", "qa_align")
@@ -186,14 +207,27 @@ def main():
     print("\n[2/2] 构建并运行 LangGraph...")
     app = build_graph(runtime)
     state = _init_state()
-    config = {"configurable": {"thread_id": "workflow-1"}}
+    stream_config = {"configurable": {"thread_id": "workflow-1"}}
 
-    for event in app.stream(state, config):
-        for node_name, node_state in event.items():
-            if node_state is None:
-                print(f"  [{node_name}] 完成")
-                continue
-            print(f"  [{node_name}] phase={node_state.get('phase', '?')}, "
-                  f"judge={node_state.get('judge_result', '')[:20]}")
+    hotkey = runtime.config.get("interrupt_hotkey") or ""
+    if hotkey:
+        from .utils import start_interrupt_listener, stop_interrupt_listener
+        start_interrupt_listener(hotkey)
+
+    try:
+        for event in app.stream(state, stream_config):
+            for node_name, node_state in event.items():
+                if node_state is None:
+                    print(f"  [{node_name}] 完成")
+                    continue
+                print(f"  [{node_name}] phase={node_state.get('phase', '?')}, "
+                      f"judge={node_state.get('judge_result', '')[:20]}")
+    except KeyboardInterrupt:
+        print("\n  [中断] 用户按 Ctrl+C 终止工作流")
+        import sys
+        sys.exit(1)
+    finally:
+        if hotkey:
+            stop_interrupt_listener()
 
     print("\n✅ 框架就绪")

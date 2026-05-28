@@ -349,15 +349,6 @@ class ConversationManager:
         )
         return CallResult(False, "", error=f"重试{max_retry}次失败: {last_error}")
 
-    def init_conversation(self, agent: str, conversation: str, initial_prompt: str) -> CallResult:
-        """初始化一个对话。如果已存在同名对话，先关闭旧对话。"""
-        self.close_conversation(agent, conversation)
-        return self.call(agent, conversation, initial_prompt)
-
-    def begin(self, agent: str, conversation: str, initial_prompt: str) -> CallResult:
-        """init_conversation 的别名。"""
-        return self.init_conversation(agent, conversation, initial_prompt)
-
     def close(self, agent: str, conversation: str):
         """close_conversation 的别名。"""
         return self.close_conversation(agent, conversation)
@@ -399,38 +390,41 @@ class ConversationManager:
         raw_data = None
         error_msg = None
 
-        for line in resp.iter_lines(decode_unicode=True):
-            if not line or not line.startswith("data: "):
-                continue
-            try:
-                data = json.loads(line[6:])
-            except json.JSONDecodeError:
-                continue
-            et = data.get("type")
+        try:
+            for line in resp.iter_lines(decode_unicode=True):
+                if not line or not line.startswith("data: "):
+                    continue
+                try:
+                    data = json.loads(line[6:])
+                except json.JSONDecodeError:
+                    continue
+                et = data.get("type")
 
-            if et == "response.output_text.delta":
-                txt = data.get("delta", "")
-                if txt:
-                    text_parts.append(txt)
-                    callback(txt)
-            elif et == "response.output_item.added":
-                item = data.get("item", {})
-                if item.get("type") == "function_call":
-                    if tool_callback:
-                        name = item.get("name", "")
-                        args = item.get("arguments", "{}")
-                        if isinstance(args, str):
-                            try:
-                                args = json.loads(args)
-                            except json.JSONDecodeError:
-                                args = {"raw": args}
-                        tool_callback(name, args)
-            elif et == "response.completed":
-                raw_data = data.get("response", {})
-                break
-            elif et == "response.error":
-                error_msg = data.get("error", {}).get("message", "流式错误")
-                break
+                if et == "response.output_text.delta":
+                    txt = data.get("delta", "")
+                    if txt:
+                        text_parts.append(txt)
+                        callback(txt)
+                elif et == "response.output_item.added":
+                    item = data.get("item", {})
+                    if item.get("type") == "function_call":
+                        if tool_callback:
+                            name = item.get("name", "")
+                            args = item.get("arguments", "{}")
+                            if isinstance(args, str):
+                                try:
+                                    args = json.loads(args)
+                                except json.JSONDecodeError:
+                                    args = {"raw": args}
+                            tool_callback(name, args)
+                elif et == "response.completed":
+                    raw_data = data.get("response", {})
+                    break
+                elif et == "response.error":
+                    error_msg = data.get("error", {}).get("message", "流式错误")
+                    break
+        finally:
+            resp.close()
 
         latency = int((time.time() - t0) * 1000)
 

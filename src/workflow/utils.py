@@ -1,10 +1,122 @@
 """工作流工具函数。"""
-import os, sys, time
+import os, sys, time, threading, functools
 from typing import TypedDict
 
 import agent_runtime as ap
 from .config import (AGENT_CONFIGS, MASTER_SYSTEM_PROMPT, DEV_SYSTEM_PROMPT,
                      FLUSH_CONTINUATION_NOTE, HANDOFFS_DIR)
+
+# ── Agent 中断机制 ──
+
+_interrupt_requested = False
+_interrupt_listener = None
+
+HOTKEY_MAP = {
+    "ctrl+u": 21,   # NAK
+    "ctrl+c": 3,    # ETX
+    "ctrl+x": 24,   # CAN
+}
+
+
+class WorkflowInterrupted(Exception):
+    """用户在 call_agent 运行时按下了中断热键。由 interruptible 装饰器捕获。"""
+    pass
+
+
+def _keyboard_listener(hotkey_code: int):
+    """后台线程：监听键盘，检测到热键时设置中断标志。"""
+    import msvcrt
+    while True:
+        if msvcrt.kbhit():
+            ch = msvcrt.getch()
+            if isinstance(ch, bytes) and len(ch) == 1 and ch[0] == hotkey_code:
+                global _interrupt_requested
+                _interrupt_requested = True
+        time.sleep(0.05)
+
+
+def start_interrupt_listener(hotkey: str):
+    """启动键盘监听线程。hotkey 如 'ctrl+u'。"""
+    global _interrupt_listener, _interrupt_requested
+    _interrupt_requested = False
+    code = HOTKEY_MAP.get(hotkey.lower())
+    if code is None:
+        print(f"  [中断] 未知热键 '{hotkey}'，中断功能禁用")
+        return
+    _interrupt_listener = threading.Thread(
+        target=_keyboard_listener, args=(code,), daemon=True)
+    _interrupt_listener.start()
+    print(f"  [中断] 按 {hotkey} 中断当前 agent 调用")
+
+
+def stop_interrupt_listener():
+    """停止监听（daemon 线程自动退出）。"""
+    global _interrupt_listener
+    _interrupt_listener = None
+
+
+def request_interrupt():
+    """手动触发中断（供外部使用）。"""
+    global _interrupt_requested
+    _interrupt_requested = True
+
+
+def interruptible(func):
+    """装饰器：节点函数中 call_agent 抛出 WorkflowInterrupted 时路由到 user_intervention。"""
+    @functools.wraps(func)
+    def wrapper(state):
+        if hasattr(wrapper, '_runtime'):
+            func._runtime = wrapper._runtime
+        try:
+            return func(state)
+        except WorkflowInterrupted:
+            rt = wrapper._runtime
+            rt.context.set_ctx("interrupted_node", func.__name__)
+            return {"phase": "user_intervention"}
+    wrapper.__name__ = func.__name__
+    return wrapper
+
+
+def user_intervention_node(state) -> dict:
+    """用户介入节点：用户可直接向中断时的 agent 对话发消息，EOF 后返回原节点。"""
+    global _interrupt_requested
+    _interrupt_requested = False  # 清掉残留 flag，避免刚进来就被中断
+
+    runtime = getattr(user_intervention_node, "_runtime", None)
+    agent = runtime.context.get_ctx("interrupted_agent") or "master"
+    conv = runtime.context.get_ctx("interrupted_conv") or ""
+    return_node = runtime.context.get_ctx("interrupted_node") or "pre_flight_clarify"
+
+    end_word = runtime.config.get("input_end_word") or None
+
+    print(f"\n{'='*60}")
+    print(f"  [用户介入] 正在与 {agent} 对话 (conversation: {conv})")
+    print(f"  输入你想说的内容，直接 EOF 返回「{return_node}」节点")
+    print(f"{'='*60}")
+
+    while True:
+        cp = runtime.checkpoint.wait(
+            "用户介入",
+            f"输入消息给 {agent}（EOF 返回）:",
+            prompt="> ", end_word=end_word,
+        )
+        user_input = cp.message.strip()
+        if not user_input:
+            print(f"  → 返回 {return_node} 节点")
+            break
+
+        try:
+            reply = call_agent(runtime, agent, conv, user_input)
+            print(f"\n── {agent} 回复 ──\n{reply}\n")
+        except WorkflowInterrupted:
+            # 用户在 agent 回复时再次按 Ctrl+U，忽略这次回复，继续等新输入
+            print("\n  [中断] 已中断 agent 回复，可重新输入或 EOF 返回")
+            _interrupt_requested = False
+
+    runtime.context.set_ctx("interrupted_agent", "")
+    runtime.context.set_ctx("interrupted_conv", "")
+    runtime.context.set_ctx("interrupted_node", "")
+    return {"phase": return_node}
 
 
 class WorkflowState(TypedDict):
@@ -38,6 +150,9 @@ def call_agent(runtime, agent: str, conversation: str, prompt: str,
         print(flush=True)
         text_parts = []
         def on_chunk(chunk):
+            if _interrupt_requested:
+                _interrupt_requested = False
+                raise WorkflowInterrupted()
             try:
                 print(chunk, end="", flush=True)
             except UnicodeEncodeError:
@@ -45,9 +160,14 @@ def call_agent(runtime, agent: str, conversation: str, prompt: str,
                 sys.stdout.buffer.write(chunk.encode(enc, errors="replace"))
                 sys.stdout.flush()
             text_parts.append(chunk)
-        result = runtime.conversations.call(
-            agent, conversation, prompt, timeout=timeout,
-            stream_callback=on_chunk, tool_callback=on_tool)
+        try:
+            result = runtime.conversations.call(
+                agent, conversation, prompt, timeout=timeout,
+                stream_callback=on_chunk, tool_callback=on_tool)
+        except WorkflowInterrupted:
+            runtime.context.set_ctx("interrupted_agent", agent)
+            runtime.context.set_ctx("interrupted_conv", conversation)
+            raise
         print()
     else:
         result = runtime.conversations.call(agent, conversation, prompt, timeout=timeout)

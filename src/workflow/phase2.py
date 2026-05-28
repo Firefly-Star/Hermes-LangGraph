@@ -473,7 +473,7 @@ def dev_git_init(state: WorkflowState) -> dict:
                 f"## 已完成的工作\n{summary_text}\n\n"
                 f"## 项目设计文档\n{design_text}\n\n"
                 f"## 执行计划\n{plan_text}")
-    runtime.conversations.begin("dev", new_conv, injected)
+    call_agent(runtime, "dev", new_conv, injected)
     runtime.context.set_ctx("dev_conv", new_conv)
 
     save_checkpoint(runtime, "dev_exec_step", "Dev 实现", step_idx=0)
@@ -690,7 +690,7 @@ def dev_commit(state: WorkflowState) -> dict:
         new_conv = conv_name("dev-exec")
         runtime.context.set_ctx("dev_conv", new_conv)
 
-        runtime.conversations.begin("dev", new_conv,
+        call_agent(runtime, "dev", new_conv,
             f"{dev_principles}{FLUSH_CONTINUATION_NOTE}"
             f"## 已完成的工作\n"
             f"{{{summary_path}}}\n\n"
