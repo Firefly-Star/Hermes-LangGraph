@@ -1,0 +1,259 @@
+"""工作流工具函数。"""
+import os, sys, time
+from typing import TypedDict
+
+import agent_runtime as ap
+from .config import AGENT_CONFIGS, MASTER_SYSTEM_PROMPT, DEV_SYSTEM_PROMPT, FLUSH_CONTINUATION_NOTE
+
+
+class WorkflowState(TypedDict):
+    phase: str
+    judge_result: str
+
+
+def _conv_name(base: str) -> str:
+    """生成带时间戳和工作目录的对话名，避免跨运行冲突。"""
+    ws = os.path.basename(os.getcwd())
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    return f"{base}-{ws}-{ts}"
+
+
+def call_agent(runtime, agent: str, conversation: str, prompt: str,
+               timeout: int = 180, stream: bool = True) -> str:
+    """调用 agent 并返回文本。stream=True 时逐块打印输出。失败抛异常。"""
+    print(f"  → 调 {agent}/{conversation}... ", end="", flush=True)
+    t0 = time.time()
+
+    def on_tool(name, args):
+        print(f"\n  ── TOOL {name} ──")
+        for k, v in args.items():
+            if isinstance(v, str) and len(v) > 200:
+                v = v[:200] + "..."
+            print(f"     {k}: {v}", flush=True)
+
+    print(f"\n──── Request: {agent}/{conversation} ────\n{prompt}\n──── {agent}'s Response ────")
+
+    if stream:
+        print(flush=True)
+        text_parts = []
+        def on_chunk(chunk):
+            try:
+                print(chunk, end="", flush=True)
+            except UnicodeEncodeError:
+                enc = sys.stdout.encoding or "utf-8"
+                sys.stdout.buffer.write(chunk.encode(enc, errors="replace"))
+                sys.stdout.flush()
+            text_parts.append(chunk)
+        result = runtime.conversations.call(
+            agent, conversation, prompt, timeout=timeout,
+            stream_callback=on_chunk, tool_callback=on_tool)
+        print()
+    else:
+        result = runtime.conversations.call(agent, conversation, prompt, timeout=timeout)
+
+    elapsed = time.time() - t0
+    if not result.success:
+        print(f"  [FAIL] ({elapsed:.0f}s)")
+        raise RuntimeError(f"[{agent}/{conversation}] 调用失败: {result.error}")
+
+    tool_names = []
+    if result.raw_data:
+        for item in result.raw_data.get("output", []):
+            if item.get("type") == "function_call":
+                tool_names.append(item.get("name", ""))
+
+    tool_info = f" tools:[{','.join(tool_names)}]" if tool_names else ""
+    print(f"  ✓ ({elapsed:.0f}s, {result.input_tokens + result.output_tokens} tokens{tool_info})")
+    return result.text
+
+
+def _letter_path(runtime, name: str) -> str:
+    """生成 handoff 信件路径。"""
+    handoff_dir = os.path.join(runtime.runtime_dir, "handoffs")
+    os.makedirs(handoff_dir, exist_ok=True)
+    ws = os.path.basename(os.getcwd())
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    return os.path.join(handoff_dir, f"{name}-{ws}-{ts}.md")
+
+
+def _ensure_write_file(runtime, receiver, conv, file_path, max_retry=2):
+    """检查文件是否存在，不存在则提醒 agent 写入。"""
+    for attempt in range(max_retry):
+        if os.path.exists(file_path):
+            return True
+        call_agent(runtime, receiver, conv,
+                   f"（提醒）文件尚未被创建：{file_path}\n\n"
+                   "请使用 write_file 工具将你的回复内容完整写入该文件，不要只在对话中回复。")
+    return os.path.exists(file_path)
+
+
+def write_letter(runtime, sender, conv, letter_path, title, prompt):
+    """sender 在 conv 对话中写一封信到 letter_path。"""
+    call_agent(runtime, sender, conv,
+               f"请以 **{sender}** 的身份写一封信。\n\n"
+               f"## 信件标题\n{title}\n\n"
+               f"## 要求\n{prompt}\n\n"
+               f"请将信件完整写入文件：{letter_path}")
+    if not _ensure_write_file(runtime, sender, conv, letter_path):
+        raise RuntimeError(f"{sender} 仍未生成信件：{letter_path}")
+
+
+def _resolve_paths(path):
+    """统一处理单个路径或多个路径，返回列表。"""
+    return [path] if isinstance(path, str) else list(path)
+
+
+def read_letter(runtime, receiver, conv, letter_path, task, keep=False):
+    """receiver 读 letter_path（支持单路径或列表）后执行 task。默认读完删信。"""
+    paths = _resolve_paths(letter_path)
+    for p in paths:
+        if not os.path.exists(p):
+            raise RuntimeError(f"信件不存在：{p}")
+    paths_text = "\n".join(f"- {p}" for p in paths)
+    reply = call_agent(runtime, receiver, conv,
+                       f"请阅读以下信件，然后{task}\n\n## 信件路径\n{paths_text}")
+    if not keep:
+        for p in paths:
+            if os.path.exists(p):
+                os.remove(p)
+    return reply
+
+
+def read_and_write_letter(runtime, receiver, conv,
+                          input_letter_path, output_letter_path,
+                          title, instruction, task, keep=False):
+    """读 input_letter（支持单路径或列表），让 receiver 按要求写回信。默认读完删信。"""
+    paths = _resolve_paths(input_letter_path)
+    for p in paths:
+        if not os.path.exists(p):
+            raise RuntimeError(f"信件不存在：{p}")
+    paths_text = "\n".join(f"- {p}" for p in paths)
+    call_agent(runtime, receiver, conv,
+               f"请阅读以下信件，然后{task}\n\n"
+               f"## 信件路径\n{paths_text}\n\n"
+               f"## 回复方式\n"
+               f"请以 **{receiver}** 的身份写一封回信。\n\n"
+               f"## 信件标题\n{title}\n\n"
+               f"## 要求\n{instruction}\n\n"
+               f"请将信件完整写入文件：{output_letter_path}")
+    if not _ensure_write_file(runtime, receiver, conv, output_letter_path):
+        raise RuntimeError(f"{receiver} 仍未生成回信：{output_letter_path}")
+    if not keep:
+        for p in paths:
+            if os.path.exists(p):
+                os.remove(p)
+
+
+def judge_reply(runtime, target_role: str, reply: str, options: list[str],
+                tag: str = None) -> str:
+    """通用判读函数。judge agent 对 target_role 的回复进行分类路由。返回选项字母。"""
+    options_text = "\n".join(f"{opt}" for opt in options)
+    keys = "/".join(opt.strip()[0] for opt in options if opt.strip())
+    conv = _conv_name(tag or f"judge-{target_role.lower()}")
+    prompt = (
+        f"你是一个流程裁判。以下是 {target_role} 的回复。\n\n"
+        f"## {target_role} 的回复\n{reply}\n\n"
+        "判定当前状态是以下哪一种：\n"
+        f"{options_text}\n\n"
+        f"回复 {keys} 即可，不要输出其他内容。"
+    )
+    result = call_agent(runtime, "judge", conv, prompt)
+    return result.strip()
+
+
+def _clarify_loop(runtime, conv, title: str, first_hint: str, on_done):
+    """通用澄清循环。用户↔Master↔judge↔确认。空输入（直接 EOF）视为确认。"""
+    end_word = runtime.config.get("input_end_word") or None
+
+    round_num = 0
+    while True:
+        round_num += 1
+        hint = first_hint if round_num == 1 \
+            else "请回答 Master 的疑问，或直接 EOF 结束："
+
+        cp = runtime.checkpoint.wait(
+            title, hint,
+            prompt="输入内容后按 Enter：", end_word=end_word,
+        )
+        user_input = cp.message.strip()
+        if not user_input:
+            on_done("用户直接确认")
+            return
+
+        reply = call_agent(runtime, "master", conv,
+                           f"{user_input}\n不要产出任何东西，也不要修改任何文件，只需要说出你的理解，以及对有疑问的地方提出问题。")
+
+        while True:
+            judge_result = judge_reply(runtime, "Master", reply, [
+                "A. 需求已明确，可以进入下一阶段",
+                "B. Master 有疑问需要用户继续回答",
+            ], "judge-clarify")
+            if judge_result != "A":
+                break
+
+            cp = runtime.checkpoint.wait(
+                f"{title} (确认)",
+                "Master 已确认理解需求。认可的话直接 EOF 进入下一阶段；"
+                "不认可则说明哪里不对：",
+                prompt="输入内容后按 Enter：", end_word=end_word,
+            )
+            confirm_input = cp.message.strip()
+            if not confirm_input:
+                on_done("用户确认 Master 理解正确")
+                return
+
+            round_num += 1
+            reply = call_agent(runtime, "master", conv,
+                              f"用户认为你的理解有偏差，请重新理解需求：\n{confirm_input}")
+
+
+def setup_runtime(config_path: str = None) -> ap.AgentRuntime:
+    """初始化 AgentRuntime，启动所有 Gateway。"""
+    runtime = ap.AgentRuntime(config_path)
+    runtime.run_all(AGENT_CONFIGS)
+    runtime.logger.log_event("workflow_started")
+
+    runtime.context.set_bg("master_principles", MASTER_SYSTEM_PROMPT.format(workspace=runtime.workspace).strip())
+    runtime.context.set_bg("dev_principles", DEV_SYSTEM_PROMPT.format(workspace=runtime.workspace).strip())
+
+    return runtime
+
+
+def _write_criteria(runtime, master_conv, title: str, file_path: str,
+                     prompt: str, context_key: str):
+    """通用审核标准编写。告诉 Master 路径让 Master 自己写入文件。"""
+    print(f"\n  ── {title} ──")
+
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    call_agent(runtime, "master", master_conv,
+               f"{prompt}\n\n请将审核标准完整写入文件：{file_path}")
+
+    if not _ensure_write_file(runtime, "master", master_conv, file_path):
+        raise RuntimeError(f"Master 未生成审核标准文件：{file_path}")
+
+    runtime.context.set_ctx(f"{context_key}_path", file_path)
+    print(f"  ✓ 审核标准已写入 {file_path}")
+
+    runtime.logger.log_event("criteria_defined",
+        detail=f"{title}——已写入 {file_path}")
+
+
+def _get_step_from_plan(plan_path: str, step_idx: int) -> str:
+    """从 plan.md 中提取第 step_idx 步的内容（0-indexed）。"""
+    if not os.path.exists(plan_path):
+        return ""
+    with open(plan_path, "r", encoding="utf-8") as f:
+        text = f.read()
+    sections = text.split("## Step ")
+    if step_idx + 1 >= len(sections):
+        return ""
+    return "## Step " + sections[step_idx + 1].strip()
+
+
+def _count_steps(plan_path: str) -> int:
+    """统计 plan.md 中的总步数。"""
+    if not os.path.exists(plan_path):
+        return 0
+    with open(plan_path, "r", encoding="utf-8") as f:
+        text = f.read()
+    return text.count("## Step ")
