@@ -6,6 +6,7 @@ from .utils import (WorkflowState, _conv_name, call_agent, _letter_path,
                     read_and_write_letter, judge_reply, _clarify_loop,
                     _write_criteria, _get_step_from_plan, _count_steps)
 from .config import DEV_SYSTEM_PROMPT, FLUSH_CONTINUATION_NOTE
+from .checkpoint import save_checkpoint
 from langgraph.graph import END
 
 
@@ -652,6 +653,10 @@ def dev_commit(state: WorkflowState) -> dict:
             f"{{{design_path}}}\n\n"
             f"## 执行计划\n"
             f"{{{plan_path}}}")
+
+        save_checkpoint(runtime, "dev_exec_step",
+                        f"Dev 实现 Step {step_idx + 1}",
+                        step_idx=step_idx, summary_path=summary_path)
 
     if step_idx >= total:
         return {"phase": "dev_commit_done", "judge_result": "done"}

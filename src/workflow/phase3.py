@@ -4,6 +4,7 @@ import os
 from .utils import (WorkflowState, _conv_name, call_agent, _letter_path,
                     write_letter, read_letter, read_and_write_letter,
                     judge_reply, _clarify_loop)
+from .checkpoint import clear_checkpoint
 
 
 def qa_handoff(state: WorkflowState) -> dict:
@@ -198,5 +199,6 @@ def qa_align(state: WorkflowState) -> dict:
 
             runtime.context.set_ctx("qa_understanding_path", understanding_path)
             runtime.logger.log_event("phase_completed", detail="QA 对齐完成")
+            clear_checkpoint(runtime)
             print(f"\n  ✓ QA 对齐完成，理解已写入 {understanding_path}")
             return {"phase": "qa_align_done"}

@@ -3,7 +3,8 @@ import os, sys, time
 from typing import TypedDict
 
 import agent_runtime as ap
-from .config import AGENT_CONFIGS, MASTER_SYSTEM_PROMPT, DEV_SYSTEM_PROMPT, FLUSH_CONTINUATION_NOTE
+from .config import (AGENT_CONFIGS, MASTER_SYSTEM_PROMPT, DEV_SYSTEM_PROMPT,
+                     FLUSH_CONTINUATION_NOTE, HANDOFFS_DIR)
 
 
 class WorkflowState(TypedDict):
@@ -69,7 +70,7 @@ def call_agent(runtime, agent: str, conversation: str, prompt: str,
 
 def _letter_path(runtime, name: str) -> str:
     """生成 handoff 信件路径。"""
-    handoff_dir = os.path.join(runtime.runtime_dir, "handoffs")
+    handoff_dir = os.path.join(runtime.runtime_dir, HANDOFFS_DIR)
     os.makedirs(handoff_dir, exist_ok=True)
     ws = os.path.basename(os.getcwd())
     ts = time.strftime("%Y%m%d_%H%M%S")
@@ -257,3 +258,32 @@ def _count_steps(plan_path: str) -> int:
     with open(plan_path, "r", encoding="utf-8") as f:
         text = f.read()
     return text.count("## Step ")
+
+
+def _open_master_conv(runtime, summary_path=""):
+    """创建新的 Master 对话并注入上下文。供 flush 和断线重连共用。"""
+    master_principles = runtime.context.get_bg("master_principles")
+    project_context_path = runtime.context.get_bg("project_context_path")
+
+    pc_text = ""
+    if project_context_path and os.path.exists(project_context_path):
+        with open(project_context_path, "r", encoding="utf-8") as f:
+            pc_text = f.read()
+
+    summary_text = ""
+    if summary_path and os.path.exists(summary_path):
+        with open(summary_path, "r", encoding="utf-8") as f:
+            summary_text = f.read()
+
+    injected = master_principles
+    if pc_text or summary_text:
+        injected += FLUSH_CONTINUATION_NOTE
+    if pc_text:
+        injected += f"\n## 项目需求（已确认）\n{pc_text}"
+    if summary_text:
+        injected += f"\n\n## 进度摘要\n{summary_text}"
+
+    new_conv = _conv_name("master")
+    runtime.conversations.begin("master", new_conv, injected)
+    runtime.context.set_ctx("master_conv", new_conv)
+    return new_conv

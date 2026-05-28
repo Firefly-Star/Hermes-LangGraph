@@ -1,5 +1,13 @@
 """工作流配置：Agent 定义、System Prompt、常量。"""
 
+# === Runtime 目录结构（.agent_runtime/ 下子目录） ===
+# 改这里就能调整文件存放位置，无需改动业务代码
+HANDOFFS_DIR = "handoffs"
+PHASES_DIR = "phases"
+ARTIFACTS_DIR = "artifacts"
+CHECKPOINT_FILE = "checkpoint.json"
+
+
 AGENT_CONFIGS = {
     "master": {"profile": "cg", "port": 8642},
     "judge":  {"profile": "cg", "port": 8642},

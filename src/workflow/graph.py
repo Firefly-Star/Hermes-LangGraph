@@ -18,11 +18,13 @@ from .phase2 import (dev_handoff, dev_align, dev_write_criteria,
 from .phase3 import qa_handoff, qa_align
 from .flush import (master_flush_after_clarify, master_flush_after_pm,
                     master_flush_after_dev)
+from .checkpoint import resume_router
 
 
 def build_graph(runtime) -> StateGraph:
     """构建 LangGraph StateGraph。"""
-    for f in [pre_flight_clarify, pm_handoff, pm_align,
+    for f in [resume_router,
+              pre_flight_clarify, pm_handoff, pm_align,
               master_reply_pm, judge_master_reply, clarify_inject,
               pm_write_criteria, pm_write_doc,
               review_pm_output, human_review,
@@ -37,6 +39,7 @@ def build_graph(runtime) -> StateGraph:
         f._runtime = runtime
 
     graph = StateGraph(WorkflowState)
+    graph.add_node("resume_router", resume_router)
     graph.add_node("pre_flight_clarify", pre_flight_clarify)
     graph.add_node("pm_handoff", pm_handoff)
     graph.add_node("pm_align", pm_align)
@@ -67,7 +70,14 @@ def build_graph(runtime) -> StateGraph:
     graph.add_node("master_flush_after_pm", master_flush_after_pm)
     graph.add_node("master_flush_after_dev", master_flush_after_dev)
 
-    graph.set_entry_point("pre_flight_clarify")
+    graph.set_entry_point("resume_router")
+    graph.add_conditional_edges("resume_router", lambda s: s.get("phase", ""), {
+        "pre_flight": "pre_flight_clarify",
+        "pm_handoff": "pm_handoff",
+        "dev_handoff": "dev_handoff",
+        "qa_handoff": "qa_handoff",
+        "dev_exec_step": "dev_exec_step",
+    })
     graph.add_edge("pre_flight_clarify", "master_flush_after_clarify")
     graph.add_edge("master_flush_after_clarify", "pm_handoff")
     graph.add_edge("pm_handoff", "pm_align")

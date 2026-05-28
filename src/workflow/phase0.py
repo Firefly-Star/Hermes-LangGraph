@@ -2,7 +2,7 @@
 import os
 
 from .utils import WorkflowState, _conv_name, call_agent, _clarify_loop
-from .config import MASTER_SYSTEM_PROMPT
+from .config import MASTER_SYSTEM_PROMPT, ARTIFACTS_DIR
 
 
 def pre_flight_clarify(state: WorkflowState) -> dict:
@@ -18,7 +18,9 @@ def pre_flight_clarify(state: WorkflowState) -> dict:
                 "dev_conv", "dev_letter_path", "dev_feedback_path"]:
         runtime.context.set_ctx(key, "")
 
-    project_context_path = os.path.join(runtime.runtime_dir, "project_context.md")
+    artifacts_dir = os.path.join(runtime.runtime_dir, ARTIFACTS_DIR)
+    os.makedirs(artifacts_dir, exist_ok=True)
+    project_context_path = os.path.join(artifacts_dir, "project_context.md")
 
     runtime.logger.log_event("phase_started", detail="需求澄清")
     runtime.conversations.init_conversation("master", conv, MASTER_SYSTEM_PROMPT.format(workspace=runtime.workspace).strip())
