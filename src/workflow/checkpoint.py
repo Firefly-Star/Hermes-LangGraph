@@ -101,7 +101,7 @@ def resume_router(state) -> dict:
     if cp is None:
         return {"phase": "pre_flight"}
 
-    step_info = f"（第 {cp['step_idx'] + 1} 步）" if cp.get("step_idx") else ""
+    step_info = f"（第 {cp['step_idx'] + 1} 步）" if "step_idx" in cp else ""
     print(f"\n{'='*60}")
     print(f"  检测到上次运行中断于「{cp['phase_name']}」{step_info}")
     print(f"{'='*60}")

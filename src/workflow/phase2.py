@@ -436,7 +436,7 @@ def dev_review_plan(state: WorkflowState) -> dict:
 
 
 def dev_git_init(state: WorkflowState) -> dict:
-    """Dev 在 Dev/ 目录下初始化 Git 仓库。"""
+    """Dev 在 Dev/ 目录下初始化 Git 仓库 + 刷新 Dev 对话 + 保存检查点。"""
     runtime = getattr(dev_git_init, "_runtime", None)
     dev_conv = runtime.context.get_ctx("dev_conv") or conv_name("dev-git-init")
     runtime.context.set_ctx("dev_conv", dev_conv)
@@ -452,6 +452,31 @@ def dev_git_init(state: WorkflowState) -> dict:
         "4. git config user.email 'dev@agent.local'\n"
         "5. git commit --allow-empty -m 'Initial empty commit'\n\n"
         "以上所有操作都完成后回复确认。")
+
+    # 刷新 Dev 对话：关闭 align/design/plan 阶段的旧对话，开新对话准备 exec
+    dev_principles = runtime.context.get_bg("dev_principles")
+
+    def _read(p):
+        fp = os.path.join(dev_dir, p)
+        if os.path.exists(fp):
+            with open(fp, "r", encoding="utf-8") as f:
+                return f.read()
+        return ""
+
+    summary_text = _read("compact-summary.md")
+    design_text = _read("design.md")
+    plan_text = _read("plan.md")
+
+    runtime.conversations.close("dev", dev_conv)
+    new_conv = conv_name("dev-exec")
+    injected = (f"{dev_principles}{FLUSH_CONTINUATION_NOTE}"
+                f"## 已完成的工作\n{summary_text}\n\n"
+                f"## 项目设计文档\n{design_text}\n\n"
+                f"## 执行计划\n{plan_text}")
+    runtime.conversations.begin("dev", new_conv, injected)
+    runtime.context.set_ctx("dev_conv", new_conv)
+
+    save_checkpoint(runtime, "dev_exec_step", "Dev 实现", step_idx=0)
 
     runtime.logger.log_event("phase_completed", detail="Dev Git 仓库初始化完成")
     return {"phase": "git_initted", "judge_result": "pass"}

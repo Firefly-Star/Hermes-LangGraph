@@ -432,9 +432,14 @@ AgentRuntime
 数据文件全部位于 `runtime_dir` 目录下：
 ```
 runtime_dir/
-├── registry.json       # AgentManager + ConversationManager
-├── context.json        # ContextManager
-├── calls.jsonl         # Logger
-└── events.jsonl        # Logger
+├── checkpoint.json       # Checkpoint（断线重连）
+├── registry.json         # AgentManager + ConversationManager
+├── context.json          # ContextManager
+├── config.json           # Config（从 runtime_config.json 同步）
+├── calls.jsonl           # Logger
+├── events.jsonl          # Logger
+├── artifacts/            # 项目固化文档（project_context.md 等）
+├── phases/               # 阶段总结（phase-summary-*.md）
+└── handoffs/             # Agent 间通信信件
 ```
 Config 不再在 `runtime_dir` 下独立存储文件，直接读写项目根目录的 `runtime_config.json`。

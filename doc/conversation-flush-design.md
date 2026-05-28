@@ -13,9 +13,11 @@ flush（关闭当前 conversation，开启新 conversation 并重新注入上下
 
 ## 策略
 
-### Dev — 每 step PASS 后 flush
+### Dev — 每 step PASS 后 flush + 执行前 flush
 
-**触发时机**：每个 step 审查 PASS → git commit 后，关闭旧 conversation，下次 exec 开新对话。
+**触发时机 1**：计划审查通过、开始执行前（dev_git_init 内），关闭 align/design/plan 阶段的旧对话，开新对话准备 exec。
+
+**触发时机 2**：每个 step 审查 PASS → git commit 后（dev_commit 内），关闭旧 conversation，下次 exec 开新对话。
 
 **新对话注入内容：**
 
@@ -41,6 +43,8 @@ flush（关闭当前 conversation，开启新 conversation 并重新注入上下
 
 **触发时机**：需求澄清→PM 阶段、PM→Dev 阶段、Dev→QA 阶段、QA→交付，各阶段交接点。
 
+**额外参数**：flush 时传入本阶段实际产出文件路径（`phase_artifacts`），Master 据此写准确的阶段总结，避免产生"尚未交付"类幻觉。
+
 **新对话注入内容：**
 
 ```
@@ -49,7 +53,7 @@ flush（关闭当前 conversation，开启新 conversation 并重新注入上下
 [system prompt - workflow 定义的规范]
 
 ## 项目需求（已确认）
-{project_context.md}   ← 需求澄清阶段产出的决策记录
+{artifacts/project_context.md}   ← 需求澄清阶段产出的决策记录
 
 ## 项目决策日志
 {decision_log}         ← 各阶段 escalate/clarify 记录的关键决策
@@ -64,6 +68,8 @@ flush（关闭当前 conversation，开启新 conversation 并重新注入上下
 ```
 
 Master 不需要 design.md 和 plan.md（那是 Dev 的上下文），但需要知道全局进展。
+
+**Checkpoint**：每次 Master flush 同时保存 checkpoint（`{runtime_dir}/checkpoint.json`），记录 resume_node 和阶段名，支持断线重连。
 
 ### compact_summary 模板
 

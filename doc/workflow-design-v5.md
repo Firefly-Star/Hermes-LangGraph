@@ -51,7 +51,7 @@ Judge 是工作流的路由枢纽。使用通用 `judge_reply()` 公用函数，
 judge_reply(runtime, target_role, reply, options, tag)
 ```
 
-返回值：选项字母（A/B/C/D），根据 options 列表首字母确定。
+返回值：选项字母（A/B/C/D），根据 options 列表首字母确定。prompt 强约束"只回复单个字母"，并加入首字母提取 fallback，防止 agent 返回"PASS"而非"P"导致误判。
 
 ### 判读场景
 
@@ -107,9 +107,12 @@ judge_reply(runtime, target_role, reply, options, tag)
 ```
 pre_flight_clarify
   → 初始化 Master conversation，注入 MASTER_SYSTEM_PROMPT
-  → 调用 _clarify_loop（用户输入 → Master 回答 → judge 判读 → 确认子循环）
-  → 退出前 Master 写 project_context.md
+  → 调用 clarify_loop（用户输入 → Master 回答 → judge 判读 → 确认子循环）
+  → 退出前 Master 写 project_context.md（存入 artifacts/）
   → phase = "done"
+master_flush_after_clarify
+  → Master 写阶段总结 → 关旧对话 → 开新对话注入 project_context.md + 总结
+  → 保存 checkpoint（resume_node="pm_handoff"）
 ```
 
 澄清循环：用户输入 → Master 回复 → judge(A/B) 判读 → 如 A 进入用户确认子循环（EOF=确认）→ 如 B 继续循环。
@@ -139,6 +142,9 @@ pm_handoff → pm_align → master_reply_pm → judge_master_reply
                            PASS     FAIL
                              │       │
                              ▼       ▼
+                    master_flush_after_pm
+                              │
+                              ▼
                     dev_handoff   review_pm_output
 ```
 
@@ -153,7 +159,7 @@ pm_handoff → pm_align → master_reply_pm → judge_master_reply
 
 **judge_master_reply**：三路路由 A/B/C。
 
-**clarify_inject**：复用 Master 对话，调用 `_clarify_loop` 向用户提问，决策追加到 `project_context.md`。
+**clarify_inject**：复用 Master 对话，调用 `clarify_loop` 向用户提问，决策追加到 `project_context.md`。
 
 **pm_write_criteria**：Master 制定审核标准，自检循环（`judge-pm-criteria`）直至通过。
 
@@ -170,7 +176,7 @@ pm_handoff → pm_align → master_reply_pm → judge_master_reply
 
 | 文件 | 路径 |
 |:-----|:-----|
-| 项目顶层决策 | `{runtime_dir}/project_context.md` |
+| 项目顶层决策 | `{runtime_dir}/artifacts/project_context.md` |
 | 审核标准（PM） | `{workspace}/criteria-pm.md` |
 | PRD | `{workspace}/PM/PRD.md` |
 | Prototype | `{workspace}/PM/prototype.html` |
@@ -190,7 +196,7 @@ dev_handoff → dev_align → dev_write_criteria → review_dev_criteria
                                               dev_review_plan │
                                                │ PASS │ FAIL  │
                                                ▼       └──────┘
-                                          dev_git_init
+                                          dev_git_init (flush + cp)
                                                │
                                                ▼
                     ┌────────────────── dev_exec_step ──────────┐
@@ -203,7 +209,13 @@ dev_handoff → dev_align → dev_write_criteria → review_dev_criteria
                     │       dev_commit   │   │   │   │          │
                     │      │ PASS │ FAIL │   │   │   │          │
                     │      └──┬───┘      │   │   │   │          │
-                    │    next_step  QA   │   │   │   │          │
+                    │    next_step  done │   │   │   │          │
+                    │         │     │    │   │   │   │          │
+                    │         │     ▼    │   │   │   │          │
+                    │         │  master_ │   │   │   │          │
+                    │         │  flush_  │   │   │   │          │
+                    │         │  after_  │   │   │   │          │
+                    │         │  dev     │   │   │   │          │
                     │         │     │    │   │   │   │          │
                     └─────────┘     │    │   │   │   │
                                     │  step_  dev_  dev_
@@ -230,7 +242,7 @@ dev_handoff → dev_align → dev_write_criteria → review_dev_criteria
 
 **dev_review_plan**：Reviewer 审查计划，PASS 进执行，FAIL 回修。
 
-**dev_git_init**：Dev 在 `Dev/` 目录初始化 git 仓库并做初始空提交。
+**dev_git_init**：Dev 在 `Dev/` 目录初始化 git 仓库并做初始空提交。完成后关闭 Dev 对话（align/design/plan 阶段的上文已用尽），创建新的 dev-exec 对话并注入 design.md + plan.md + compact-summary，保存 checkpoint（`resume_node="dev_exec_step"`）。
 
 **dev_exec_step**：从 plan.md 取当前 step，Master 写信给 Dev 实现。Master 信件限定代码产出必须在 `Dev/` 目录下。
 
@@ -276,7 +288,7 @@ qa_handoff → qa_align → END
   - A：无需修改，对齐完成
   - B：有反馈需 QA 修改，无需升级
   - C：有争议需升级 Master
-- Master 升级：Master 回答问题 → judge 判读是否需问用户 → 需则调用 `_clarify_loop`
+- Master 升级：Master 回答问题 → judge 判读是否需问用户 → 需则调用 `clarify_loop`
 - 对齐完成后保存 QA 理解到 `{workspace}/QA/understanding.md`
 
 ### Phase 4: 交付（预留）
@@ -313,6 +325,53 @@ PM 的疑问、Dev 的执行问题都可能回溯到初始需求。Master 单一
 
 每次调用独立 conversation，用后即弃。不注册 registry，不走 begin/close 生命周期。
 
+### 7. Checkpoint / Resume 断线重连
+
+工作流在以下位置保存 checkpoint（JSON 文件 `{runtime_dir}/checkpoint.json`）：
+
+| 位置 | resume_node | 触发时机 |
+|:-----|:------------|:---------|
+| Phase 0→1 边界 | `pm_handoff` | 需求澄清完成，master_flush_after_clarify |
+| Phase 1→2 边界 | `dev_handoff` | PM 方案完成，master_flush_after_pm |
+| Phase 2→3 边界 | `qa_handoff` | Dev 实现完成，master_flush_after_dev |
+| Dev 开始执行前 | `dev_exec_step` | dev_git_init（step_idx=0） |
+| Dev 每步提交后 | `dev_exec_step` | dev_commit（step_idx=N） |
+
+重启后 `resume_router` 作为图入口节点，检测到 checkpoint 则询问用户是否恢复：
+
+```
+resume_router → 检测 checkpoint
+               ├─ 有 → 询问用户 → y → 清理目标目录 + 重建对话 → 路由到 resume_node
+               │                        └→ 其他 → 清除 checkpoint → pre_flight
+               └─ 无 → pre_flight
+```
+
+恢复时的清理逻辑（`_clean_next_phase`）：
+- 清理 `{runtime_dir}/handoffs/`（旧信件全部删除）
+- 恢复 `pm_handoff`：清理 `{workspace}/PM/` + `criteria-pm.md`
+- 恢复 `dev_handoff`：清理 `{workspace}/Dev/`
+- 恢复 `qa_handoff`：清理 `{workspace}/QA/`
+- 恢复 `dev_exec_step`：不清理（代码由 git 管理）
+- 恢复 `dev_exec_step` 时自动重建 Dev 执行对话，注入 design.md + plan.md + compact-summary
+
+### 8. `.agent_runtime` 目录结构
+
+```
+{runtime_dir}/
+├── checkpoint.json          # 断线重连检查点
+├── context.json             # 三段式上下文（bg/ctx/phase）
+├── registry.json            # Agent 注册信息
+├── config.json              # 配置（从 runtime_config.json 同步）
+├── calls.jsonl              # Agent 调用日志
+├── events.jsonl             # 事件日志
+├── artifacts/               # 项目顶层决策等固化文档
+│   └── project_context.md
+├── phases/                  # 阶段总结
+│   └── phase-summary-{name}.md
+└── handoffs/                # Agent 间通信信件
+    └── {name}-{ws}-{ts}.md
+```
+
 ## 变更对比（v4 → v5）
 
 | 变更 | v4 | v5 |
@@ -323,6 +382,10 @@ PM 的疑问、Dev 的执行问题都可能回溯到初始需求。Master 单一
 | Reviewer 对话 | 单一 `reviewer-{ws}-{ts}` | 按场景细分：review-pm-criteria, review-step-N 等 |
 | 失败处理 | 无 | 三档阈值：重试/回滚/升级 |
 | 人工介入 | 无 | dev_escalate 三步对话流程 |
-| Context flush | 无 | 每 step flush + 文件注入 |
+| Context flush | 无 | 每 step flush + 文件注入 + phase 边界 flush |
+| Checkpoint/Resume | 无 | 5 个断点 + resume_router + 目录清理 |
+| .agent_runtime 结构 | 平铺 | 分 artifacts/phases/handoffs 子目录 |
 | _resolve_file_refs | 无 | `{路径}` 语法自动解析 |
 | Master 通信 | setup_runtime 写入 context | 同，v5 无变化 |
+| phase_artifacts | 无 | flush 时传入实际产出路径，summary 更准确 |
+| handoff 清理 | 无 | resume 时自动清理 handoffs/ 目录 |
