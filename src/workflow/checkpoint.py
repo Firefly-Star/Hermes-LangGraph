@@ -47,13 +47,22 @@ def clear_checkpoint(runtime):
         os.remove(path)
 
 
-def _restore_dev_conv(runtime):
-    """重新创建 Dev 执行对话。"""
+def _restore_dev_conv(runtime, step_idx):
+    """重新创建 Dev 执行对话 + git reset + 重置步进状态。"""
     dev_principles = runtime.context.get_bg("dev_principles")
-    ws = runtime.workspace
+    dev_dir = os.path.join(runtime.workspace, "Dev")
+
+    # git reset --hard，清除可能残留的脏文件或部分提交
+    try:
+        import subprocess
+        subprocess.run(["git", "reset", "--hard", "HEAD"],
+                       cwd=dev_dir, capture_output=True, timeout=15)
+        print(f"  → git reset --hard HEAD (clean)")
+    except Exception:
+        print(f"  → git reset 跳过（{dev_dir} 可能不是 git 仓库）")
 
     def _read(p):
-        fp = os.path.join(ws, "Dev", p)
+        fp = os.path.join(dev_dir, p)
         if os.path.exists(fp):
             with open(fp, "r", encoding="utf-8") as f:
                 return f.read()
@@ -70,6 +79,14 @@ def _restore_dev_conv(runtime):
     new_conv = conv_name("dev-exec")
     runtime.conversations.begin("dev", new_conv, injected)
     runtime.context.set_ctx("dev_conv", new_conv)
+
+    # 从 checkpoint 恢复步进索引，重置失败计数 / 反馈 / 升级决策
+    runtime.context.set_ctx("dev_step_index", str(step_idx))
+    runtime.context.set_ctx("dev_step_fail_count", "0")
+    runtime.context.set_ctx("dev_step_has_failed", "false")
+    runtime.context.set_ctx("dev_step_review_feedback", "")
+    runtime.context.set_ctx("dev_escalation_decision", "")
+    print(f"  → 步进状态已重置（step_idx={step_idx}, fail_count=0）")
 
 
 def _clean_next_phase(runtime, resume_node):
@@ -116,9 +133,11 @@ def resume_router(state) -> dict:
     if user_input in ("y", "yes"):
         resume_node = cp["resume_node"]
         _clean_next_phase(runtime, resume_node)
-        open_master_conv(runtime, cp.get("summary_path", ""))
+
         if resume_node == "dev_exec_step":
-            _restore_dev_conv(runtime)
+            _restore_dev_conv(runtime, cp.get("step_idx", 0))
+        else:
+            open_master_conv(runtime, cp.get("summary_path", ""))
 
         print(f"  → 从 {cp['phase_name']} 继续")
         runtime.logger.log_event("workflow_resumed",

@@ -144,6 +144,26 @@ def build_graph(runtime) -> StateGraph:
     return graph.compile(checkpointer=MemorySaver())
 
 
+def draw_graph(app):
+    """生成工作流图并保存为 PNG。"""
+    output = os.path.join(os.getcwd(), "workflow_diagram.png")
+    try:
+        png = app.get_graph().draw_mermaid_png()
+        with open(output, "wb") as f:
+            f.write(png)
+        print(f"  → 流程图已保存: {output}")
+    except Exception as e:
+        print(f"  → 生成 PNG 失败（{e}），尝试 Mermaid 文本...")
+        try:
+            mermaid = app.get_graph().draw_mermaid()
+            md_path = output.replace(".png", ".md")
+            with open(md_path, "w", encoding="utf-8") as f:
+                f.write("```mermaid\n" + mermaid + "\n```")
+            print(f"  → Mermaid 图已保存: {md_path}")
+        except Exception:
+            print("  → 无法生成流程图（需安装 pyppeteer 或 playwright）")
+
+
 def _init_state() -> WorkflowState:
     return {"phase": "pre_flight", "judge_result": ""}
 
