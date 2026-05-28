@@ -65,8 +65,6 @@
 | | POST 请求到 /v1/responses | 不记录日志（调 Logger 记录） |
 | | 超时自动重试（最多 max_retry 次） | |
 | | 返回 CallResult | |
-| `init_conversation` | 如果有同名对话，调 close_conversation | 不修改 registry |
-| | POST 第一条消息到新 conversation | |
 | `close_conversation` | 从 registry 的 conversations 列表中移除 | 不发 DELETE 请求到 Hermes |
 
 ### 数据流
@@ -200,7 +198,7 @@ call(agent, conv, input)
 | `set_phase_node` | 沿 path 创建/更新树节点，设 status | 不在 get_phase_text 中展开已完成的子节点 |
 | `get_phase_text` | 渲染 phase 树为缩进文本 | 不修改任何数据 |
 | `set_ctx` / `get_ctx` | 读写 contexts 段（键值对） | |
-| `build_injection` | 按 keys 拼接三段数据为文本 | 不调 init_conversation |
+| `build_injection` | 按 keys 拼接三段数据为文本 | 不发送请求 |
 
 ---
 

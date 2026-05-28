@@ -99,7 +99,7 @@ Hermes Gateway 正确处理了客户端断连：断开后同一 conversation 可
 def on_chunk(chunk):
     if getattr(runtime, "interrupt_requested", False):
         runtime.interrupt_requested = False  # 消费标志
-        raise AgentInterrupted()  # 自定义异常，终止 iter_lines 循环
+        raise WorkflowInterrupted()  # 自定义异常，终止流式输出
 ```
 
 在 `_call_stream` 的 SSE 迭代循环中捕获该异常，关闭连接，向上抛出让 `call_agent` 退出。
@@ -107,7 +107,7 @@ def on_chunk(chunk):
 ### 3. Graph 路由
 
 - 新增 `user_intervention` 节点
-- `call_agent` 的 `AgentInterrupted` 异常传到 node 函数，被 node 函数捕获
+- `call_agent` 的 `WorkflowInterrupted` 异常传到 node 函数，被 `interruptible` 装饰器捕获
 - node 函数将 `interrupted_node` 设为当前 phase 名称，`return_phase` 设为原本的 `return {"phase": "xxx"}` 中的值
 - 路由到 `user_intervention` 节点
 
@@ -127,24 +127,25 @@ def user_intervention(state):
         reply = call_agent(runtime, agent, conv, user_input)
         print(reply)
 
-    return {"phase": return_node}
+    return {"phase": return_node, "judge_result": ""}
 ```
 
 ### 5. 改动文件
 
 | 文件 | 改动 |
 |------|------|
-| `src/workflow/utils.py` | `call_agent` 中增加中断标志检测和 `AgentInterrupted` 异常 |
-| `src/workflow/graph.py` | 新增 `user_intervention` 节点 + 边 |
-| `src/workflow/utils.py` 或新文件 | 后台键盘监听线程 |
-| `src/agent_runtime.py` | 可选：在 `AgentRuntime` 上增加 `interrupt_requested` 标志 |
+| `runtime_config.json` | 新增 `interrupt_hotkey` 配置项 |
+| `src/workflow/utils.py` | 新增：`_interrupt_requested` 标志、`WorkflowInterrupted` 异常、`_keyboard_listener` 后台线程、`start/stop_interrupt_listener`、`interruptible` 装饰器、`user_intervention_node` 节点；修改：`call_agent` 的 `on_chunk` 中检测中断标志并保存现场 |
+| `src/workflow/graph.py` | 所有节点包裹 `interruptible()`、新增 `user_intervention_node` 到图、条件边覆盖所有节点、`main()` 中 start/stop listener |
+| `src/agent_runtime.py` | `_call_stream` 的 SSE 循环包裹 try/finally `resp.close()`，确保中断后连接释放 |
 
 ### 6. 边界情况
 
 - **中断时 agent 正在执行工具调用**：工具调用的结果可能已经产生但被丢弃。重入后 agent 从对话历史看到之前的工具结果，可以继续使用。
 - **多次中断**：每次中断都保存最新的 `interrupted_node`，后一次覆盖前一次。
-- **非流式调用中中断**：`stream=False` 的调用（如 `judge_reply`）通常是快速单字母回复，不做中断检测。如有需要后续可以加。
-- **键盘监听与 input() 冲突**：后台线程检测到 Ctrl+U 时不应消费 stdin 字符，只设置标志。`input()` 读取用户输入由正常流程处理，不会抢占。
+- **在 user_intervention_node 中再次中断**：`call_agent` 的 `WorkflowInterrupted` 被节点内的 `try/except` 捕获，只打断当前回复，不返回原节点。
+- **键盘监听与 input() 冲突**：后台线程检测到 Ctrl+U 时不应消费 stdin 字符，只设置标志。`input()` 读取用户输入由正常流程处理，不会抢占。中断标志会延迟到下一个 `call_agent` 的 `on_chunk` 才被消费。
+- **中断标志残留**：进入 `user_intervention_node` 时主动清除残留标志，避免刚进入就被送回原节点。
 
 ## 后续规划
 

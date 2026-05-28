@@ -190,11 +190,6 @@
   - 连接异常（ConnectionError等）→ 被 except 捕获，继续重试
 - **重试策略：** `max_retry` 次重试（默认 3），加上首次尝试共 4 次。每次重试间隔 1 秒。
 
-### `init_conversation(agent, conversation, initial_prompt) -> CallResult`
-初始化一个对话。
-- **行为：** 先 `close_conversation`（从 registry 移除追踪），再 `call` 发送第一条消息。
-- **注意：** 不清除 Hermes 服务端的旧对话数据。如果要彻底隔离，调用方应在 conversation 名中加入唯一标识（如时间戳）。
-
 ### `close_conversation(agent, conversation)`
 停止追踪指定对话。
 - **行为：** 从 registry 的 `conversations` 列表中移除该 conversation 名。
