@@ -72,7 +72,10 @@ def interruptible(func):
         except WorkflowInterrupted:
             rt = wrapper._runtime
             rt.context.set_ctx("interrupted_node", func.__name__)
-            return {"phase": "user_intervention"}
+            # 内联调用用户介入，不走图路由（固定边无法路由到 user_intervention_node）
+            user_intervention_node(state)
+            # 用户结束后从头重入当前节点
+            return func(state)
     wrapper.__name__ = func.__name__
     return wrapper
 
@@ -138,6 +141,10 @@ def call_agent(runtime, agent: str, conversation: str, prompt: str,
     t0 = time.time()
 
     def on_tool(name, args):
+        global _interrupt_requested
+        if _interrupt_requested:
+            _interrupt_requested = False
+            raise WorkflowInterrupted()
         print(f"\n  ── TOOL {name} ──")
         for k, v in args.items():
             if isinstance(v, str) and len(v) > 200:
@@ -150,6 +157,7 @@ def call_agent(runtime, agent: str, conversation: str, prompt: str,
         print(flush=True)
         text_parts = []
         def on_chunk(chunk):
+            global _interrupt_requested
             if _interrupt_requested:
                 _interrupt_requested = False
                 raise WorkflowInterrupted()

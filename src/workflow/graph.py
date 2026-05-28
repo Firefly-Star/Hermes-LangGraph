@@ -4,8 +4,7 @@ import os, sys
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
-from .utils import (WorkflowState, setup_runtime, interruptible,
-                    user_intervention_node)
+from .utils import WorkflowState, setup_runtime, interruptible
 from .phase0 import pre_flight_clarify
 from .phase1 import (pm_handoff, pm_align, master_reply_pm,
                      judge_master_reply, clarify_inject,
@@ -45,7 +44,6 @@ NODES = [
     interruptible(master_flush_after_clarify),
     interruptible(master_flush_after_pm),
     interruptible(master_flush_after_dev),
-    user_intervention_node,
 ]
 
 
@@ -145,12 +143,6 @@ def build_graph(runtime) -> StateGraph:
     graph.add_edge("dev_rollback", "dev_exec_step")
     graph.add_edge("dev_escalate", "dev_exec_step")
 
-    # ── 用户介入（可通过 CTRL+U 从任意节点进入）──
-    _all_phases = {f.__name__: f.__name__ for f in NODES}
-    _all_phases[END] = END
-    graph.add_conditional_edges("user_intervention_node",
-                                lambda s: s.get("phase", ""), _all_phases)
-
     # ── Phase 3: QA ──
     graph.add_edge("master_flush_after_dev", "qa_handoff")
     graph.add_edge("qa_handoff", "qa_align")
@@ -224,7 +216,6 @@ def main():
                       f"judge={node_state.get('judge_result', '')[:20]}")
     except KeyboardInterrupt:
         print("\n  [中断] 用户按 Ctrl+C 终止工作流")
-        import sys
         sys.exit(1)
     finally:
         if hotkey:
