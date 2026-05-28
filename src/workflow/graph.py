@@ -18,68 +18,58 @@ from .phase2 import (dev_handoff, dev_align, devwrite_criteria,
 from .phase3 import qa_handoff, qa_align
 from .flush import (master_flush_after_clarify, master_flush_after_pm,
                     master_flush_after_dev)
-from .checkpoint import resume_router
+from .checkpoint import (resume_router, resume_pm_handoff,
+                         resume_dev_handoff, resume_qa_handoff,
+                         resume_dev_exec_step)
+
+NODES = [
+    resume_router,
+    resume_pm_handoff, resume_dev_handoff,
+    resume_qa_handoff, resume_dev_exec_step,
+    pre_flight_clarify,
+    pm_handoff, pm_align, master_reply_pm, judge_master_reply, clarify_inject,
+    pmwrite_criteria, review_pm_criteria, pm_write_doc, review_pm_output, human_review,
+    dev_handoff, dev_align, devwrite_criteria, review_dev_criteria,
+    dev_write_design, dev_write_plan, dev_review_plan,
+    dev_git_init, dev_exec_step, dev_review_step, dev_commit, dev_rollback, dev_escalate,
+    qa_handoff, qa_align,
+    master_flush_after_clarify, master_flush_after_pm, master_flush_after_dev,
+]
 
 
 def build_graph(runtime) -> StateGraph:
     """构建 LangGraph StateGraph。"""
-    for f in [resume_router,
-              pre_flight_clarify, pm_handoff, pm_align,
-              master_reply_pm, judge_master_reply, clarify_inject,
-              pmwrite_criteria, pm_write_doc,
-              review_pm_output, human_review,
-              dev_handoff, dev_align, devwrite_criteria, dev_write_design,
-              dev_write_plan, dev_review_plan,
-              review_pm_criteria, review_dev_criteria,
-              dev_git_init, dev_exec_step, dev_review_step,
-              dev_commit, dev_rollback, dev_escalate,
-              qa_handoff, qa_align,
-              master_flush_after_clarify, master_flush_after_pm,
-              master_flush_after_dev]:
+    for f in NODES:
         f._runtime = runtime
 
     graph = StateGraph(WorkflowState)
-    graph.add_node("resume_router", resume_router)
-    graph.add_node("pre_flight_clarify", pre_flight_clarify)
-    graph.add_node("pm_handoff", pm_handoff)
-    graph.add_node("pm_align", pm_align)
-    graph.add_node("master_reply_pm", master_reply_pm)
-    graph.add_node("judge_master_reply", judge_master_reply)
-    graph.add_node("clarify_inject", clarify_inject)
-    graph.add_node("pmwrite_criteria", pmwrite_criteria)
-    graph.add_node("pm_write_doc", pm_write_doc)
-    graph.add_node("review_pm_output", review_pm_output)
-    graph.add_node("human_review", human_review)
-    graph.add_node("dev_handoff", dev_handoff)
-    graph.add_node("dev_align", dev_align)
-    graph.add_node("devwrite_criteria", devwrite_criteria)
-    graph.add_node("dev_write_design", dev_write_design)
-    graph.add_node("dev_write_plan", dev_write_plan)
-    graph.add_node("dev_review_plan", dev_review_plan)
-    graph.add_node("review_pm_criteria", review_pm_criteria)
-    graph.add_node("review_dev_criteria", review_dev_criteria)
-    graph.add_node("dev_git_init", dev_git_init)
-    graph.add_node("dev_exec_step", dev_exec_step)
-    graph.add_node("dev_review_step", dev_review_step)
-    graph.add_node("dev_commit", dev_commit)
-    graph.add_node("dev_rollback", dev_rollback)
-    graph.add_node("dev_escalate", dev_escalate)
-    graph.add_node("qa_handoff", qa_handoff)
-    graph.add_node("qa_align", qa_align)
-    graph.add_node("master_flush_after_clarify", master_flush_after_clarify)
-    graph.add_node("master_flush_after_pm", master_flush_after_pm)
-    graph.add_node("master_flush_after_dev", master_flush_after_dev)
+
+    # ── 注册所有节点 ──
+    for f in NODES:
+        graph.add_node(f.__name__, f)
 
     graph.set_entry_point("resume_router")
+
+    # ── resume_router 路由 ──
     graph.add_conditional_edges("resume_router", lambda s: s.get("phase", ""), {
         "pre_flight": "pre_flight_clarify",
-        "pm_handoff": "pm_handoff",
-        "dev_handoff": "dev_handoff",
-        "qa_handoff": "qa_handoff",
-        "dev_exec_step": "dev_exec_step",
+        "resume_pm_handoff": "resume_pm_handoff",
+        "resume_dev_handoff": "resume_dev_handoff",
+        "resume_qa_handoff": "resume_qa_handoff",
+        "resume_dev_exec_step": "resume_dev_exec_step",
     })
+
+    # ── resume 节点 → 实际工作节点 ──
+    graph.add_edge("resume_pm_handoff", "pm_handoff")
+    graph.add_edge("resume_dev_handoff", "dev_handoff")
+    graph.add_edge("resume_qa_handoff", "qa_handoff")
+    graph.add_edge("resume_dev_exec_step", "dev_exec_step")
+
+    # ── Phase 0: 需求澄清 ──
     graph.add_edge("pre_flight_clarify", "master_flush_after_clarify")
     graph.add_edge("master_flush_after_clarify", "pm_handoff")
+
+    # ── Phase 1: PM 出方案 ──
     graph.add_edge("pm_handoff", "pm_align")
     graph.add_edge("pm_align", "master_reply_pm")
     graph.add_edge("master_reply_pm", "judge_master_reply")
@@ -106,6 +96,8 @@ def build_graph(runtime) -> StateGraph:
         END: "master_flush_after_pm",
         "review_pm_output": "review_pm_output",
     })
+
+    # ── Phase 2: Dev 出设计 + 编码执行 ──
     graph.add_edge("master_flush_after_pm", "dev_handoff")
     graph.add_edge("dev_handoff", "dev_align")
     graph.add_edge("dev_align", "devwrite_criteria")
@@ -135,9 +127,11 @@ def build_graph(runtime) -> StateGraph:
         "dev_exec_step": "dev_exec_step",
         "done": "master_flush_after_dev",
     })
-    graph.add_edge("master_flush_after_dev", "qa_handoff")
     graph.add_edge("dev_rollback", "dev_exec_step")
     graph.add_edge("dev_escalate", "dev_exec_step")
+
+    # ── Phase 3: QA ──
+    graph.add_edge("master_flush_after_dev", "qa_handoff")
     graph.add_edge("qa_handoff", "qa_align")
     graph.add_edge("qa_align", END)
 

@@ -1,4 +1,4 @@
-"""断线重连 — checkpoint 保存/加载/resume_router。"""
+"""断线重连 — checkpoint 保存/加载 + resume 节点。"""
 import os, json, time, shutil
 from typing import Optional
 
@@ -47,12 +47,24 @@ def clear_checkpoint(runtime):
         os.remove(path)
 
 
+# ── helpers ──────────────────────────────────────────────
+
+def _clean_targets(runtime, targets):
+    """删除 targets 中的文件/目录。"""
+    for t in targets:
+        if os.path.isdir(t):
+            shutil.rmtree(t)
+            print(f"  清理目录: {t}")
+        elif os.path.isfile(t):
+            os.remove(t)
+            print(f"  清理文件: {t}")
+
+
 def _restore_dev_conv(runtime, step_idx):
     """重新创建 Dev 执行对话 + git reset + 重置步进状态。"""
     dev_principles = runtime.context.get_bg("dev_principles")
     dev_dir = os.path.join(runtime.workspace, "Dev")
 
-    # git reset --hard，清除可能残留的脏文件或部分提交
     try:
         import subprocess
         subprocess.run(["git", "reset", "--hard", "HEAD"],
@@ -80,7 +92,6 @@ def _restore_dev_conv(runtime, step_idx):
     runtime.conversations.begin("dev", new_conv, injected)
     runtime.context.set_ctx("dev_conv", new_conv)
 
-    # 从 checkpoint 恢复步进索引，重置失败计数 / 反馈 / 升级决策
     runtime.context.set_ctx("dev_step_index", str(step_idx))
     runtime.context.set_ctx("dev_step_fail_count", "0")
     runtime.context.set_ctx("dev_step_has_failed", "false")
@@ -89,29 +100,10 @@ def _restore_dev_conv(runtime, step_idx):
     print(f"  → 步进状态已重置（step_idx={step_idx}, fail_count=0）")
 
 
-def _clean_next_phase(runtime, resume_node):
-    """清理下一阶段的产出目录 + handoff 信件，避免上次失败的残留干扰重连。"""
-    ws = runtime.workspace
-    targets = [os.path.join(runtime.runtime_dir, HANDOFFS_DIR)]
-    if resume_node == "pm_handoff":
-        targets.append(os.path.join(ws, "PM"))
-        targets.append(os.path.join(ws, "criteria-pm.md"))
-    elif resume_node == "dev_handoff":
-        targets.append(os.path.join(ws, "Dev"))
-    elif resume_node == "qa_handoff":
-        targets.append(os.path.join(ws, "QA"))
-    # dev_exec_step: 不清，git 管理代码
-    for t in targets:
-        if os.path.isdir(t):
-            shutil.rmtree(t)
-            print(f"  清理目录: {t}")
-        elif os.path.isfile(t):
-            os.remove(t)
-            print(f"  清理文件: {t}")
-
+# ── resume 节点 ──────────────────────────────────────────
 
 def resume_router(state) -> dict:
-    """Graph 入口节点：检查 checkpoint 并路由到继续或从头开始。"""
+    """入口节点：仅检查 checkpoint + 询问用户，路由到对应 resume 节点或从头开始。"""
     runtime = getattr(resume_router, "_runtime", None)
     cp = load_checkpoint(runtime)
 
@@ -128,22 +120,64 @@ def resume_router(state) -> dict:
         f"输入 y 从「{cp['phase_name']}」继续，直接 EOF 从头开始：",
         prompt="> ",
     )
-    user_input = cp_obj.message.strip().lower()
-
-    if user_input in ("y", "yes"):
-        resume_node = cp["resume_node"]
-        _clean_next_phase(runtime, resume_node)
-
-        if resume_node == "dev_exec_step":
-            _restore_dev_conv(runtime, cp.get("step_idx", 0))
-        else:
-            open_master_conv(runtime, cp.get("summary_path", ""))
-
-        print(f"  → 从 {cp['phase_name']} 继续")
-        runtime.logger.log_event("workflow_resumed",
-                                 detail=f"resume_at={resume_node}")
-        return {"phase": resume_node}
+    if cp_obj.message.strip().lower() in ("y", "yes"):
+        return {"phase": f"resume_{cp['resume_node']}"}
 
     clear_checkpoint(runtime)
     print(f"  → 从头开始")
     return {"phase": "pre_flight"}
+
+
+def resume_pm_handoff(state) -> dict:
+    """恢复 pm 阶段：清产出 + 重建 Master 对话。"""
+    runtime = getattr(resume_pm_handoff, "_runtime", None)
+    ws = runtime.workspace
+    _clean_targets(runtime, [
+        os.path.join(runtime.runtime_dir, HANDOFFS_DIR),
+        os.path.join(ws, "PM"),
+        os.path.join(ws, "criteria-pm.md"),
+    ])
+    cp = load_checkpoint(runtime)
+    open_master_conv(runtime, cp.get("summary_path", "") if cp else "")
+    print(f"  → 从 PM 阶段继续")
+    return {"phase": "pm_handoff"}
+
+
+def resume_dev_handoff(state) -> dict:
+    """恢复 dev 阶段：清产出 + 重建 Master 对话。"""
+    runtime = getattr(resume_dev_handoff, "_runtime", None)
+    ws = runtime.workspace
+    _clean_targets(runtime, [
+        os.path.join(runtime.runtime_dir, HANDOFFS_DIR),
+        os.path.join(ws, "Dev"),
+    ])
+    cp = load_checkpoint(runtime)
+    open_master_conv(runtime, cp.get("summary_path", "") if cp else "")
+    print(f"  → 从 Dev 阶段继续")
+    return {"phase": "dev_handoff"}
+
+
+def resume_qa_handoff(state) -> dict:
+    """恢复 qa 阶段：清产出 + 重建 Master 对话。"""
+    runtime = getattr(resume_qa_handoff, "_runtime", None)
+    ws = runtime.workspace
+    _clean_targets(runtime, [
+        os.path.join(runtime.runtime_dir, HANDOFFS_DIR),
+        os.path.join(ws, "QA"),
+    ])
+    cp = load_checkpoint(runtime)
+    open_master_conv(runtime, cp.get("summary_path", "") if cp else "")
+    print(f"  → 从 QA 阶段继续")
+    return {"phase": "qa_handoff"}
+
+
+def resume_dev_exec_step(state) -> dict:
+    """恢复 dev 执行：清 handoffs + git reset + 重建 Dev 对话，不碰 Master。"""
+    runtime = getattr(resume_dev_exec_step, "_runtime", None)
+    _clean_targets(runtime, [
+        os.path.join(runtime.runtime_dir, HANDOFFS_DIR),
+    ])
+    cp = load_checkpoint(runtime)
+    _restore_dev_conv(runtime, cp.get("step_idx", 0) if cp else 0)
+    print(f"  → 从 Dev 执行继续")
+    return {"phase": "dev_exec_step"}
