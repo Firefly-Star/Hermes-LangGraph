@@ -3,7 +3,7 @@ import os, json, time, shutil
 from typing import Optional
 
 from .config import FLUSH_CONTINUATION_NOTE, CHECKPOINT_FILE, HANDOFFS_DIR
-from .utils import conv_name, call_agent, open_master_conv
+from .utils import conv_name, call_agent, open_master_conv, register_nodes
 
 
 def _cp_path(runtime) -> str:
@@ -92,84 +92,122 @@ def _restore_dev_conv(runtime, step_idx):
     print(f"  → 步进状态已重置（step_idx={step_idx}, fail_count=0）")
 
 
-# ── resume 节点 ──────────────────────────────────────────
+# ── ResumeRouter 类 ──────────────────────────────────────
 
-def resume_router(state) -> dict:
-    """入口节点：仅检查 checkpoint + 询问用户，路由到对应 resume 节点或从头开始。"""
-    runtime = getattr(resume_router, "_runtime", None)
-    cp = load_checkpoint(runtime)
 
-    if cp is None:
+class ResumeRouter:
+    """断线重连路由及恢复节点组。入口 + 4 恢复节点 + 1 空节点。"""
+
+    entries = {"router": "resume_router"}
+    exits = {"to_pre_flight": "resume_to_pre_flight",
+             "resume_pm": "resume_pm_handoff",
+             "resume_dev": "resume_dev_handoff",
+             "resume_qa": "resume_qa_handoff",
+             "resume_dev_exec": "resume_dev_exec_step"}
+
+    _runtime = None
+
+    @staticmethod
+    def router(state) -> dict:
+        """入口节点：检查 checkpoint + 询问用户，路由到对应恢复节点或从头开始。"""
+        runtime = ResumeRouter._runtime
+        cp = load_checkpoint(runtime)
+
+        if cp is None:
+            return {"phase": "pre_flight"}
+
+        step_info = f"（第 {cp['step_idx'] + 1} 步）" if "step_idx" in cp else ""
+        print(f"\n{'='*60}")
+        print(f"  检测到上次运行中断于「{cp['phase_name']}」{step_info}")
+        print(f"{'='*60}")
+
+        cp_obj = runtime.checkpoint.wait(
+            "重连确认",
+            f"输入 y 从「{cp['phase_name']}」继续，直接 EOF 从头开始：",
+            prompt="> ",
+        )
+        if cp_obj.message.strip().lower() in ("y", "yes"):
+            return {"phase": f"resume_{cp['resume_node']}"}
+
+        clear_checkpoint(runtime)
+        print(f"  → 从头开始")
         return {"phase": "pre_flight"}
 
-    step_info = f"（第 {cp['step_idx'] + 1} 步）" if "step_idx" in cp else ""
-    print(f"\n{'='*60}")
-    print(f"  检测到上次运行中断于「{cp['phase_name']}」{step_info}")
-    print(f"{'='*60}")
+    @staticmethod
+    def to_pre_flight(state) -> dict:
+        """空节点：路由到 PreFlightClarify。"""
+        return state
 
-    cp_obj = runtime.checkpoint.wait(
-        "重连确认",
-        f"输入 y 从「{cp['phase_name']}」继续，直接 EOF 从头开始：",
-        prompt="> ",
-    )
-    if cp_obj.message.strip().lower() in ("y", "yes"):
-        return {"phase": f"resume_{cp['resume_node']}"}
+    @staticmethod
+    def resume_pm(state) -> dict:
+        """恢复 pm 阶段：清产出 + 重建 Master 对话。"""
+        runtime = ResumeRouter._runtime
+        ws = runtime.workspace
+        _clean_targets(runtime, [
+            os.path.join(runtime.runtime_dir, HANDOFFS_DIR),
+            os.path.join(ws, "PM"),
+            os.path.join(ws, "criteria-pm.md"),
+        ])
+        cp = load_checkpoint(runtime)
+        open_master_conv(runtime, cp.get("summary_path", "") if cp else "")
+        print(f"  → 从 PM 阶段继续")
+        return {"phase": "pm_handoff"}
 
-    clear_checkpoint(runtime)
-    print(f"  → 从头开始")
-    return {"phase": "pre_flight"}
+    @staticmethod
+    def resume_dev(state) -> dict:
+        """恢复 dev 阶段：清产出 + 重建 Master 对话。"""
+        runtime = ResumeRouter._runtime
+        ws = runtime.workspace
+        _clean_targets(runtime, [
+            os.path.join(runtime.runtime_dir, HANDOFFS_DIR),
+            os.path.join(ws, "Dev"),
+        ])
+        cp = load_checkpoint(runtime)
+        open_master_conv(runtime, cp.get("summary_path", "") if cp else "")
+        print(f"  → 从 Dev 阶段继续")
+        return {"phase": "dev_handoff"}
 
+    @staticmethod
+    def resume_qa(state) -> dict:
+        """恢复 qa 阶段：清产出 + 重建 Master 对话。"""
+        runtime = ResumeRouter._runtime
+        ws = runtime.workspace
+        _clean_targets(runtime, [
+            os.path.join(runtime.runtime_dir, HANDOFFS_DIR),
+            os.path.join(ws, "QA"),
+        ])
+        cp = load_checkpoint(runtime)
+        open_master_conv(runtime, cp.get("summary_path", "") if cp else "")
+        print(f"  → 从 QA 阶段继续")
+        return {"phase": "qa_handoff"}
 
-def resume_pm_handoff(state) -> dict:
-    """恢复 pm 阶段：清产出 + 重建 Master 对话。"""
-    runtime = getattr(resume_pm_handoff, "_runtime", None)
-    ws = runtime.workspace
-    _clean_targets(runtime, [
-        os.path.join(runtime.runtime_dir, HANDOFFS_DIR),
-        os.path.join(ws, "PM"),
-        os.path.join(ws, "criteria-pm.md"),
-    ])
-    cp = load_checkpoint(runtime)
-    open_master_conv(runtime, cp.get("summary_path", "") if cp else "")
-    print(f"  → 从 PM 阶段继续")
-    return {"phase": "pm_handoff"}
+    @staticmethod
+    def resume_dev_exec(state) -> dict:
+        """恢复 dev 执行：清 handoffs + git reset + 重建 Dev 对话，不碰 Master。"""
+        runtime = ResumeRouter._runtime
+        _clean_targets(runtime, [
+            os.path.join(runtime.runtime_dir, HANDOFFS_DIR),
+        ])
+        cp = load_checkpoint(runtime)
+        _restore_dev_conv(runtime, cp.get("step_idx", 0) if cp else 0)
+        print(f"  → 从 Dev 执行继续")
+        return {"phase": "dev_exec_step"}
 
-
-def resume_dev_handoff(state) -> dict:
-    """恢复 dev 阶段：清产出 + 重建 Master 对话。"""
-    runtime = getattr(resume_dev_handoff, "_runtime", None)
-    ws = runtime.workspace
-    _clean_targets(runtime, [
-        os.path.join(runtime.runtime_dir, HANDOFFS_DIR),
-        os.path.join(ws, "Dev"),
-    ])
-    cp = load_checkpoint(runtime)
-    open_master_conv(runtime, cp.get("summary_path", "") if cp else "")
-    print(f"  → 从 Dev 阶段继续")
-    return {"phase": "dev_handoff"}
-
-
-def resume_qa_handoff(state) -> dict:
-    """恢复 qa 阶段：清产出 + 重建 Master 对话。"""
-    runtime = getattr(resume_qa_handoff, "_runtime", None)
-    ws = runtime.workspace
-    _clean_targets(runtime, [
-        os.path.join(runtime.runtime_dir, HANDOFFS_DIR),
-        os.path.join(ws, "QA"),
-    ])
-    cp = load_checkpoint(runtime)
-    open_master_conv(runtime, cp.get("summary_path", "") if cp else "")
-    print(f"  → 从 QA 阶段继续")
-    return {"phase": "qa_handoff"}
-
-
-def resume_dev_exec_step(state) -> dict:
-    """恢复 dev 执行：清 handoffs + git reset + 重建 Dev 对话，不碰 Master。"""
-    runtime = getattr(resume_dev_exec_step, "_runtime", None)
-    _clean_targets(runtime, [
-        os.path.join(runtime.runtime_dir, HANDOFFS_DIR),
-    ])
-    cp = load_checkpoint(runtime)
-    _restore_dev_conv(runtime, cp.get("step_idx", 0) if cp else 0)
-    print(f"  → 从 Dev 执行继续")
-    return {"phase": "dev_exec_step"}
+    @classmethod
+    def register(cls, graph, runtime):
+        cls._runtime = runtime
+        register_nodes(graph, runtime, {
+            "resume_router": cls.router,
+            "resume_to_pre_flight": cls.to_pre_flight,
+            "resume_pm_handoff": cls.resume_pm,
+            "resume_dev_handoff": cls.resume_dev,
+            "resume_qa_handoff": cls.resume_qa,
+            "resume_dev_exec_step": cls.resume_dev_exec,
+        })
+        graph.add_conditional_edges("resume_router", lambda s: s.get("phase", ""), {
+            "pre_flight": "resume_to_pre_flight",
+            "resume_pm_handoff": "resume_pm_handoff",
+            "resume_dev_handoff": "resume_dev_handoff",
+            "resume_qa_handoff": "resume_qa_handoff",
+            "resume_dev_exec_step": "resume_dev_exec_step",
+        })

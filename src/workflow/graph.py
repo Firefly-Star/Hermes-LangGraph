@@ -13,20 +13,11 @@ from .phase2 import (DevHandoff, DevAlign, DevWriteCriteria,
                      DevWritePlan, DevReviewPlan, DevGitInit, DevExecStep,
                      DevReviewStep, DevCommit, DevRollback, DevEscalate)
 from .phase3 import qa_handoff, qa_align
-from .flush import (master_flush_after_clarify, master_flush_after_pm,
-                    master_flush_after_dev)
-from .checkpoint import (resume_router, resume_pm_handoff,
-                         resume_dev_handoff, resume_qa_handoff,
-                         resume_dev_exec_step)
+from .flush import (MasterFlushClarify, MasterFlushPM, MasterFlushDev)
+from .checkpoint import ResumeRouter
 
 NODES = [
-    interruptible(resume_router),
-    interruptible(resume_pm_handoff), interruptible(resume_dev_handoff),
-    interruptible(resume_qa_handoff), interruptible(resume_dev_exec_step),
     interruptible(qa_handoff), interruptible(qa_align),
-    interruptible(master_flush_after_clarify),
-    interruptible(master_flush_after_pm),
-    interruptible(master_flush_after_dev),
 ]
 
 
@@ -43,6 +34,7 @@ def build_graph(runtime) -> StateGraph:
     # ── 注册所有节点 ──
     for f in NODES:
         graph.add_node(f.__name__, f)
+    ResumeRouter.register(graph, runtime)
     PreFlightClarify.register(graph, runtime)
     PMHandoff.register(graph, runtime)
     PMAlign.register(graph, runtime)
@@ -68,27 +60,22 @@ def build_graph(runtime) -> StateGraph:
     DevCommit.register(graph, runtime)
     DevRollback.register(graph, runtime)
     DevEscalate.register(graph, runtime)
+    MasterFlushClarify.register(graph, runtime)
+    MasterFlushPM.register(graph, runtime)
+    MasterFlushDev.register(graph, runtime)
 
-    graph.set_entry_point("resume_router")
+    graph.set_entry_point(ResumeRouter.entries["router"])
 
-    # ── resume_router 路由 ──
-    graph.add_conditional_edges("resume_router", lambda s: s.get("phase", ""), {
-        "pre_flight": PreFlightClarify.entries["init"],
-        "resume_pm_handoff": "resume_pm_handoff",
-        "resume_dev_handoff": "resume_dev_handoff",
-        "resume_qa_handoff": "resume_qa_handoff",
-        "resume_dev_exec_step": "resume_dev_exec_step",
-    })
-
-    # ── resume 节点 → 实际工作节点 ──
-    graph.add_edge("resume_pm_handoff", PMHandoff.entries["run"])
-    graph.add_edge("resume_dev_handoff", "dev_handoff")
-    graph.add_edge("resume_qa_handoff", "qa_handoff")
-    graph.add_edge("resume_dev_exec_step", DevExecStep.entries["run"])
+    # ── resume 节点 → 实际工作节点（ResumeRouter 内部已处理条件路由）──
+    graph.add_edge(ResumeRouter.exits["to_pre_flight"], PreFlightClarify.entries["init"])
+    graph.add_edge(ResumeRouter.exits["resume_pm"], PMHandoff.entries["run"])
+    graph.add_edge(ResumeRouter.exits["resume_dev"], "dev_handoff")
+    graph.add_edge(ResumeRouter.exits["resume_qa"], "qa_handoff")
+    graph.add_edge(ResumeRouter.exits["resume_dev_exec"], DevExecStep.entries["run"])
 
     # ── Phase 0 跨阶段边 ──
-    graph.add_edge(PreFlightClarify.exits["close"], "master_flush_after_clarify")
-    graph.add_edge("master_flush_after_clarify", PMHandoff.entries["run"])
+    graph.add_edge(PreFlightClarify.exits["close"], MasterFlushClarify.entries["write_summary"])
+    graph.add_edge(MasterFlushClarify.exits["flush_conv"], PMHandoff.entries["run"])
 
     # ── Phase 1: PM 出方案 ──
     graph.add_edge(PMHandoff.exits["run"], PMAlign.entries["read"])
@@ -112,12 +99,12 @@ def build_graph(runtime) -> StateGraph:
         "pm_write_doc": PMWriteDoc.entries["write_prd_letter"],
     })
     graph.add_conditional_edges(HumanReview.exits["run"], lambda s: s.get("judge_result", ""), {
-        END: "master_flush_after_pm",
+        END: MasterFlushPM.entries["write_summary"],
         "review_pm_output": ReviewPMOutput.entries["run"],
     })
 
     # ── Phase 2: Dev 出设计 + 编码执行 ──
-    graph.add_edge("master_flush_after_pm", DevHandoff.entries["run"])
+    graph.add_edge(MasterFlushPM.exits["flush_conv"], DevHandoff.entries["run"])
     graph.add_edge(DevHandoff.exits["run"], DevAlign.entries["dev"])
     graph.add_edge(DevAlign.exits["judge_exit"], DevWriteCriteria.entries["run"])
     graph.add_conditional_edges(DevWriteCriteria.exits["run"], lambda s: s.get("judge_result", ""), {
@@ -142,13 +129,13 @@ def build_graph(runtime) -> StateGraph:
     })
     graph.add_conditional_edges(DevCommit.exits["run"], lambda s: s.get("judge_result", ""), {
         "dev_exec_step": DevExecStep.entries["run"],
-        "done": "master_flush_after_dev",
+        "done": MasterFlushDev.entries["write_summary"],
     })
     graph.add_edge(DevRollback.exits["run"], DevExecStep.entries["run"])
     graph.add_edge(DevEscalate.exits["run"], DevExecStep.entries["run"])
 
     # ── Phase 3: QA ──
-    graph.add_edge("master_flush_after_dev", "qa_handoff")
+    graph.add_edge(MasterFlushDev.exits["flush_conv"], "qa_handoff")
     graph.add_edge("qa_handoff", "qa_align")
     graph.add_edge("qa_align", END)
 
