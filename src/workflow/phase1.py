@@ -230,34 +230,46 @@ class JudgeMasterReply:
 class ClarifyInject:
     """原 clarify_inject 节点 — 向用户提问 Master 无法判定的问题。"""
 
-    entries = {"run": "clarify_inject"}
-    exits = {"run": "clarify_inject"}
+    entries = {"interact": "clarify_inject"}
+    exits = {"record": "clarify_inject_write"}
 
     _runtime = None
 
     @staticmethod
-    def run(state) -> dict:
-        """User clarification loop for Master's questions."""
+    def interact(state) -> dict:
+        """User clarification loop for Master's questions (clarify_loop)."""
         runtime = ClarifyInject._runtime
         master_conv = runtime.context.get_ctx("master_conv")
         master_reply = runtime.context.get_ctx("master_reply")
 
         print(f"\n  ── Master 需要向用户确认 ──\n{master_reply}")
 
-        def _close(reason: str):
-            project_context_path = runtime.context.get_bg("project_context_path")
-            call_agent(runtime, "master", master_conv,
-                       f"请将本轮确认的决策记录到项目顶层决策记录文件的合适位置中：{project_context_path}")
-            runtime.logger.log_event("clarification_done", detail=reason)
+        reason = clarify_loop(runtime, master_conv, "== 向用户确认 ==", "请回答 Master 的疑问")
+        runtime.context.set_ctx("clarify_reason", reason)
+        return {"phase": "clarify_inject_write"}
 
-        clarify_loop(runtime, master_conv, "== 向用户确认 ==", "请回答 Master 的疑问", _close)
+    @staticmethod
+    def record(state) -> dict:
+        """Record clarification decisions to project_context.md (call_agent)."""
+        runtime = ClarifyInject._runtime
+        master_conv = runtime.context.get_ctx("master_conv")
+        reason = runtime.context.get_ctx("clarify_reason") or "用户确认完成"
+        project_context_path = runtime.context.get_bg("project_context_path")
+
+        call_agent(runtime, "master", master_conv,
+                   f"请将本轮确认的决策记录到项目顶层决策记录文件的合适位置中：{project_context_path}")
+        runtime.logger.log_event("clarification_done", detail=reason)
         return {"phase": "clarify_done"}
 
     @classmethod
     def register(cls, graph, runtime):
         """Register nodes with LangGraph."""
         cls._runtime = runtime
-        register_nodes(graph, runtime, {"clarify_inject": cls.run})
+        register_nodes(graph, runtime, {
+            "clarify_inject": cls.interact,
+            "clarify_inject_write": cls.record,
+        })
+        graph.add_edge("clarify_inject", "clarify_inject_write")
 
 
 class PMWriteCriteria:
@@ -278,13 +290,17 @@ class PMWriteCriteria:
         runtime.logger.log_event("phase_started", detail="PM 审核标准制定")
 
         feedback_path = runtime.context.get_ctx("pm_criteria_feedback_path") or ""
+        feedback_note = ""
         if feedback_path and os.path.exists(feedback_path):
-            read_letter(runtime, "master", master_conv, feedback_path,
-                        "根据反馈意见重新制定审核标准")
+            feedback_note = (
+                "\n## 反馈意见\n"
+                f"上一轮审查中有反馈意见需要处理，请先阅读反馈意见文件：{feedback_path}"
+                "然后根据反馈修改标准。\n\n"
+            )
             runtime.context.set_ctx("pm_criteria_feedback_path", "")
 
         prompt = (
-            "你即将为 PM 产出的 PRD 和 prototype 制定审核标准。\n\n"
+            f"{feedback_note}你即将为 PM 产出的 PRD 和 prototype 制定审核标准。\n\n"
             "## 上游约束\n"
             "项目决策是你要考虑的上游上下文，标准必须与之对齐：\n"
             f"项目决策记录的文件地址为：{project_context_path or '（无项目决策记录）'}\n\n"
@@ -316,6 +332,10 @@ class PMWriteCriteria:
             prompt=prompt,
             context_key="pm_criteria",
         )
+
+        if feedback_path and os.path.exists(feedback_path):
+            os.remove(feedback_path)
+
         return {"phase": "criteria_done", "judge_result": "review_pm_criteria"}
 
     @classmethod
@@ -327,14 +347,14 @@ class PMWriteCriteria:
 class ReviewPMCriteria:
     """原 review_pm_criteria 节点 — Reviewer 审查 PM 审核标准。"""
 
-    entries = {"run": "review_pm_criteria"}
-    exits = {"run": "review_pm_criteria"}
+    entries = {"review": "review_pm_criteria"}
+    exits = {"to_pm_doc": "review_to_pm_doc", "write_feedback": "review_pm_criteria_feedback"}
 
     _runtime = None
 
     @staticmethod
-    def run(state) -> dict:
-        """Reviewer checks if PM criteria are concrete and actionable."""
+    def review(state) -> dict:
+        """Reviewer checks criteria + judge (2 call_agents: review + judge_reply)."""
         runtime = ReviewPMCriteria._runtime
         criteria_path = runtime.context.get_ctx("pm_criteria_path") or ""
         print(f"\n{'='*60}\n  ==> Reviewer 审查 PM 审核标准\n{'='*60}")
@@ -364,11 +384,8 @@ class ReviewPMCriteria:
             runtime.context.set_ctx("pm_criteria_feedback_path", "")
         else:
             feedback_path = letter_path(runtime, "reviewer-pm-criteria-feedback")
-            write_letter(runtime, "reviewer", conv_name("review-pm-criteria-feedback"),
-                         feedback_path, "PM 审核标准审查反馈",
-                         f"以下是你在上一轮审查中给出的评审意见，请整理成一封反馈信。\n\n"
-                         f"## 你的审查意见\n{review}")
             runtime.context.set_ctx("pm_criteria_feedback_path", feedback_path)
+            runtime.context.set_ctx("pm_criteria_review", review)
 
         runtime.logger.log_event("criteria_reviewed",
             detail=f"PM 审核标准审查{'通过' if passed else '不通过'}")
@@ -377,38 +394,68 @@ class ReviewPMCriteria:
             "judge_result": "pm_write_doc" if passed else "pmwrite_criteria",
         }
 
+    @staticmethod
+    def to_pm_doc(state) -> dict:
+        """Pass-through: routes to PMWriteDoc."""
+        return state
+
+    @staticmethod
+    def write_feedback(state) -> dict:
+        """Write review feedback letter to PMWriteCriteria (write_letter)."""
+        runtime = ReviewPMCriteria._runtime
+        feedback_path = runtime.context.get_ctx("pm_criteria_feedback_path")
+        review = runtime.context.get_ctx("pm_criteria_review")
+        if not feedback_path:
+            raise RuntimeError("反馈信路径不存在")
+
+        write_letter(runtime, "reviewer", conv_name("review-pm-criteria-feedback"),
+                     feedback_path, "PM 审核标准审查反馈",
+                     f"以下是你在上一轮审查中给出的评审意见，请整理成一封反馈信。\n\n"
+                     f"## 你的审查意见\n{review}")
+        runtime.context.set_ctx("pm_criteria_review", "")
+        return {"phase": "review_criteria_fail", "judge_result": "pmwrite_criteria"}
+
     @classmethod
     def register(cls, graph, runtime):
         cls._runtime = runtime
-        register_nodes(graph, runtime, {"review_pm_criteria": cls.run})
+        register_nodes(graph, runtime, {
+            "review_pm_criteria": cls.review,
+            "review_to_pm_doc": cls.to_pm_doc,
+            "review_pm_criteria_feedback": cls.write_feedback,
+        })
+        graph.add_conditional_edges("review_pm_criteria", lambda s: s.get("judge_result", ""), {
+            "pm_write_doc": "review_to_pm_doc",
+            "pmwrite_criteria": "review_pm_criteria_feedback",
+        })
 
 
 class PMWriteDoc:
-    """原 pm_write_doc 节点 — Master 写信指令 → PM 产出 PRD.md + prototype.html。"""
+    """原 pm_write_doc 拆分为 4 个单 call_agent 节点。"""
 
-    entries = {"run": "pm_write_doc"}
-    exits = {"run": "pm_write_doc"}
+    entries = {"write_prd_letter": "pm_write_prd_letter"}
+    exits = {"read_proto_letter": "pm_read_proto_letter"}
 
     _runtime = None
 
     @staticmethod
-    def run(state) -> dict:
-        """Master instructs PM to write PRD and prototype (4 call_agent calls)."""
+    def write_prd_letter(state) -> dict:
+        """Master writes PRD instruction letter to PM (write_letter)."""
         runtime = PMWriteDoc._runtime
         pm_conv = runtime.context.get_ctx("pm_conv")
         if not pm_conv:
             pm_conv = conv_name("pm-doc")
             runtime.context.set_ctx("pm_conv", pm_conv)
 
-        runtime.logger.log_event("phase_started", detail="PM 出方案")
-        print(f"\n  ── PM 出方案 ──")
-
         master_conv = runtime.context.get_ctx("master_conv")
         if not master_conv:
             raise RuntimeError("clarify conversation 不存在")
 
+        runtime.logger.log_event("phase_started", detail="PM 出方案")
+        print(f"\n  ── PM 出方案 ──")
+
         pm_dir = os.path.join(runtime.workspace, "PM")
         os.makedirs(pm_dir, exist_ok=True)
+        runtime.context.set_ctx("pm_dir", pm_dir)
 
         prev_review = runtime.context.get_ctx("review_result") or ""
         human_feedback = runtime.context.get_ctx("human_feedback") or ""
@@ -418,12 +465,16 @@ class PMWriteDoc:
         if human_feedback:
             feedback_ref += f"\n\n## 人工反馈（需优先处理）\n{human_feedback}"
 
-        prd_path = os.path.join(pm_dir, "PRD.md")
         criteria_path = runtime.context.get_ctx("pm_criteria_path") or ""
         criteria_ref = ""
         if criteria_path and os.path.exists(criteria_path):
             criteria_ref = f"\n审核标准文件（PM 需对着这些标准写，Reviewer 将用来审查）：{criteria_path}"
+
+        prd_path = os.path.join(pm_dir, "PRD.md")
         prdletter_path = letter_path(runtime, "master-prd")
+        runtime.context.set_ctx("prd_path", prd_path)
+        runtime.context.set_ctx("prdletter_path", prdletter_path)
+
         write_letter(runtime, "master", master_conv, prdletter_path,
                      "PRD 编写说明",
                      "请以 Master 的身份给 PM 写信，要求 PM 输出 PRD.md 并写入指定文件。\n"
@@ -438,42 +489,80 @@ class PMWriteDoc:
                      "而要写「前端解析 JWT payload 中的哪个字段、做什么用」。\n"
                      "7. 异常状态的 UI 描述必须和你将要产出的 prototype 的实际设计保持一致。"
                      + criteria_ref + feedback_ref)
+        return {"phase": "pm_read_prd"}
+
+    @staticmethod
+    def read_prd_letter(state) -> dict:
+        """PM reads PRD instruction and writes PRD.md (read_letter)."""
+        runtime = PMWriteDoc._runtime
+        pm_conv = runtime.context.get_ctx("pm_conv")
+        prdletter_path = runtime.context.get_ctx("prdletter_path")
+        prd_path = runtime.context.get_ctx("prd_path")
+
         read_letter(runtime, "pm", pm_conv, prdletter_path,
                     f"按信中的要求编写 PRD.md，写入文件 {prd_path}。")
+        return {"phase": "pm_write_proto_letter"}
+
+    @staticmethod
+    def write_proto_letter(state) -> dict:
+        """Master writes prototype instruction letter to PM (write_letter)."""
+        runtime = PMWriteDoc._runtime
+        master_conv = runtime.context.get_ctx("master_conv")
+        pm_dir = runtime.context.get_ctx("pm_dir")
 
         proto_path = os.path.join(pm_dir, "prototype.html")
         protoletter_path = letter_path(runtime, "master-prototype")
-        pm_agent_dir = os.path.join(runtime.workspace, "pm")
-        pm_script_dir = os.path.join(pm_agent_dir, "tests")
+        runtime.context.set_ctx("proto_path", proto_path)
+        runtime.context.set_ctx("protoletter_path", protoletter_path)
+
         write_letter(runtime, "master", master_conv, protoletter_path,
                      "原型编写说明",
-                     "请以 Master 的身份给 PM 写信，要求 PM 基于 PRD 产出 prototype.html 并写入指定文件。\n"
+                     "请以 Master 的身份给 PM 写信，要求 PM 基于 PRD 产出 prototype.html"
+                     " 并写入指定文件。\n"
                      "需包含：核心交互、页面布局、导航流程。\n"
                      "单文件自包含（CSS/JS 内嵌），可双击在浏览器中直接打开。\n"
                      "需要告知 PM，在它写原型之前，需要考虑以下问题：\n"
-                     "1. 它的上游是谁，给了它哪些上下文（PRD），这些上下文该如何约束它进行原型的编写。\n"
+                     "1. 它的上游是谁，给了它哪些上下文（PRD），"
+                     "这些上下文该如何约束它进行原型的编写。\n"
                      "2. 它的下游是谁，会如何从它的产出中获得约束和信息。\n"
                      "3. 确保产出不是模板化的文字堆砌，而是真正能为下游提供 actionable 的原型。\n"
                      "4. 确保具体、可操作，避免空泛占位符。")
+        return {"phase": "pm_read_proto"}
+
+    @staticmethod
+    def read_proto_letter(state) -> dict:
+        """PM reads prototype instruction and writes prototype.html (read_letter)."""
+        runtime = PMWriteDoc._runtime
+        pm_conv = runtime.context.get_ctx("pm_conv")
+        protoletter_path = runtime.context.get_ctx("protoletter_path")
+        proto_path = runtime.context.get_ctx("proto_path")
+        pm_dir = runtime.context.get_ctx("pm_dir")
+        pm_agent_dir = os.path.join(runtime.workspace, "pm")
+        pm_script_dir = os.path.join(pm_agent_dir, "tests")
+
         read_letter(runtime, "pm", pm_conv, protoletter_path,
                     f"按信中要求编写 prototype.html，写入文件 {proto_path}。\n\n"
                     "编写完成后，对照 PRD 自检：所有 PRD 中定义的 UI 状态（包括异常状态）"
                     "是否都有对应的页面展示。\n\n"
-                    "编写完成后如果需要进行自测，使用 Playwright 脚本测试，不要使用 Playwright MCP 交互式测试。\n"
+                    "编写完成后如果需要进行自测，使用 Playwright 脚本测试，"
+                    "不要使用 Playwright MCP 交互式测试。\n"
                     f"Playwright 环境搭建在 {pm_agent_dir}，脚本保存到 {pm_script_dir}。\n"
-                    f"  a. 首次运行：cd \"{pm_agent_dir}\" && npm init -y && cd \"{pm_agent_dir}\" && npm install playwright\n"
+                    f"  a. 首次运行：cd \"{pm_agent_dir}\" && npm init -y "
+                    f"&& cd \"{pm_agent_dir}\" && npm install playwright\n"
                     "  b. 检查 package.json 是否已存在，如已存在则跳过 npm init\n"
                     "  c. 脚本命名格式：pm-test.spec.js\n"
                     "  d. 运行脚本验证 prototype 行为是否符合预期\n"
                     "  e. 系统已预装兼容的 Chrome 无头浏览器，无需 npx playwright install\n"
                     "  f. 测试失败时，先诊断是测试脚本的问题还是原型本身的问题：\n"
-                    "     - 页面交互与预期不符（如点按纽触发错误行为） → 检查原型 HTML/CSS/JS 逻辑\n"
+                    "     - 页面交互与预期不符（如点按纽触发错误行为）"
+                    " → 检查原型 HTML/CSS/JS 逻辑\n"
                     "     - 测试脚本选择器或交互方式不当 → 修正测试脚本\n"
                     "     - 明确说明本轮修复的是什么问题\n"
                     "  g. 每次只修复一个根因，不要同时改脚本又改原型\n"
-                    "  h. 同一问题连续调试 3 轮仍未通过，使用 Playwright MCP 工具确认问题，不要继续改脚本")
+                    "  h. 同一问题连续调试 3 轮仍未通过，"
+                    "使用 Playwright MCP 工具确认问题，不要继续改脚本")
 
-        print(f"  ✓ {prd_path}")
+        print(f"  ✓ {os.path.join(pm_dir, 'PRD.md')}")
         print(f"  ✓ {proto_path}")
 
         runtime.context.set_phase_node(["PM 出方案"], "done")
@@ -483,7 +572,15 @@ class PMWriteDoc:
     @classmethod
     def register(cls, graph, runtime):
         cls._runtime = runtime
-        register_nodes(graph, runtime, {"pm_write_doc": cls.run})
+        register_nodes(graph, runtime, {
+            "pm_write_prd_letter": cls.write_prd_letter,
+            "pm_read_prd_letter": cls.read_prd_letter,
+            "pm_write_proto_letter": cls.write_proto_letter,
+            "pm_read_proto_letter": cls.read_proto_letter,
+        })
+        graph.add_edge("pm_write_prd_letter", "pm_read_prd_letter")
+        graph.add_edge("pm_read_prd_letter", "pm_write_proto_letter")
+        graph.add_edge("pm_write_proto_letter", "pm_read_proto_letter")
 
 
 class ReviewPMOutput:

@@ -129,7 +129,6 @@ def interrupt_dialog(state) -> dict:
         except WorkflowInterrupted:
             # 用户在 agent 回复时再次按 Ctrl+U，忽略这次回复，继续等新输入
             print("\n  [中断] 已中断 agent 回复，可重新输入或 EOF 返回")
-            _interrupt_requested = False
 
     runtime.context.set_ctx("interrupted_agent", "")
     runtime.context.set_ctx("interrupted_conv", "")
@@ -193,7 +192,13 @@ def call_agent(runtime, agent: str, conversation: str, prompt: str,
             raise
         print()
     else:
+        global _interrupt_requested
         result = runtime.conversations.call(agent, conversation, prompt, timeout=timeout)
+        if result.text:
+            print(result.text)
+        if _interrupt_requested:
+            print("\n  [中断] 非流式调用无法中断，请求已忽略")
+            _interrupt_requested = False
 
     elapsed = time.time() - t0
     if not result.success:
@@ -220,19 +225,22 @@ def letter_path(runtime, name: str) -> str:
     return os.path.join(handoff_dir, f"{name}-{ws}-{ts}.md")
 
 
-def ensure_write_file(runtime, receiver, conv, file_path, max_retry=2):
-    """检查文件是否存在，不存在则提醒 agent 写入。"""
+def ensure_write_file(runtime, receiver, conv, file_path, max_retry=None):
+    """检查文件是否存在，不存在则提醒 agent 写入。max_retry 默认从 config 读。"""
+    max_retry = int(runtime.config.get("write_retry", "2")) if max_retry is None else max_retry
     for attempt in range(max_retry):
         if os.path.exists(file_path):
             return True
         call_agent(runtime, receiver, conv,
                    f"（提醒）文件尚未被创建：{file_path}\n\n"
-                   "请使用 write_file 工具将你的回复内容完整写入该文件，不要只在对话中回复。")
+                   "请使用 write_file 工具将你的回复内容完整写入该文件，不要只在对话中回复。", stream = False)
     return os.path.exists(file_path)
 
 
 def write_letter(runtime, sender, conv, letter_path, title, prompt):
-    """sender 在 conv 对话中写一封信到 letter_path。"""
+    """sender 在 conv 对话中写一封信到 letter_path。重跑时删旧文件让 agent 重写。"""
+    if os.path.exists(letter_path):
+        os.remove(letter_path)
     call_agent(runtime, sender, conv,
                f"请以 **{sender}** 的身份写一封信。\n\n"
                f"## 信件标题\n{title}\n\n"
@@ -271,6 +279,13 @@ def read_and_write_letter(runtime, receiver, conv,
     for p in paths:
         if not os.path.exists(p):
             raise RuntimeError(f"信件不存在：{p}")
+
+    # 重跑保护：如果输出文件已存在（来自中断前的写操作），删掉让 agent 重写
+    out_paths = _resolve_paths(outputletter_path)
+    for p in out_paths:
+        if os.path.exists(p):
+            os.remove(p)
+
     paths_text = "\n".join(f"- {p}" for p in paths)
     call_agent(runtime, receiver, conv,
                f"请阅读以下信件，然后{task}\n\n"
@@ -301,7 +316,7 @@ def judge_reply(runtime, target_role: str, reply: str, options: list[str],
         f"{options_text}\n\n"
         f"只回复单个字母（{keys}），不要包含标点或多余文字。"
     )
-    result = call_agent(runtime, "judge", conv, prompt)
+    result = call_agent(runtime, "judge", conv, prompt, False)
     # 只取第一个字母，防止 agent 返回 "PASS" 而非 "P"
     for ch in result.strip():
         if ch.isalpha():
@@ -309,15 +324,22 @@ def judge_reply(runtime, target_role: str, reply: str, options: list[str],
     return result.strip()
 
 
-def clarify_loop(runtime, conv, title: str, first_hint: str, on_done):
-    """通用澄清循环。用户↔Master↔judge↔确认。空输入（直接 EOF）视为确认。"""
+def clarify_loop(runtime, conv, title: str, first_hint: str) -> str:
+    """通用澄清循环。用户输入 → Master 处理 → 用户决定继续或 EOF。
+
+    每轮迭代一个 call_agent，中断后不回放整轮。空输入（直接 EOF）视为确认结束。
+    返回结束原因字符串。
+    """
+    global _interrupt_requested
+    _interrupt_requested = False
+
     end_word = runtime.config.get("input_end_word") or None
 
     round_num = 0
     while True:
         round_num += 1
         hint = first_hint if round_num == 1 \
-            else "请回答 Master 的疑问，或直接 EOF 结束："
+            else "继续对话，或直接 EOF 结束："
 
         cp = runtime.checkpoint.wait(
             title, hint,
@@ -325,34 +347,14 @@ def clarify_loop(runtime, conv, title: str, first_hint: str, on_done):
         )
         user_input = cp.message.strip()
         if not user_input:
-            on_done("用户直接确认")
-            return
+            return "用户直接确认"
 
-        reply = call_agent(runtime, "master", conv,
-                           f"{user_input}\n不要产出任何东西，也不要修改任何文件，只需要说出你的理解，以及对有疑问的地方提出问题。")
-
-        while True:
-            judge_result = judge_reply(runtime, "Master", reply, [
-                "A. 需求已明确，可以进入下一阶段",
-                "B. Master 有疑问需要用户继续回答",
-            ], "judge-clarify")
-            if judge_result != "A":
-                break
-
-            cp = runtime.checkpoint.wait(
-                f"{title} (确认)",
-                "Master 已确认理解需求。认可的话直接 EOF 进入下一阶段；"
-                "不认可则说明哪里不对：",
-                prompt="输入内容后按 Enter：", end_word=end_word,
-            )
-            confirm_input = cp.message.strip()
-            if not confirm_input:
-                on_done("用户确认 Master 理解正确")
-                return
-
-            round_num += 1
-            reply = call_agent(runtime, "master", conv,
-                              f"用户认为你的理解有偏差，请重新理解需求：\n{confirm_input}")
+        try:
+            call_agent(runtime, "master", conv,
+                f"{user_input}\n不要产出任何东西，也不要修改任何文件，"
+                "只需要说出你的理解，以及对有疑问的地方提出问题。")
+        except WorkflowInterrupted:
+            print("\n  [中断] 已中断 agent 回复，可重新输入或 EOF 返回")
 
 
 def setup_runtime(config_path: str = None) -> ap.AgentRuntime:

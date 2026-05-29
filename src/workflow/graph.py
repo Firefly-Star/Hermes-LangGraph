@@ -8,11 +8,10 @@ from .utils import WorkflowState, setup_runtime, interruptible
 from .phase0 import PreFlightClarify
 from .phase1 import (PMHandoff, PMAlign, MasterReplyPM, JudgeMasterReply, ClarifyInject,
                      PMWriteCriteria, ReviewPMCriteria, PMWriteDoc, ReviewPMOutput, HumanReview)
-from .phase2 import (dev_handoff, dev_align, devwrite_criteria,
-                     review_dev_criteria, dev_write_design,
-                     dev_write_plan, dev_review_plan,
-                     dev_git_init, dev_exec_step, dev_review_step,
-                     dev_commit, dev_rollback, dev_escalate)
+from .phase2 import (DevHandoff, DevAlign, DevWriteCriteria,
+                     ReviewDevCriteria, DevWriteDesign, DevReviewDesign,
+                     DevWritePlan, DevReviewPlan, DevGitInit, DevExecStep,
+                     DevReviewStep, DevCommit, DevRollback, DevEscalate)
 from .phase3 import qa_handoff, qa_align
 from .flush import (master_flush_after_clarify, master_flush_after_pm,
                     master_flush_after_dev)
@@ -24,13 +23,6 @@ NODES = [
     interruptible(resume_router),
     interruptible(resume_pm_handoff), interruptible(resume_dev_handoff),
     interruptible(resume_qa_handoff), interruptible(resume_dev_exec_step),
-    interruptible(dev_handoff), interruptible(dev_align),
-    interruptible(devwrite_criteria), interruptible(review_dev_criteria),
-    interruptible(dev_write_design), interruptible(dev_write_plan),
-    interruptible(dev_review_plan),
-    interruptible(dev_git_init), interruptible(dev_exec_step),
-    interruptible(dev_review_step), interruptible(dev_commit),
-    interruptible(dev_rollback), interruptible(dev_escalate),
     interruptible(qa_handoff), interruptible(qa_align),
     interruptible(master_flush_after_clarify),
     interruptible(master_flush_after_pm),
@@ -62,6 +54,20 @@ def build_graph(runtime) -> StateGraph:
     PMWriteDoc.register(graph, runtime)
     ReviewPMOutput.register(graph, runtime)
     HumanReview.register(graph, runtime)
+    DevHandoff.register(graph, runtime)
+    DevAlign.register(graph, runtime)
+    DevWriteCriteria.register(graph, runtime)
+    ReviewDevCriteria.register(graph, runtime)
+    DevWriteDesign.register(graph, runtime)
+    DevReviewDesign.register(graph, runtime)
+    DevWritePlan.register(graph, runtime)
+    DevReviewPlan.register(graph, runtime)
+    DevGitInit.register(graph, runtime)
+    DevExecStep.register(graph, runtime)
+    DevReviewStep.register(graph, runtime)
+    DevCommit.register(graph, runtime)
+    DevRollback.register(graph, runtime)
+    DevEscalate.register(graph, runtime)
 
     graph.set_entry_point("resume_router")
 
@@ -78,7 +84,7 @@ def build_graph(runtime) -> StateGraph:
     graph.add_edge("resume_pm_handoff", PMHandoff.entries["run"])
     graph.add_edge("resume_dev_handoff", "dev_handoff")
     graph.add_edge("resume_qa_handoff", "qa_handoff")
-    graph.add_edge("resume_dev_exec_step", "dev_exec_step")
+    graph.add_edge("resume_dev_exec_step", DevExecStep.entries["run"])
 
     # ── Phase 0 跨阶段边 ──
     graph.add_edge(PreFlightClarify.exits["close"], "master_flush_after_clarify")
@@ -91,21 +97,19 @@ def build_graph(runtime) -> StateGraph:
     graph.add_conditional_edges(JudgeMasterReply.exits["run"], lambda s: s.get("judge_result", ""), {
         "A": PMWriteCriteria.entries["run"],
         "B": PMAlign.entries["master_reply"],
-        "C": ClarifyInject.entries["run"],
+        "C": ClarifyInject.entries["interact"],
     })
-    graph.add_edge(ClarifyInject.exits["run"], MasterReplyPM.entries["run"])
+    graph.add_edge(ClarifyInject.exits["record"], MasterReplyPM.entries["run"])
     graph.add_conditional_edges(PMWriteCriteria.exits["run"], lambda s: s.get("judge_result", ""), {
-        "review_pm_criteria": ReviewPMCriteria.entries["run"],
+        "review_pm_criteria": ReviewPMCriteria.entries["review"],
         "pmwrite_criteria": PMWriteCriteria.entries["run"],
     })
-    graph.add_conditional_edges(ReviewPMCriteria.exits["run"], lambda s: s.get("judge_result", ""), {
-        "pm_write_doc": PMWriteDoc.entries["run"],
-        "pmwrite_criteria": PMWriteCriteria.entries["run"],
-    })
-    graph.add_edge(PMWriteDoc.exits["run"], ReviewPMOutput.entries["run"])
+    graph.add_edge(ReviewPMCriteria.exits["to_pm_doc"], PMWriteDoc.entries["write_prd_letter"])
+    graph.add_edge(ReviewPMCriteria.exits["write_feedback"], PMWriteCriteria.entries["run"])
+    graph.add_edge(PMWriteDoc.exits["read_proto_letter"], ReviewPMOutput.entries["run"])
     graph.add_conditional_edges(ReviewPMOutput.exits["run"], lambda s: s.get("judge_result", ""), {
         "human_review": HumanReview.entries["run"],
-        "pm_write_doc": PMWriteDoc.entries["run"],
+        "pm_write_doc": PMWriteDoc.entries["write_prd_letter"],
     })
     graph.add_conditional_edges(HumanReview.exits["run"], lambda s: s.get("judge_result", ""), {
         END: "master_flush_after_pm",
@@ -113,37 +117,35 @@ def build_graph(runtime) -> StateGraph:
     })
 
     # ── Phase 2: Dev 出设计 + 编码执行 ──
-    graph.add_edge("master_flush_after_pm", "dev_handoff")
-    graph.add_edge("dev_handoff", "dev_align")
-    graph.add_edge("dev_align", "devwrite_criteria")
-    graph.add_conditional_edges("devwrite_criteria", lambda s: s.get("judge_result", ""), {
+    graph.add_edge("master_flush_after_pm", DevHandoff.entries["run"])
+    graph.add_edge(DevHandoff.exits["run"], DevAlign.entries["dev"])
+    graph.add_edge(DevAlign.exits["judge_exit"], DevWriteCriteria.entries["run"])
+    graph.add_conditional_edges(DevWriteCriteria.exits["run"], lambda s: s.get("judge_result", ""), {
         "review_dev_criteria": "review_dev_criteria",
-        "devwrite_criteria": "devwrite_criteria",
+        "devwrite_criteria": DevWriteCriteria.entries["run"],
     })
-    graph.add_conditional_edges("review_dev_criteria", lambda s: s.get("judge_result", ""), {
-        "dev_write_design": "dev_write_design",
-        "devwrite_criteria": "devwrite_criteria",
+    graph.add_edge(ReviewDevCriteria.exits["to_dev_design"], DevWriteDesign.entries["run"])
+    graph.add_edge(ReviewDevCriteria.exits["write_feedback"], DevWriteCriteria.entries["run"])
+    graph.add_edge(DevWriteDesign.exits["run"], DevReviewDesign.entries["run"])
+    graph.add_edge(DevReviewDesign.exits["run"], DevWritePlan.entries["run"])
+    graph.add_edge(DevReviewDesign.exits["write_feedback"], DevWriteDesign.entries["run"])
+    graph.add_edge(DevWritePlan.exits["run"], DevReviewPlan.entries["run"])
+    graph.add_edge(DevReviewPlan.exits["run"], DevGitInit.entries["run"])
+    graph.add_edge(DevReviewPlan.exits["write_feedback"], DevWritePlan.entries["run"])
+    graph.add_edge(DevGitInit.exits["run"], DevExecStep.entries["run"])
+    graph.add_edge(DevExecStep.exits["run"], DevReviewStep.entries["run"])
+    graph.add_conditional_edges(DevReviewStep.exits["run"], lambda s: s.get("judge_result", ""), {
+        "dev_commit": DevCommit.entries["run"],
+        "step_retry": DevExecStep.entries["run"],
+        "dev_rollback": DevRollback.entries["run"],
+        "dev_escalate": DevEscalate.entries["run"],
     })
-    graph.add_edge("dev_write_design", "dev_write_plan")
-    graph.add_edge("dev_write_plan", "dev_review_plan")
-    graph.add_conditional_edges("dev_review_plan", lambda s: s.get("judge_result", ""), {
-        "dev_exec": "dev_git_init",
-        "dev_write_plan": "dev_write_plan",
-    })
-    graph.add_edge("dev_git_init", "dev_exec_step")
-    graph.add_edge("dev_exec_step", "dev_review_step")
-    graph.add_conditional_edges("dev_review_step", lambda s: s.get("judge_result", ""), {
-        "dev_commit": "dev_commit",
-        "step_retry": "dev_exec_step",
-        "dev_rollback": "dev_rollback",
-        "dev_escalate": "dev_escalate",
-    })
-    graph.add_conditional_edges("dev_commit", lambda s: s.get("judge_result", ""), {
-        "dev_exec_step": "dev_exec_step",
+    graph.add_conditional_edges(DevCommit.exits["run"], lambda s: s.get("judge_result", ""), {
+        "dev_exec_step": DevExecStep.entries["run"],
         "done": "master_flush_after_dev",
     })
-    graph.add_edge("dev_rollback", "dev_exec_step")
-    graph.add_edge("dev_escalate", "dev_exec_step")
+    graph.add_edge(DevRollback.exits["run"], DevExecStep.entries["run"])
+    graph.add_edge(DevEscalate.exits["run"], DevExecStep.entries["run"])
 
     # ── Phase 3: QA ──
     graph.add_edge("master_flush_after_dev", "qa_handoff")
