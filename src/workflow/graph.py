@@ -5,11 +5,9 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
 from .utils import WorkflowState, setup_runtime, interruptible
-from .phase0 import PreFlightPhase
-from .phase1 import (pm_handoff, pm_align, master_reply_pm,
-                     judge_master_reply, clarify_inject,
-                     pmwrite_criteria, review_pm_criteria,
-                     pm_write_doc, review_pm_output, human_review)
+from .phase0 import PreFlightClarify
+from .phase1 import (PMHandoff, PMAlign, MasterReplyPM, JudgeMasterReply, ClarifyInject,
+                     PMWriteCriteria, ReviewPMCriteria, PMWriteDoc, ReviewPMOutput, HumanReview)
 from .phase2 import (dev_handoff, dev_align, devwrite_criteria,
                      review_dev_criteria, dev_write_design,
                      dev_write_plan, dev_review_plan,
@@ -26,12 +24,6 @@ NODES = [
     interruptible(resume_router),
     interruptible(resume_pm_handoff), interruptible(resume_dev_handoff),
     interruptible(resume_qa_handoff), interruptible(resume_dev_exec_step),
-    interruptible(pm_handoff), interruptible(pm_align),
-    interruptible(master_reply_pm), interruptible(judge_master_reply),
-    interruptible(clarify_inject),
-    interruptible(pmwrite_criteria), interruptible(review_pm_criteria),
-    interruptible(pm_write_doc), interruptible(review_pm_output),
-    interruptible(human_review),
     interruptible(dev_handoff), interruptible(dev_align),
     interruptible(devwrite_criteria), interruptible(review_dev_criteria),
     interruptible(dev_write_design), interruptible(dev_write_plan),
@@ -59,13 +51,23 @@ def build_graph(runtime) -> StateGraph:
     # ── 注册所有节点 ──
     for f in NODES:
         graph.add_node(f.__name__, f)
-    PreFlightPhase.register(graph, runtime)
+    PreFlightClarify.register(graph, runtime)
+    PMHandoff.register(graph, runtime)
+    PMAlign.register(graph, runtime)
+    MasterReplyPM.register(graph, runtime)
+    JudgeMasterReply.register(graph, runtime)
+    ClarifyInject.register(graph, runtime)
+    PMWriteCriteria.register(graph, runtime)
+    ReviewPMCriteria.register(graph, runtime)
+    PMWriteDoc.register(graph, runtime)
+    ReviewPMOutput.register(graph, runtime)
+    HumanReview.register(graph, runtime)
 
     graph.set_entry_point("resume_router")
 
     # ── resume_router 路由 ──
     graph.add_conditional_edges("resume_router", lambda s: s.get("phase", ""), {
-        "pre_flight": "pre_flight_init",
+        "pre_flight": PreFlightClarify.entries["init"],
         "resume_pm_handoff": "resume_pm_handoff",
         "resume_dev_handoff": "resume_dev_handoff",
         "resume_qa_handoff": "resume_qa_handoff",
@@ -73,42 +75,41 @@ def build_graph(runtime) -> StateGraph:
     })
 
     # ── resume 节点 → 实际工作节点 ──
-    graph.add_edge("resume_pm_handoff", "pm_handoff")
+    graph.add_edge("resume_pm_handoff", PMHandoff.entries["run"])
     graph.add_edge("resume_dev_handoff", "dev_handoff")
     graph.add_edge("resume_qa_handoff", "qa_handoff")
     graph.add_edge("resume_dev_exec_step", "dev_exec_step")
 
     # ── Phase 0 跨阶段边 ──
-    for src, dst in PreFlightPhase.cross_phase:
-        graph.add_edge(src, dst)
-    graph.add_edge("master_flush_after_clarify", "pm_handoff")
+    graph.add_edge(PreFlightClarify.exits["close"], "master_flush_after_clarify")
+    graph.add_edge("master_flush_after_clarify", PMHandoff.entries["run"])
 
     # ── Phase 1: PM 出方案 ──
-    graph.add_edge("pm_handoff", "pm_align")
-    graph.add_edge("pm_align", "master_reply_pm")
-    graph.add_edge("master_reply_pm", "judge_master_reply")
-    graph.add_conditional_edges("judge_master_reply", lambda s: s.get("judge_result", ""), {
-        "A": "pmwrite_criteria",
-        "B": "pm_align",
-        "C": "clarify_inject",
+    graph.add_edge(PMHandoff.exits["run"], PMAlign.entries["read"])
+    graph.add_edge(PMAlign.exits["read"], MasterReplyPM.entries["run"])
+    graph.add_edge(MasterReplyPM.exits["run"], JudgeMasterReply.entries["run"])
+    graph.add_conditional_edges(JudgeMasterReply.exits["run"], lambda s: s.get("judge_result", ""), {
+        "A": PMWriteCriteria.entries["run"],
+        "B": PMAlign.entries["master_reply"],
+        "C": ClarifyInject.entries["run"],
     })
-    graph.add_edge("clarify_inject", "master_reply_pm")
-    graph.add_conditional_edges("pmwrite_criteria", lambda s: s.get("judge_result", ""), {
-        "review_pm_criteria": "review_pm_criteria",
-        "pmwrite_criteria": "pmwrite_criteria",
+    graph.add_edge(ClarifyInject.exits["run"], MasterReplyPM.entries["run"])
+    graph.add_conditional_edges(PMWriteCriteria.exits["run"], lambda s: s.get("judge_result", ""), {
+        "review_pm_criteria": ReviewPMCriteria.entries["run"],
+        "pmwrite_criteria": PMWriteCriteria.entries["run"],
     })
-    graph.add_conditional_edges("review_pm_criteria", lambda s: s.get("judge_result", ""), {
-        "pm_write_doc": "pm_write_doc",
-        "pmwrite_criteria": "pmwrite_criteria",
+    graph.add_conditional_edges(ReviewPMCriteria.exits["run"], lambda s: s.get("judge_result", ""), {
+        "pm_write_doc": PMWriteDoc.entries["run"],
+        "pmwrite_criteria": PMWriteCriteria.entries["run"],
     })
-    graph.add_edge("pm_write_doc", "review_pm_output")
-    graph.add_conditional_edges("review_pm_output", lambda s: s.get("judge_result", ""), {
-        "human_review": "human_review",
-        "pm_write_doc": "pm_write_doc",
+    graph.add_edge(PMWriteDoc.exits["run"], ReviewPMOutput.entries["run"])
+    graph.add_conditional_edges(ReviewPMOutput.exits["run"], lambda s: s.get("judge_result", ""), {
+        "human_review": HumanReview.entries["run"],
+        "pm_write_doc": PMWriteDoc.entries["run"],
     })
-    graph.add_conditional_edges("human_review", lambda s: s.get("judge_result", ""), {
+    graph.add_conditional_edges(HumanReview.exits["run"], lambda s: s.get("judge_result", ""), {
         END: "master_flush_after_pm",
-        "review_pm_output": "review_pm_output",
+        "review_pm_output": ReviewPMOutput.entries["run"],
     })
 
     # ── Phase 2: Dev 出设计 + 编码执行 ──

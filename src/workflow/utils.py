@@ -81,6 +81,20 @@ def interruptible(func):
     return wrapper
 
 
+def register_nodes(graph, runtime, nodes: dict):
+    """批量注册 interruptible 节点到 LangGraph graph。
+
+    nodes = {node_name: function, ...}
+    每个函数的 __name__ 会被设为 node_name，自动用 interruptible 包装后注册。
+    """
+    for name, fn in nodes.items():
+        fn.__name__ = name
+        wrapped = interruptible(fn)
+        wrapped.__wrapped__._runtime = runtime
+        wrapped._runtime = runtime
+        graph.add_node(name, wrapped)
+
+
 def interrupt_dialog(state) -> dict:
     """用户介入节点：用户可直接向中断时的 agent 对话发消息，EOF 后返回原节点。"""
     global _interrupt_requested

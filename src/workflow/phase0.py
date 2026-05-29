@@ -1,24 +1,22 @@
 """Phase 0: 需求澄清。"""
 import os
 
-from .utils import conv_name, call_agent, judge_reply, interruptible
+from .utils import conv_name, call_agent, judge_reply, interruptible, register_nodes
 from .config import MASTER_SYSTEM_PROMPT, ARTIFACTS_DIR
 
 
-class PreFlightPhase:
-    """Phase 0: 需求澄清 — each static method is a single-call_agent node."""
+class PreFlightClarify:
+    """原 pre_flight_clarify 拆分为单 call_agent 节点后的逻辑分组。"""
 
-    # 跨阶段边 — 连接本阶段的出口节点到下游
-    cross_phase = [
-        ("clarify_close", "master_flush_after_clarify"),
-    ]
+    entries = {"init": "pre_flight_init"}
+    exits = {"close": "clarify_close"}
 
     _runtime = None
 
     @staticmethod
     def init(state) -> dict:
         """Setup context + init Master conversation (Call 1)."""
-        runtime = PreFlightPhase._runtime
+        runtime = PreFlightClarify._runtime
         conv = conv_name("master")
 
         print(f"\n{'='*50}\n  ==> Phase 0: 需求澄清\n{'='*50}")
@@ -47,7 +45,7 @@ class PreFlightPhase:
     @staticmethod
     def ask(state) -> dict:
         """Wait for user input. EOF → close, otherwise → master_reply."""
-        runtime = PreFlightPhase._runtime
+        runtime = PreFlightClarify._runtime
         round_num = int(runtime.context.get_ctx("clarify_round") or "0") + 1
         runtime.context.set_ctx("clarify_round", str(round_num))
 
@@ -70,7 +68,7 @@ class PreFlightPhase:
     @staticmethod
     def master_reply(state) -> dict:
         """Master processes user input (Call 2)."""
-        runtime = PreFlightPhase._runtime
+        runtime = PreFlightClarify._runtime
         conv = runtime.context.get_ctx("master_conv")
         user_input = runtime.context.get_ctx("clarify_user_input")
 
@@ -82,7 +80,7 @@ class PreFlightPhase:
     @staticmethod
     def judge(state) -> dict:
         """Judge evaluates Master's understanding (Call 3 via judge_reply)."""
-        runtime = PreFlightPhase._runtime
+        runtime = PreFlightClarify._runtime
         reply = runtime.context.get_ctx("clarify_master_reply")
 
         result = judge_reply(runtime, "Master", reply, [
@@ -98,7 +96,7 @@ class PreFlightPhase:
     @staticmethod
     def confirm(state) -> dict:
         """User confirms Master's understanding. EOF → close, else → correct."""
-        runtime = PreFlightPhase._runtime
+        runtime = PreFlightClarify._runtime
         end_word = runtime.config.get("input_end_word") or None
 
         cp = runtime.checkpoint.wait(
@@ -117,7 +115,7 @@ class PreFlightPhase:
     @staticmethod
     def correct(state) -> dict:
         """Master receives user correction (Call 4)."""
-        runtime = PreFlightPhase._runtime
+        runtime = PreFlightClarify._runtime
         conv = runtime.context.get_ctx("master_conv")
         correction = runtime.context.get_ctx("clarify_user_input")
 
@@ -128,7 +126,7 @@ class PreFlightPhase:
     @staticmethod
     def close(state) -> dict:
         """Write project_context.md and finish (Call 5)."""
-        runtime = PreFlightPhase._runtime
+        runtime = PreFlightClarify._runtime
         conv = runtime.context.get_ctx("master_conv")
         reason = runtime.context.get_ctx("clarify_reason") or "用户确认完成"
         project_context_path = runtime.context.get_bg("project_context_path") or \
@@ -152,8 +150,7 @@ class PreFlightPhase:
     def register(cls, graph, runtime):
         """Register nodes and intra-phase edges with LangGraph."""
         cls._runtime = runtime
-
-        nodes = {
+        register_nodes(graph, runtime, {
             "pre_flight_init": cls.init,
             "clarify_ask": cls.ask,
             "clarify_master_reply": cls.master_reply,
@@ -161,14 +158,7 @@ class PreFlightPhase:
             "clarify_confirm": cls.confirm,
             "clarify_correct": cls.correct,
             "clarify_close": cls.close,
-        }
-
-        for name, fn in nodes.items():
-            fn.__name__ = name
-            wrapped = interruptible(fn)
-            wrapped.__wrapped__._runtime = runtime
-            wrapped._runtime = runtime
-            graph.add_node(name, wrapped)
+        })
 
         # ── Intra-phase edges ──
         graph.add_edge("pre_flight_init", "clarify_ask")
