@@ -652,7 +652,8 @@ def dev_commit(state: WorkflowState) -> dict:
         f"你的 Step {step_idx} 已通过审查，请将改动提交到 Git：\n"
         "1. cd 到 Dev/ 目录\n"
         "2. git add 相关文件——不要将测试中间产物、缓存文件等无关内容 add 进去\n"
-        "3. git commit -m \"Step {step_idx}: <提交说明>\"\n\n"
+        "3. 鼓励编辑或者创建.gitignore文件来排除这些产物，以便后续的管理。"
+        "4. git commit -m \"Step {step_idx}: <提交说明>\"\n\n"
         "完成后回复确认。")
 
     runtime.logger.log_event("phase_completed", detail=f"Dev Step {step_idx} 代码已提交")

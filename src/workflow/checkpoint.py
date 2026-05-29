@@ -71,14 +71,15 @@ def _restore_dev_conv(runtime, step_idx):
 
     injected = (f"{dev_principles}{FLUSH_CONTINUATION_NOTE}"
                 f"你的工作目录：{dev_dir}\n\n"
-                f"请先按顺序执行以下操作：\n"
+                f"请先按顺序执行以下操作，**不要询问确认，直接执行命令**:\n"
                 f"1. 运行 git reset --hard HEAD 清理工作区（回滚所有未提交的改动至上一个commit节点）\n"
                 f"2. 阅读以下文件了解已完成的工作和计划：\n"
                 f"   - 已完成的工作：{{{summary_path}}}\n"
                 f"   - 项目设计文档：{{{design_path}}}\n"
                 f"   - 执行计划：{{{plan_path}}}\n\n"
                 "在Master给你下达命令之前，你只能阅读上下文，不能进行任何产"
-                "出，包括修改、创建任何文件，后续Master会给你下达任务。")
+                "出，包括修改、创建任何文件，后续Master会给你下达任务。"
+                "不要询问你是否要执行这些操作，直接去做。")
     new_conv = conv_name("dev-exec")
     call_agent(runtime, "dev", new_conv, injected)
     runtime.context.set_ctx("dev_conv", new_conv)

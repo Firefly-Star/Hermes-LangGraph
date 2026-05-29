@@ -135,17 +135,17 @@ def user_intervention(state):
 | 文件 | 改动 |
 |------|------|
 | `runtime_config.json` | 新增 `interrupt_hotkey` 配置项 |
-| `src/workflow/utils.py` | 新增：`_interrupt_requested` 标志、`WorkflowInterrupted` 异常、`_keyboard_listener` 后台线程、`start/stop_interrupt_listener`、`interruptible` 装饰器、`user_intervention_node` 节点；修改：`call_agent` 的 `on_chunk` 中检测中断标志并保存现场 |
-| `src/workflow/graph.py` | 所有节点包裹 `interruptible()`、新增 `user_intervention_node` 到图、条件边覆盖所有节点、`main()` 中 start/stop listener |
+| `src/workflow/utils.py` | 新增：`_interrupt_requested` 标志、`WorkflowInterrupted` 异常、`_keyboard_listener` 后台线程、`start/stop_interrupt_listener`、`interruptible` 装饰器、`interrupt_dialog` 节点；修改：`call_agent` 的 `on_chunk` 中检测中断标志并保存现场 |
+| `src/workflow/graph.py` | 所有节点包裹 `interruptible()`、新增 `interrupt_dialog` 到图、条件边覆盖所有节点、`main()` 中 start/stop listener |
 | `src/agent_runtime.py` | `_call_stream` 的 SSE 循环包裹 try/finally `resp.close()`，确保中断后连接释放 |
 
 ### 6. 边界情况
 
 - **中断时 agent 正在执行工具调用**：工具调用的结果可能已经产生但被丢弃。重入后 agent 从对话历史看到之前的工具结果，可以继续使用。
 - **多次中断**：每次中断都保存最新的 `interrupted_node`，后一次覆盖前一次。
-- **在 user_intervention_node 中再次中断**：`call_agent` 的 `WorkflowInterrupted` 被节点内的 `try/except` 捕获，只打断当前回复，不返回原节点。
+- **在 interrupt_dialog 中再次中断**：`call_agent` 的 `WorkflowInterrupted` 被节点内的 `try/except` 捕获，只打断当前回复，不返回原节点。
 - **键盘监听与 input() 冲突**：后台线程检测到 Ctrl+U 时不应消费 stdin 字符，只设置标志。`input()` 读取用户输入由正常流程处理，不会抢占。中断标志会延迟到下一个 `call_agent` 的 `on_chunk` 才被消费。
-- **中断标志残留**：进入 `user_intervention_node` 时主动清除残留标志，避免刚进入就被送回原节点。
+- **中断标志残留**：进入 `interrupt_dialog` 时主动清除残留标志，避免刚进入就被送回原节点。
 
 ## 后续规划
 

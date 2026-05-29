@@ -5,7 +5,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
 from .utils import WorkflowState, setup_runtime, interruptible
-from .phase0 import pre_flight_clarify
+from .phase0 import PreFlightPhase
 from .phase1 import (pm_handoff, pm_align, master_reply_pm,
                      judge_master_reply, clarify_inject,
                      pmwrite_criteria, review_pm_criteria,
@@ -26,7 +26,6 @@ NODES = [
     interruptible(resume_router),
     interruptible(resume_pm_handoff), interruptible(resume_dev_handoff),
     interruptible(resume_qa_handoff), interruptible(resume_dev_exec_step),
-    interruptible(pre_flight_clarify),
     interruptible(pm_handoff), interruptible(pm_align),
     interruptible(master_reply_pm), interruptible(judge_master_reply),
     interruptible(clarify_inject),
@@ -60,12 +59,13 @@ def build_graph(runtime) -> StateGraph:
     # ── 注册所有节点 ──
     for f in NODES:
         graph.add_node(f.__name__, f)
+    PreFlightPhase.register(graph, runtime)
 
     graph.set_entry_point("resume_router")
 
     # ── resume_router 路由 ──
     graph.add_conditional_edges("resume_router", lambda s: s.get("phase", ""), {
-        "pre_flight": "pre_flight_clarify",
+        "pre_flight": "pre_flight_init",
         "resume_pm_handoff": "resume_pm_handoff",
         "resume_dev_handoff": "resume_dev_handoff",
         "resume_qa_handoff": "resume_qa_handoff",
@@ -78,8 +78,9 @@ def build_graph(runtime) -> StateGraph:
     graph.add_edge("resume_qa_handoff", "qa_handoff")
     graph.add_edge("resume_dev_exec_step", "dev_exec_step")
 
-    # ── Phase 0: 需求澄清 ──
-    graph.add_edge("pre_flight_clarify", "master_flush_after_clarify")
+    # ── Phase 0 跨阶段边 ──
+    for src, dst in PreFlightPhase.cross_phase:
+        graph.add_edge(src, dst)
     graph.add_edge("master_flush_after_clarify", "pm_handoff")
 
     # ── Phase 1: PM 出方案 ──

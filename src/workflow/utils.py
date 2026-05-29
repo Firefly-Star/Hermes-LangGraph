@@ -72,24 +72,24 @@ def interruptible(func):
         except WorkflowInterrupted:
             rt = wrapper._runtime
             rt.context.set_ctx("interrupted_node", func.__name__)
-            # 内联调用用户介入，不走图路由（固定边无法路由到 user_intervention_node）
-            user_intervention_node._runtime = rt
-            user_intervention_node(state)
+            # 内联调用用户介入，不走图路由（固定边无法路由到 interrupt_dialog）
+            interrupt_dialog._runtime = rt
+            interrupt_dialog(state)
             # 用户结束后从头重入当前节点
             return func(state)
     wrapper.__name__ = func.__name__
     return wrapper
 
 
-def user_intervention_node(state) -> dict:
+def interrupt_dialog(state) -> dict:
     """用户介入节点：用户可直接向中断时的 agent 对话发消息，EOF 后返回原节点。"""
     global _interrupt_requested
     _interrupt_requested = False  # 清掉残留 flag，避免刚进来就被中断
 
-    runtime = getattr(user_intervention_node, "_runtime", None)
+    runtime = getattr(interrupt_dialog, "_runtime", None)
     agent = runtime.context.get_ctx("interrupted_agent") or "master"
     conv = runtime.context.get_ctx("interrupted_conv") or ""
-    return_node = runtime.context.get_ctx("interrupted_node") or "pre_flight_clarify"
+    return_node = runtime.context.get_ctx("interrupted_node") or "pre_flight_init"
 
     end_word = runtime.config.get("input_end_word") or None
 
