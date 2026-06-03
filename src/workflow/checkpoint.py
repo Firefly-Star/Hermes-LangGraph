@@ -2,7 +2,7 @@
 import os, json, time, shutil
 from typing import Optional
 
-from .config import FLUSH_CONTINUATION_NOTE, CHECKPOINT_FILE, HANDOFFS_DIR
+from .prompt import FLUSH_CONTINUATION_NOTE, CHECKPOINT_FILE, HANDOFFS_DIR
 from .utils import conv_name, call_agent, open_master_conv, register_nodes
 
 

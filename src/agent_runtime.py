@@ -651,7 +651,7 @@ class Config:
 
     def _flatten_sections(self):
         """将 paths/limits/interaction 等分节的值提升到顶层，兼容扁平 key 访问。"""
-        for section in ("paths", "limits", "interaction"):
+        for section in ("paths", "limits", "interaction", "dirs"):
             if section in self._data and isinstance(self._data[section], dict):
                 for k, v in self._data[section].items():
                     if k not in self._data:

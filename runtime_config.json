@@ -1,7 +1,7 @@
 {
   "paths": {
     "runtime_dir": "C:/Users/温学周/Desktop/langgraph_test/sandbox/tmp/.agent_runtime",
-    "workspace": "C:/Users/温学周/Desktop/langgraph_test/sandbox/tmp",
+    "workspace": "C:/Users/温学周/Desktop/langgraph_test/sandbox/tmp2",
     "hermes_home": "C:/Users/温学周/AppData/Local/hermes"
   },
   "agents": {
@@ -23,5 +23,11 @@
   "interaction": {
     "input_end_word": "EOF",
     "interrupt_hotkey": "ctrl+u"
+  },
+  "dirs": {
+    "handoffs": "handoffs",
+    "phases": "phases",
+    "artifacts": "artifacts",
+    "checkpoint": "checkpoint.json"
   }
 }

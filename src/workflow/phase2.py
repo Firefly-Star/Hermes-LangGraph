@@ -6,7 +6,7 @@ from .utils import (WorkflowState, conv_name, call_agent, letter_path,
                     read_and_write_letter, judge_reply, clarify_loop,
                     register_nodes, write_criteria, get_step_from_plan,
                     count_steps, WorkflowInterrupted)
-from .config import DEV_SYSTEM_PROMPT, FLUSH_CONTINUATION_NOTE
+from .prompt import DEV_SYSTEM_PROMPT, FLUSH_CONTINUATION_NOTE
 from .checkpoint import save_checkpoint
 from langgraph.graph import END
 

@@ -2,7 +2,7 @@
 import os
 
 from .utils import conv_name, call_agent, register_nodes, clarify_loop
-from .config import MASTER_SYSTEM_PROMPT, ARTIFACTS_DIR
+from .prompt import MASTER_SYSTEM_PROMPT, ARTIFACTS_DIR
 
 
 class PreFlightClarify:

@@ -3,7 +3,7 @@ import os, sys, time, threading, functools
 from typing import TypedDict
 
 import agent_runtime as ap
-from .config import (MASTER_SYSTEM_PROMPT, DEV_SYSTEM_PROMPT,
+from .prompt import (MASTER_SYSTEM_PROMPT, DEV_SYSTEM_PROMPT,
                      FLUSH_CONTINUATION_NOTE, HANDOFFS_DIR)
 
 # ── Agent 中断机制 ──

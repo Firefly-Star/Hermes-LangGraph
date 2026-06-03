@@ -2,7 +2,7 @@
 import os
 
 from .utils import call_agent, ensure_write_file, open_master_conv, register_nodes
-from .config import PHASES_DIR
+from .prompt import PHASES_DIR
 from .checkpoint import save_checkpoint
 
 
