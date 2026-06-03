@@ -14,6 +14,7 @@
 | Phase 2 review | 无 design 审查 | 新增 `DevReviewDesign` 节点 |
 | Phase 2 flush | 单函数 | `MasterFlushPM` 类，2 节点 |
 | Phase 3 flush | 单函数 | `MasterFlushDev` 类，2 节点 |
+| QA 阶段 | `qa_handoff` + `qa_align` 两个独立函数 | `QAHandoff` + `QAAlign` 类，9 节点；扩展为测试全流程（写标准 → 写计划 → 写代码 → 运行 → 修 bug 循环） |
 | Resume 节点 | 5 个独立函数 | `ResumeRouter` 类，5+1 节点 |
 | 中断 flag 清理 | except 块冗余清除 | 全部移除（call_agent 抛出异常前已自清） |
 | ensure_write_file | stream=True | stream=False，不与中断冲突 |
@@ -38,12 +39,12 @@ src/workflow/
 ├── phase0.py         # PreFlightClarify — 需求澄清
 ├── phase1.py         # PMHandoff ~ HumanReview — PM 出方案
 ├── phase2.py         # DevHandoff ~ DevEscalate — Dev 设计 + 编码
-├── phase3.py         # qa_handoff, qa_align — QA 对齐
+├── phase3.py         # QAHandoff + QAAlign + 待实现的 QA 测试全流程
 ├── flush.py          # MasterFlushClarify/PM/Dev — phase 边界 flush
 ├── checkpoint.py     # ResumeRouter + save/load/clear_checkpoint
 ```
 
-`graph.py` 中的 `NODES` 列表只保留尚未 class 化的节点（当前仅 `qa_handoff`、`qa_align`），其余节点通过各类的 `register()` 方法注册。
+`graph.py` 中的 `NODES` 列表已清空（所有节点均为 class + register 模式）。
 
 ## 架构总览
 
@@ -144,6 +145,9 @@ judge_reply(runtime, target_role, reply, options, tag)
 | Dev 执行 | dev | `dev-exec-{ws}-{ts}` |
 | Dev git init | dev | `dev-git-init-{ws}-{ts}` |
 | QA 对齐 | qa | `qa-align-{ws}-{ts}` |
+| QA 测试计划 | qa | `qa-plan-{ws}-{ts}` |
+| QA 测试代码 | qa | `qa-code-{ws}-{ts}` |
+| QA 测试运行 | qa | `qa-run-{ws}-{ts}` |
 
 ## 图结构
 
@@ -279,11 +283,102 @@ DevHandoff → DevAlign.dev → 循环 → judge_exit
                         (全部回到 DevExecStep)
 ```
 
-### Phase 3: QA 对齐
+### Phase 3: QA 测试
 
 ```
-qa_handoff → qa_align → END
+qa_handoff → QAAlign（9 节点对齐循环）→ align done
+                                              │
+                                              ▼
+                                        QAWriteCriteria
+                                              │
+                                              ▼
+                                        ReviewQACriteria
+                                         │           │
+                                      PASS         FAIL
+                                         │           │
+                                         ▼           │
+                                     QAWriteTestPlan │
+                                         │           │
+                                         ▼           │
+                                    MasterReviewPlan │
+                                      │         │    │
+                                   PASS      FAIL────┘
+                                     │
+                                     ▼
+                                 QAWriteTestCase
+                                     │
+                                     ▼
+                                 ReviewerReviewCode
+                                   │           │
+                                PASS         FAIL──┘
+                                  │
+                                  ▼
+                              QARunTests
+                                  │
+                                  ▼
+                            JudgeTestResult
+                              │         │
+                          全部通过    有 bug
+                              │         │
+                              ▼         │
+                          MasterFlushQA  │
+                              │          │
+                              ▼          │
+                             END     DevFix
+                                       │
+                                       ▼
+                                   QARunTests（重跑）
+                                       │
+                                       ▼
+                                   JudgeTestResult（循环）
 ```
+
+### 各节点职责
+
+| 节点 | 角色 | call_agent | 产出 |
+|:-----|:-----|:-----------|:-----|
+| QAHandoff | Master | 1（write_letter） | handoff 信 |
+| QAAlign（9 节点） | QA ↔ PM/Dev/Master | 各 1 | understanding.md |
+| QAWriteCriteria | Master | 1（write_criteria） | criteria-qa.md |
+| ReviewQACriteria | Reviewer | 2（review + judge_reply） | 通过/反馈 |
+| QAWriteTestPlan | QA | 1（read_letter） | QA/test-plan.md |
+| MasterReviewPlan | Master | 1（judge_reply） | 通过/反馈 |
+| QAWriteTestCase | QA | 1（read_letter） | QA/tests/ |
+| ReviewerReviewCode | Reviewer | 2（review + judge_reply） | 通过/反馈 |
+| QARunTests | QA | 1（call_agent） | 测试结果 |
+| JudgeTestResult | Judge | 1（judge_reply） | pass / bug 列表 |
+| DevFix | Dev | 1（read_letter） | 修复代码 |
+| MasterFlushQA | Master | 2（write_summary + flush_conv） | 阶段总结 |
+
+### 测试计划不分步
+
+QA 测试计划为一次性产出，不接受分步（与 Dev plan 不同）：
+- 测试计划描述**测什么**（模块、场景、边界）、**怎么测**（E2E / API / 单元）、**测试数据准备**
+- 不拆步骤，因为测试代码的「验收标准」无法像实现代码那样二进制判定
+- Master 审查通过后进入编码
+
+### 测试代码不分步
+
+- QA 一次性编写全部测试脚本
+- Reviewer 一次性审查全部代码
+- 审查不通过退回修改，不拆步骤
+
+### 修 bug 循环
+
+当 JudgeTestResult 判定有 bug 时：
+1. Judge 将 bug 清单写入 bug report 文件
+2. DevFix 节点：Dev 读取 bug report，修复代码
+3. 回到 QARunTests 重新运行测试
+4. 循环直到全部通过
+
+### Conversation 生命周期
+
+| 子阶段 | Agent | Conversation 名 |
+|:-------|:------|:----------------|
+| QA 对齐（已完成） | qa | `qa-align-{ws}-{ts}` |
+| QA 测试计划 | qa | `qa-plan-{ws}-{ts}` |
+| QA 测试代码 | qa | `qa-code-{ws}-{ts}` |
+| QA 测试运行 | qa | `qa-run-{ws}-{ts}` |
 
 ## 关键设计决策
 
@@ -318,10 +413,22 @@ PM 的疑问、Dev 的执行问题都可能回溯到初始需求。Master 单一
 | Phase 0→1 边界 | `pm_handoff` | MasterFlushClarify.flush_conv |
 | Phase 1→2 边界 | `dev_handoff` | MasterFlushPM.flush_conv |
 | Phase 2→3 边界 | `qa_handoff` | MasterFlushDev.flush_conv |
+| QA 对齐完成 | `qa_write_criteria` | QAAlign.judge（A 路由） |
+| QA 标准审查通过 | `qa_write_plan` | ReviewQACriteria.to_qa_plan |
+| QA 计划审查通过 | `qa_write_code` | MasterReviewPlan.to_qa_code |
+| QA 代码审查通过 | `qa_run_tests` | ReviewerReviewCode.to_qa_run |
 | Dev 开始执行前 | `dev_exec_step` | DevGitInit.flush_context |
 | Dev 每步提交后 | `dev_exec_step` | DevCommit.flush_context |
 
-### 7. `.agent_runtime` 目录结构
+### 7. QA 测试不分步
+
+测试计划和测试代码均不分步编写（与 Dev plan 不同）：
+
+**计划不分步**：测试计划的验收标准无法像实现代码那样二进制判定（"这段测试代码是否正确地测试了正确的东西"是主观的），一次性写完 + 一次性审查更高效。
+
+**代码不分步**：测试代码之间有依赖关系（注册测试先于登录测试），拆分步骤需要处理前置条件传递；且测试代码的真正验证在运行时才发生，不是编写时。
+
+### 8. `.agent_runtime` 目录结构
 
 ```
 {runtime_dir}/

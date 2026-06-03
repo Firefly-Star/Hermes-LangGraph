@@ -3,7 +3,7 @@ import os, time
 
 from .utils import (WorkflowState, conv_name, call_agent, letter_path,
                     write_letter, read_letter, read_and_write_letter,
-                    judge_reply, clarify_loop, register_nodes)
+                    judge_reply, clarify_loop, register_nodes, write_criteria)
 from .checkpoint import clear_checkpoint
 
 
@@ -330,3 +330,161 @@ class QAAlign:
         graph.add_edge("qa_align_confirm", "qa_align_record")
         graph.add_edge("qa_align_record", "qa_align_final")
         graph.add_edge("qa_align_final", "qa_align_qa")
+
+
+class QAWriteCriteria:
+    """Master 制定 QA 审核标准 (1 call_agent via write_criteria)."""
+
+    entries = {"run": "qawrite_criteria"}
+    exits = {"run": "qawrite_criteria"}
+
+    _runtime = None
+
+    @staticmethod
+    def run(state) -> dict:
+        runtime = QAWriteCriteria._runtime
+        master_conv = runtime.context.get_ctx("master_conv")
+        project_context_path = runtime.context.get_bg("project_context_path")
+        ws = runtime.paths.workspace
+
+        runtime.logger.log_event("phase_started", detail="QA 审核标准制定")
+
+        feedback_path = runtime.context.get_ctx("qa_criteria_feedback_path") or ""
+        feedback_note = ""
+        if feedback_path and os.path.exists(feedback_path):
+            feedback_note = (
+                "\n## 反馈意见\n"
+                "上一轮审查中有反馈意见需要处理，请先使用 read_file 工具读取反馈意见文件，"
+                "然后根据反馈修改标准。\n\n"
+                f"反馈意见文件：{feedback_path}\n\n"
+            )
+            runtime.context.set_ctx("qa_criteria_feedback_path", "")
+
+        prompt = (
+            "你即将为 QA 的测试计划和测试代码制定审核标准。\n\n"
+            "## 上游约束\n"
+            "标准必须与以下已确认的内容对齐：\n"
+            f"- 项目决策记录：{project_context_path or '（无项目决策记录）'}\n"
+            f"- PRD：{ws}/PM/PRD.md\n"
+            f"- 原型：{ws}/PM/prototype.html\n"
+            f"- QA 对齐理解：{ws}/QA/understanding.md\n\n"
+            "## 标准覆盖维度\n"
+            "1. 测试范围覆盖 — 测试计划是否覆盖了 PRD 中的所有功能点和核心用户路径？\n"
+            "2. 测试方法适宜性 — E2E / API / 单元测试的选择是否合理？\n"
+            "3. 边界与异常覆盖 — 是否涵盖错误处理、空状态、边界值、非法输入？\n"
+            "4. 数据流一致性 — 用户完整链路的测试是否自洽（注册→登录→操作→登出）？\n"
+            "5. 可重复执行性 — 测试是否幂等、不依赖外部状态或环境？\n"
+            "6. 可维护性 — 测试代码是否清晰、有适当的抽象、避免硬编码？\n"
+            "## 下游需求\n"
+            "- QA 将按这些标准撰写测试计划\n"
+            "- Reviewer 将按这些标准审查 QA 的测试计划和测试代码\n\n"
+            "## 要求\n"
+            "文件中只需要写测什么以及怎么样算是测试完成，不需要写审查方法（reviewer 自己知道怎么测）。\n"
+            "请具体、可操作，避免空泛描述。"
+        )
+
+        if feedback_note:
+            prompt = feedback_note + prompt
+
+        write_criteria(
+            runtime, master_conv,
+            title="Master 制定 QA 审核标准",
+            file_path=os.path.join(ws, "criteria-qa.md"),
+            prompt=prompt,
+            context_key="qa_criteria",
+        )
+
+        if feedback_path:
+            os.remove(feedback_path)
+
+        return {"phase": "qa_criteria_done", "judge_result": "review_qa_criteria"}
+
+    @classmethod
+    def register(cls, graph, runtime):
+        cls._runtime = runtime
+        register_nodes(graph, runtime, {"qawrite_criteria": cls.run})
+
+
+class ReviewQACriteria:
+    """Reviewer 审查 QA 审核标准，2 节点 + 1 空节点。"""
+
+    entries = {"review": "review_qa_criteria"}
+    exits = {"to_qa_plan": "review_to_qa_plan",
+             "write_feedback": "review_qa_criteria_feedback"}
+
+    _runtime = None
+
+    @staticmethod
+    def review(state) -> dict:
+        """Reviewer 审查 + judge_reply (2 call_agents)."""
+        runtime = ReviewQACriteria._runtime
+        criteria_path = runtime.context.get_ctx("qa_criteria_path") or ""
+        print(f"\n{'='*60}\n  ==> Reviewer 审查 QA 审核标准\n{'='*60}")
+
+        if not criteria_path or not os.path.exists(criteria_path):
+            print(f"  ✗ QA 审核标准文件不存在：{criteria_path}")
+            return {"phase": "review_qa_criteria_fail", "judge_result": "qawrite_criteria"}
+
+        review = call_agent(runtime, "reviewer", conv_name("review-qa-criteria"),
+            "请审查以下审核标准。\n\n"
+            "逐条检查：\n"
+            "1. 每条标准是否具体、可衡量(审核标准不能带有\"恰当\"，\"合理\"等主观判断)？\n"
+            "2. 每条标准是否都拥有可以完整完成审查的审查方法？(agent可以使用tool如file_read等方法进行审查，不需要标准中写明，但是你可以根据标准确定改用什么方法进行完整的审查)\n"
+            "3. 标准是否覆盖了所有应覆盖的维度？\n"
+            f"审核标准文件在：{criteria_path}\n\n"
+            "逐条给出评价，如果完全没有任何问题，且没有任何可以提高的建议，则最后一行输出 == PASS =="
+            "如果有任何问题或有任何建议则输出 == FAIL ==。\n"
+            "如果 FAIL，写明需要修正的具体问题。",
+            stream=True)
+
+        judge_result = judge_reply(runtime, "Reviewer", review, [
+            "P. 审查通过，所有标准具体可衡量。",
+            "F. 审查不通过，标准需要修正。",
+        ], tag="judge-qa-criteria")
+        passed = judge_result.strip() == "P"
+
+        if passed:
+            runtime.context.set_ctx("qa_criteria_feedback_path", "")
+            runtime.logger.log_event("criteria_reviewed", detail="QA 审核标准审查通过")
+            return {"phase": "review_qa_criteria_done", "judge_result": "qa_write_plan"}
+        else:
+            runtime.context.set_ctx("qa_criteria_review", review)
+            runtime.logger.log_event("criteria_reviewed", detail="QA 审核标准审查不通过")
+            return {"phase": "review_qa_criteria_fail", "judge_result": "qawrite_criteria"}
+
+    @staticmethod
+    def to_qa_plan(state) -> dict:
+        """空节点：PASS 出口 (0 call_agent)."""
+        return state
+
+    @staticmethod
+    def write_feedback(state) -> dict:
+        """写反馈信给 QAWriteCriteria (write_letter)."""
+        runtime = ReviewQACriteria._runtime
+        feedback_path = letter_path(runtime, "reviewer-qa-criteria-feedback")
+        review = runtime.context.get_ctx("qa_criteria_review")
+        if not review:
+            raise RuntimeError("审查意见为空")
+
+        write_letter(runtime, "reviewer", conv_name("review-qa-criteria-feedback"),
+                     feedback_path, "QA 审核标准审查反馈",
+                     f"以下是你在上一轮审查中给出的评审意见，请整理成一封反馈信。\n\n"
+                     f"## 你的审查意见\n{review}")
+        runtime.context.set_ctx("qa_criteria_feedback_path", feedback_path)
+        runtime.context.set_ctx("qa_criteria_review", "")
+        return {"phase": "review_qa_criteria_failed", "judge_result": "qawrite_criteria"}
+
+    @classmethod
+    def register(cls, graph, runtime):
+        cls._runtime = runtime
+        register_nodes(graph, runtime, {
+            "review_qa_criteria": cls.review,
+            "review_to_qa_plan": cls.to_qa_plan,
+            "review_qa_criteria_feedback": cls.write_feedback,
+        })
+
+        # 组内条件路由
+        graph.add_conditional_edges("review_qa_criteria", lambda s: s.get("judge_result", ""), {
+            "qa_write_plan": "review_to_qa_plan",
+            "qawrite_criteria": "review_qa_criteria_feedback",
+        })
