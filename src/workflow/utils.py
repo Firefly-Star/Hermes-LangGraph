@@ -3,7 +3,7 @@ import os, sys, time, threading, functools
 from typing import TypedDict
 
 import agent_runtime as ap
-from .config import (AGENT_CONFIGS, MASTER_SYSTEM_PROMPT, DEV_SYSTEM_PROMPT,
+from .config import (MASTER_SYSTEM_PROMPT, DEV_SYSTEM_PROMPT,
                      FLUSH_CONTINUATION_NOTE, HANDOFFS_DIR)
 
 # ── Agent 中断机制 ──
@@ -360,7 +360,10 @@ def clarify_loop(runtime, conv, title: str, first_hint: str) -> str:
 def setup_runtime(config_path: str = None) -> ap.AgentRuntime:
     """初始化 AgentRuntime，启动所有 Gateway。"""
     runtime = ap.AgentRuntime(config_path)
-    runtime.run_all(AGENT_CONFIGS)
+    agent_configs = runtime.config.get("agents")
+    if not agent_configs:
+        raise RuntimeError("runtime_config.json 缺少 agents 配置")
+    runtime.run_all(agent_configs)
     runtime.logger.log_event("workflow_started")
 
     runtime.context.set_bg("master_principles", MASTER_SYSTEM_PROMPT.format(workspace=runtime.workspace).strip())

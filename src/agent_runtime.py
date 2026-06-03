@@ -647,6 +647,15 @@ class Config:
     def __init__(self, config_path: str):
         self._config_path = config_path
         self._data = _read_json(config_path) if os.path.exists(config_path) else {}
+        self._flatten_sections()
+
+    def _flatten_sections(self):
+        """将 paths/limits/interaction 等分节的值提升到顶层，兼容扁平 key 访问。"""
+        for section in ("paths", "limits", "interaction"):
+            if section in self._data and isinstance(self._data[section], dict):
+                for k, v in self._data[section].items():
+                    if k not in self._data:
+                        self._data[k] = v
 
     def _save(self):
         _write_json(self._config_path, self._data)
@@ -706,9 +715,10 @@ class AgentRuntime:
 
     def __init__(self, config_path: str = None):
         cfg = self._load_config(config_path) if config_path else {}
-        runtime_dir = cfg.get("runtime_dir") or cfg.get("pool_dir", ".agent_runtime")
-        hermes_home = cfg.get("hermes_home", self._detect_hermes_home())
-        workspace = cfg.get("workspace") or os.getcwd()
+        paths_cfg = cfg.get("paths", {})
+        runtime_dir = paths_cfg.get("runtime_dir") or cfg.get("runtime_dir") or cfg.get("pool_dir", ".agent_runtime")
+        hermes_home = paths_cfg.get("hermes_home") or cfg.get("hermes_home", self._detect_hermes_home())
+        workspace = paths_cfg.get("workspace") or cfg.get("workspace") or os.getcwd()
 
         os.makedirs(runtime_dir, exist_ok=True)
 
