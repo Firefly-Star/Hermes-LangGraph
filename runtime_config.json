@@ -28,5 +28,11 @@
   "interaction": {
     "input_end_word": "EOF",
     "interrupt_hotkey": "ctrl+u"
+  },
+  "output": {
+    "targets": [
+      {"type": "console", "enabled": true},
+      {"type": "file", "enabled": true, "path": "C:/Users/温学周/Desktop/langgraph_test/sandbox/tmp2/.agent_runtime/output.log"}
+    ]
   }
 }

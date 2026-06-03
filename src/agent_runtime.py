@@ -13,7 +13,7 @@ AgentRuntime — AI Coding 工作流框架
   AgentRuntime          — 顶层编排，聚合全部模块
 """
 
-import json, os, time, subprocess, requests, threading
+import json, os, sys, time, subprocess, requests, threading
 from dataclasses import dataclass, field, asdict
 from typing import Optional, Any
 
@@ -744,7 +744,93 @@ class InteractionConfig:
 
 
 # ============================================================
-# 7. AgentRuntime — 顶层编排
+# 7. OutputLayer — 替换 sys.stdout，多目标输出
+# ============================================================
+
+class ConsoleSink:
+    """输出到控制台。"""
+    def __init__(self):
+        self._out = sys.__stdout__
+
+    def write(self, s: str):
+        self._out.write(s)
+
+    def flush(self):
+        self._out.flush()
+
+    @property
+    def encoding(self):
+        return self._out.encoding
+
+
+class FileSink:
+    """输出到文件（追加）。"""
+
+    def __init__(self, file_path: str):
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        self._file = open(file_path, "a", encoding="utf-8")
+
+    def write(self, s: str):
+        self._file.write(s)
+
+    def flush(self):
+        self._file.flush()
+
+    def close(self):
+        self._file.close()
+
+
+class OutputLayer:
+    """替代 sys.stdout，按配置路由到多个输出目标。"""
+
+    def __init__(self, targets_config: list):
+        self._sinks = []
+        for t in targets_config:
+            if not t.get("enabled", True):
+                continue
+            tp = t.get("type", "console")
+            if tp == "console":
+                self._sinks.append(ConsoleSink())
+            elif tp == "file":
+                self._sinks.append(FileSink(t["path"]))
+        self._real_stdout = sys.__stdout__
+
+    def write(self, s: str):
+        for sink in self._sinks:
+            sink.write(s)
+
+    def flush(self):
+        for sink in self._sinks:
+            sink.flush()
+
+    @property
+    def encoding(self):
+        return self._real_stdout.encoding
+
+    @property
+    def buffer(self):
+        return self._real_stdout.buffer
+
+    def reconfigure(self, **kwargs):
+        self._real_stdout.reconfigure(**kwargs)
+
+    def isatty(self):
+        return self._real_stdout.isatty()
+
+    def close(self):
+        for sink in self._sinks:
+            if hasattr(sink, "close"):
+                sink.close()
+
+
+@dataclass
+class OutputConfig:
+    """对应 config output 节。"""
+    targets: list = field(default_factory=lambda: [{"type": "console", "enabled": True}])
+
+
+# ============================================================
+# 8. AgentRuntime — 顶层编排
 # ============================================================
 
 class AgentRuntime:
@@ -792,6 +878,15 @@ class AgentRuntime:
         self.context = ContextManager(self.paths.runtime_dir)
         self.conversations = ConversationManager(self.agents, self.logger, self.config, self.paths.runtime_dir)
         self.checkpoint = Checkpoint()
+
+        # ── OutputLayer — 替换 sys.stdout ──
+        output_cfg = cfg.get("output", {}) if config_path else {}
+        if not output_cfg:
+            output_cfg = self.config._data.get("output", {})
+        output_targets = output_cfg.get("targets", [])
+        self.output = OutputConfig(targets=output_targets)
+        if output_targets:
+            sys.stdout = OutputLayer(output_targets)
 
     def run_all(self, configs: dict):
         """注册所有 agent，并行检测/启动 gateway（文件写操作在串行段完成）。"""
@@ -866,6 +961,9 @@ class AgentRuntime:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        if isinstance(sys.stdout, OutputLayer):
+            sys.stdout.close()
+            sys.stdout = sys.__stdout__
         for a in self.agents.list_agents():
             if a["status"] == "running":
                 self._gateway.stop(a.get("pid"))
