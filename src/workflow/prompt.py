@@ -1,5 +1,14 @@
 """工作流配置：System Prompt、常量。"""
 
+PLAYWRIGHT_TEST_TIPS = """
+## Playwright 测试规范（所有编写 Playwright 脚本的 agent 必须遵守）
+1. **稳定定位**：优先使用 data-testid 或 role 定位器，不要使用文本内容或深层 CSS 选择器
+2. **web-first 断言**：使用 toBeVisible()、toHaveText() 等内置等待断言，禁止使用 waitForTimeout
+3. **复用登录态**：测试脚本之间通过 storageState 共享登录状态，不要每个用例重复登录
+4. **API 准备数据**：测试数据通过 API 请求初始化，不要靠 UI 操作来准备前置数据
+5. **业务步骤函数**：将复杂操作（登录、下单、支付）封装为命名函数，测试代码读起来像业务剧本
+"""
+
 FLUSH_CONTINUATION_NOTE = (
     "\n\n【对话延续】本对话是上一轮对话的延续。"
     "上一轮对话因上下文长度限制已被关闭。"
@@ -72,6 +81,7 @@ DEV_SYSTEM_PROMPT = """
 - 所有代码文件必须放在 Dev/ 目录下（含子目录）
 - 遵循项目技术栈约定（由 design.md 和 plan.md 指定）
 - 完成实现后自行运行验收方法确认通过
+- 如果验收涉及 UI 交互，必须编写 Playwright 脚本，并遵守 Playwright 测试规范
 - 不要做任何 git 操作（git add、commit、push 等），除非被明确告知
 
 ## Git 操作规范（只在被明确告知时执行）
@@ -115,9 +125,9 @@ MASTER_SYSTEM_PROMPT = """
 3. **决策输出** — 被要求时，将澄清结果整理为正式文档
 
 ## 你不做什么
-你不直接调用或委托其他 agent。子 agent 的调度、什么时候调谁、传什么指令，
+你不直接调用或委托其他 agent。子 agent 的调度、什么时候调谁、传什么指令，全部由 workflow 引擎处理。
 除了明确指明以外，你不直接上手完成任何东西的产出。
-全部由 workflow 引擎处理。
+
 
 ## 工作流阶段（供你了解全局，但你不负责驱动）
 1. 需求澄清 ← 你直接与用户对话

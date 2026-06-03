@@ -5,6 +5,7 @@ from .utils import (WorkflowState, conv_name, call_agent, letter_path,
                     ensure_write_file, write_letter, read_letter,
                     read_and_write_letter, judge_reply, clarify_loop,
                     write_criteria, interruptible, register_nodes)
+from .prompt import PLAYWRIGHT_TEST_TIPS
 from langgraph.graph import END
 
 
@@ -367,7 +368,7 @@ class ReviewPMCriteria:
             "请审查以下审核标准。\n\n"
             "逐条检查：\n"
             "1. 每条标准是否具体、可衡量(审核标准不能带有\"恰当\"，\"合理\"等主观判断)？\n"
-            "2. 每条标准是否写明了审查方法？(agent可以使用tool如file_read等方法进行审查)\n"
+            "2. 每条标准是否都拥有可以完整完成审查的审查方法？(agent可以使用tool如file_read等方法进行审查，不需要标准中写明，但是你可以根据标准确定改用什么方法进行完整的审查)\n"
             "3. 标准是否覆盖了所有应覆盖的维度？\n"
             f"审核标准文件在：{criteria_path}\n\n"
             "逐条给出评价，最后一行输出 == PASS == 或 == FAIL ==。\n"
@@ -560,7 +561,9 @@ class PMWriteDoc:
                     "     - 明确说明本轮修复的是什么问题\n"
                     "  g. 每次只修复一个根因，不要同时改脚本又改原型\n"
                     "  h. 同一问题连续调试 3 轮仍未通过，"
-                    "使用 Playwright MCP 工具确认问题，不要继续改脚本")
+                    "使用 Playwright MCP 工具确认问题，不要继续改脚本\n"
+                    "编写测试脚本时必须遵守以下规范：\n"
+                    + PLAYWRIGHT_TEST_TIPS)
 
         print(f"  ✓ {os.path.join(pm_dir, 'PRD.md')}")
         print(f"  ✓ {proto_path}")
@@ -637,6 +640,8 @@ class ReviewPMOutput:
             "      - 明确说明本轮修复的是什么问题\n"
             "   h. 每次只修复一个根因，不要同时改脚本又改原型\n"
             "   i. 同一问题连续调试 3 轮仍未通过，使用 Playwright MCP 工具确认问题\n"
+            "编写测试脚本时必须遵守以下规范：\n"
+            + PLAYWRIGHT_TEST_TIPS + "\n"
             "3. 综合 PRD 审查结论和 Playwright 脚本执行结果，逐条输出审查结论。\n"
             "明确列出每个不通过项及其原因。\n"
             "如果全部通过，最后一行回复 == PASS ==\n"

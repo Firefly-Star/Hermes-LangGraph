@@ -6,7 +6,7 @@ from .utils import (WorkflowState, conv_name, call_agent, letter_path,
                     read_and_write_letter, judge_reply, clarify_loop,
                     register_nodes, write_criteria, get_step_from_plan,
                     count_steps, WorkflowInterrupted)
-from .prompt import DEV_SYSTEM_PROMPT, FLUSH_CONTINUATION_NOTE
+from .prompt import DEV_SYSTEM_PROMPT, FLUSH_CONTINUATION_NOTE, PLAYWRIGHT_TEST_TIPS
 from .checkpoint import save_checkpoint
 from langgraph.graph import END
 
@@ -365,7 +365,7 @@ class ReviewDevCriteria:
             "请审查以下审核标准。\n\n"
             "逐条检查：\n"
             "1. 每条标准是否具体、可衡量(审核标准不能带有“恰当”，“合理”等主观判断)？\n"
-            "2. 每条标准是否写明了审查方法？(agent可以使用tool如file_read等方法进行审查)\n"
+            "2. 每条标准是否都拥有可以完整完成审查的审查方法？(agent可以使用tool如file_read等方法进行审查，不需要标准中写明，但是你可以根据标准确定改用什么方法进行完整的审查)\n"
             "3. 标准是否覆盖了所有应覆盖的维度？\n"
             f"审核标准文件在：{criteria_path}\n\n"
             "逐条给出评价，如果完全没有任何问题，且没有任何可以提高的建议，则最后一行输出 == PASS =="
@@ -681,7 +681,9 @@ class DevWritePlan:
             "不允许主观描述（如'确认代码正确'、'检查逻辑'）\n"
             "3. 步骤必须按依赖顺序排列\n"
             "4. 覆盖设计文档中的所有功能点\n"
-            "5. 这个阶段只要求产出计划文档，"
+            "5. 涉及前端 UI 交互的步骤，验收方法必须包含 Playwright E2E 测试并遵守 Playwright 测试规范：\n"
+            + "\n".join("   " + l for l in PLAYWRIGHT_TEST_TIPS.strip().split("\n")) + "\n"
+            "6. 这个阶段只要求产出计划文档，"
             "代码实现需要等进一步指令后再进行。\n"
             f"Plan需要约束未来所有代码的产出至{dev_dir}\n"
             f"审核标准文件参考：{criteria_path}"
@@ -757,7 +759,10 @@ class DevReviewPlan:
             "4. **步骤顺序** — 步骤是否按依赖关系排列？\n"
             "5. **可验证性** — 每个 Step 完成后是否可独立验证？\n"
             "6. **验收覆盖度** — 每个 Step 的验收方法是否覆盖了该步骤的所有改动？\n"
-            "   如果用了 Playwright/E2E 方式，是否写明了具体的验证步骤和预期结果？\n\n"
+            "   如果用了 Playwright/E2E 方式，是否写明了具体的验证步骤和预期结果？\n"
+            "7. **Playwright 规范** — 计划中的 Playwright 测试是否遵守以下规范：\n"
+            + "\n".join("   " + l for l in PLAYWRIGHT_TEST_TIPS.strip().split("\n"))
+            + "\n\n"
             "## Dev 的实现计划\n"
             f"计划文件在：{plan_path}\n\n"
             f"## 审核标准参考\n{criteria_path}\n\n"
@@ -907,6 +912,7 @@ class DevGitInit:
         runtime.conversations.close("dev", dev_conv)
         new_conv = conv_name("dev-exec")
         injected = (f"{dev_principles}{FLUSH_CONTINUATION_NOTE}"
+                    f"{PLAYWRIGHT_TEST_TIPS}\n"
                     f"## 已完成的工作\n{summary_text}\n\n"
                     f"## 项目设计文档\n{design_text}\n\n"
                     f"## 执行计划\n{plan_text}")
@@ -986,6 +992,9 @@ class DevExecStep:
                      f"1. 测试是否覆盖了该步骤改动文件中的全部功能点和边界情况\n"
                      f"2. 测试方法是否符合 plan 中验收方法的要求\n"
                      f"3. 确保测试有意义，不是为了通过而写的空测试\n"
+                     f"4. 涉及前端 UI 交互需使用 Playwright 编写 E2E 测试，遵守以下规范：\n"
+                     + "\n".join("   " + l for l in PLAYWRIGHT_TEST_TIPS.strip().split("\n"))
+                     + "\n"
                      f"完成实现后自行运行验收方法确认通过。"
                      + feedback)
         runtime.context.set_ctx("exec_letter_path", lpath)
@@ -1001,7 +1010,8 @@ class DevExecStep:
         read_letter(runtime, "dev", dev_conv, lpath,
                     "按信中要求实现当前步骤。所有代码产出必须放在 Dev/ 目录下，"
                     "不要将文件生成到项目根目录或其他地方。"
-                    "完成实现后，运行该步骤的验收方法确认通过。\n\n"
+                    "完成实现后，运行该步骤的验收方法确认通过。"
+                    "如果验收涉及前端 UI，使用 Playwright 编写 E2E 测试并遵守 Playwright 测试规范。\n\n"
                     "## Git 操作限制\n"
                     "没有允许不要做任何 git 操作（包括 git add、git commit、git push 等），"
                     "代码只需要写在文件中即可。")
@@ -1051,6 +1061,8 @@ class DevReviewStep:
             "1. 测试是否覆盖了该步骤改动文件中的全部功能点和边界情况\n"
             "2. 测试方法是否符合 plan 中验收方法的要求\n"
             "3. 测试代码本身的质量（断言是否合理、是否有意义）\n"
+            "4. 如果使用了 Playwright，检查是否遵守了以下规范：\n"
+            + "\n".join("   " + l for l in PLAYWRIGHT_TEST_TIPS.strip().split("\n")) + "\n"
             "如果测试覆盖不全或不符合要求，直接输出 == FAIL == 并说明缺失了什么。\n\n"
             "### 第二步：运行测试\n"
             "如果测试代码检查通过，运行验收方法确认实现正确：\n"
@@ -1213,6 +1225,7 @@ class DevCommit:
         runtime.conversations.close("dev", dev_conv)
         new_conv = conv_name("dev-exec")
         injected = (f"{dev_principles}{FLUSH_CONTINUATION_NOTE}"
+                    f"{PLAYWRIGHT_TEST_TIPS}\n"
                     f"## 已完成的工作\n"
                     f"{{{summary_path}}}\n\n"
                     f"## 项目设计文档\n"
