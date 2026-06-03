@@ -50,6 +50,7 @@
 | `max_bug_loop` | 5 | **未使用**。同上 | — |
 | `fail_rollback_threshold` | 3 | Dev 执行步骤连续失败达到此阈值 → 触发回滚（重新实现） | `phase2.py:1101,1114` — `if count >= rollback_threshold: return {"phase": "step_rollback"}` |
 | `fail_escalation_threshold` | 5 | Dev 执行步骤连续失败达到此阈值 → 升级人工决策 | `phase2.py:1102,1111` — `if count >= escalation_threshold: return {"phase": "step_escalate"}` |
+| `gateway_start_timeout` | 30 | Gateway 进程启动后等待 health check 就绪的超时（秒），冷启动需要更长时间 | `agent_runtime.py:237` — `for _ in range(timeout)`；`runtime_config.json` 设为 60 |
 
 ---
 

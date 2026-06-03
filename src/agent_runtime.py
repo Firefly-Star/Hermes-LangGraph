@@ -222,8 +222,10 @@ class GatewayManager:
         except Exception as e:
             return "stopped", f"检测异常: {e}"
 
-    def run(self, profile: str, port: int, api_key: str) -> tuple[bool, str, Optional[int]]:
-        """启动 Gateway 进程，等待就绪。返回 (success, message, pid)。"""
+    def run(self, profile: str, port: int, api_key: str,
+            timeout: int = 30) -> tuple[bool, str, Optional[int]]:
+        """启动 Gateway 进程，等待就绪。返回 (success, message, pid)。
+        timeout: 最长等待秒数（每秒轮询一次 health）。"""
         env = os.environ.copy()
         env["API_SERVER_PORT"] = str(port)
         env["API_SERVER_ENABLED"] = "true"
@@ -234,7 +236,7 @@ class GatewayManager:
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NEW_CONSOLE,
         )
-        for _ in range(30):
+        for _ in range(timeout):
             time.sleep(1)
             try:
                 r = requests.get(f"http://127.0.0.1:{port}/health", timeout=2)
@@ -731,6 +733,7 @@ class LimitsConfig:
     max_bug_loop: int = 5
     fail_rollback_threshold: int = 3
     fail_escalation_threshold: int = 5
+    gateway_start_timeout: int = 30
 
 
 @dataclass
@@ -775,6 +778,7 @@ class AgentRuntime:
             max_bug_loop=self.config.get("max_bug_loop"),
             fail_rollback_threshold=self.config.get("fail_rollback_threshold"),
             fail_escalation_threshold=self.config.get("fail_escalation_threshold"),
+            gateway_start_timeout=self.config.get("gateway_start_timeout") or 30,
         )
         self.interaction = InteractionConfig(
             input_end_word=self.config.get("input_end_word") or "EOF",
@@ -814,7 +818,8 @@ class AgentRuntime:
                     with lock: results[port] = (True, msg, None)
                 else:
                     profile = configs[names[0]]["profile"]
-                    ok, msg, pid = self._gateway.run(profile, port, "kaguya")
+                    ok, msg, pid = self._gateway.run(profile, port, "kaguya",
+                                                     timeout=self.limits.gateway_start_timeout)
                     if not ok:
                         raise RuntimeError(f"启动 {names[0]} gateway 失败: {msg}")
                     with lock: results[port] = (True, f"{', '.join(names)} gateway {msg}", pid)
