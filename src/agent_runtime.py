@@ -13,7 +13,7 @@ AgentRuntime — AI Coding 工作流框架
   AgentRuntime          — 顶层编排，聚合全部模块
 """
 
-import json, os, time, subprocess, requests
+import json, os, time, subprocess, requests, threading
 from dataclasses import dataclass, field, asdict
 from typing import Optional, Any
 
@@ -790,7 +790,7 @@ class AgentRuntime:
         self.checkpoint = Checkpoint()
 
     def run_all(self, configs: dict):
-        """注册所有 agent，逐端口检测/启动 gateway。"""
+        """注册所有 agent，并行检测/启动 gateway（文件写操作在串行段完成）。"""
         for name, cfg in configs.items():
             self.agents.register(name, cfg["profile"], cfg["port"],
                                 api_key=cfg.get("api_key", "kaguya"))
@@ -800,22 +800,42 @@ class AgentRuntime:
             port = cfg["port"]
             ports.setdefault(port, []).append(name)
 
+        # ── 并行检测/启动（不碰文件 I/O）──
+        results = {}
+        lock = threading.Lock()
+
+        def _ensure(port, names):
+            try:
+                if self._gateway.health(port):
+                    status, detail = self._gateway.detect(port, "kaguya", configs[names[0]]["profile"])
+                    if status != "running":
+                        raise RuntimeError(f"端口 {port} 已被占用但不是 Hermes Gateway: {detail}")
+                    msg = f"{', '.join(names)} gateway 就绪（已有）"
+                    with lock: results[port] = (True, msg, None)
+                else:
+                    profile = configs[names[0]]["profile"]
+                    ok, msg, pid = self._gateway.run(profile, port, "kaguya")
+                    if not ok:
+                        raise RuntimeError(f"启动 {names[0]} gateway 失败: {msg}")
+                    with lock: results[port] = (True, f"{', '.join(names)} gateway {msg}", pid)
+            except Exception as e:
+                with lock: results[port] = (False, str(e), None)
+
+        threads = [threading.Thread(target=_ensure, args=(p, ns))
+                   for p, ns in ports.items()]
+        for t in threads: t.start()
+        for t in threads: t.join()
+
+        # ── 串行写入 registry ──
         for port, names in ports.items():
-            if self._gateway.health(port):
-                status, detail = self._gateway.detect(port, "kaguya", configs[names[0]]["profile"])
-                if status != "running":
-                    raise RuntimeError(f"端口 {port} 已被占用但不是 Hermes Gateway: {detail}")
-                self.agents.set_port_status(port, "running")
-                print(f"  {', '.join(names)} gateway 就绪（已有）")
-            else:
-                profile = configs[names[0]]["profile"]
-                ok, msg, pid = self._gateway.run(profile, port, "kaguya")
-                if not ok:
-                    raise RuntimeError(f"启动 {names[0]} gateway 失败: {msg}")
-                self.agents.set_port_status(port, "running")
+            ok, msg, pid = results[port]
+            if not ok:
+                raise RuntimeError(msg)
+            print(f"  {msg}")
+            self.agents.set_port_status(port, "running")
+            if pid is not None:
                 for n in names:
                     self.agents.set_pid(n, pid)
-                print(f"  {', '.join(names)} gateway 就绪")
 
     @staticmethod
     def _load_config(config_path: str) -> dict:
