@@ -6,13 +6,14 @@ config:
 ---
 graph TD;
 	__start__([<p>__start__</p>]):::first
+	qa_handoff(qa_handoff)
+	qa_align(qa_align)
 	resume_router(resume_router)
 	resume_to_pre_flight(resume_to_pre_flight)
 	resume_pm_handoff(resume_pm_handoff)
 	resume_dev_handoff(resume_dev_handoff)
 	resume_qa_handoff(resume_qa_handoff)
 	resume_dev_exec_step(resume_dev_exec_step)
-	resume_phase4_handoff(resume_phase4_handoff)
 	pre_flight_init(pre_flight_init)
 	pre_flight_clarify(pre_flight_clarify)
 	clarify_close(clarify_close)
@@ -76,44 +77,11 @@ graph TD;
 	master_flush_pm_conv(master_flush_pm_conv)
 	master_flush_dev_summary(master_flush_dev_summary)
 	master_flush_dev_conv(master_flush_dev_conv)
-	qa_handoff(qa_handoff)
-	qa_align_qa(qa_align_qa)
-	qa_align_pm(qa_align_pm)
-	qa_align_dev(qa_align_dev)
-	qa_align_judge(qa_align_judge)
-	qa_align_master(qa_align_master)
-	qa_align_confirm(qa_align_confirm)
-	qa_align_record(qa_align_record)
-	qa_align_final(qa_align_final)
-	qa_align_judge_exit(qa_align_judge_exit)
-	qawrite_criteria(qawrite_criteria)
-	review_qa_criteria(review_qa_criteria)
-	review_to_qa_plan(review_to_qa_plan)
-	review_qa_criteria_feedback(review_qa_criteria_feedback)
-	qawrite_plan(qawrite_plan)
-	master_review_plan(master_review_plan)
-	master_review_plan_pass(master_review_plan_pass)
-	master_review_plan_feedback(master_review_plan_feedback)
-	qawrite_code(qawrite_code)
-	reviewer_review_code(reviewer_review_code)
-	reviewer_review_code_pass(reviewer_review_code_pass)
-	reviewer_review_code_feedback(reviewer_review_code_feedback)
-	qa_run_tests(qa_run_tests)
-	judge_test_result(judge_test_result)
-	judge_test_result_pass(judge_test_result_pass)
-	judge_test_result_fail(judge_test_result_fail)
-	dev_fix(dev_fix)
-	master_flush_qa_summary(master_flush_qa_summary)
-	master_flush_qa_conv(master_flush_qa_conv)
-	consistency_audit(consistency_audit)
-	write_maintenance_docs(write_maintenance_docs)
-	delivery_summary(delivery_summary)
 	__end__([<p>__end__</p>]):::last
 	__start__ --> resume_router;
 	clarify_close --> master_flush_clarify_summary;
 	clarify_inject --> clarify_inject_write;
 	clarify_inject_write --> master_reply_pm;
-	consistency_audit --> write_maintenance_docs;
 	dev_align_confirm --> dev_align_record;
 	dev_align_dev --> dev_align_pm;
 	dev_align_final --> dev_align_dev;
@@ -136,7 +104,6 @@ graph TD;
 	dev_escalate_summarize --> dev_escalate_dialogue;
 	dev_exec_step_letter --> dev_exec_step_read;
 	dev_exec_step_read --> dev_review_step;
-	dev_fix --> qa_run_tests;
 	dev_git_flush --> dev_exec_step_letter;
 	dev_git_init --> dev_git_summary;
 	dev_git_summary --> dev_git_flush;
@@ -158,29 +125,19 @@ graph TD;
 	dev_write_design_read --> dev_review_design;
 	dev_write_plan_letter --> dev_write_plan_read;
 	dev_write_plan_read --> dev_review_plan;
-	devwrite_criteria --> review_dev_criteria;
+	devwrite_criteria -.-> review_dev_criteria;
 	human_review -. &nbsp;__end__&nbsp; .-> master_flush_pm_summary;
 	human_review -.-> review_pm_output;
 	judge_master_reply -. &nbsp;C&nbsp; .-> clarify_inject;
 	judge_master_reply -. &nbsp;B&nbsp; .-> pm_align_master_reply;
 	judge_master_reply -. &nbsp;A&nbsp; .-> pmwrite_criteria;
-	judge_test_result -. &nbsp;dev_fix&nbsp; .-> judge_test_result_fail;
-	judge_test_result -. &nbsp;qa_flush&nbsp; .-> judge_test_result_pass;
-	judge_test_result_fail --> dev_fix;
-	judge_test_result_pass --> master_flush_qa_summary;
 	master_flush_clarify_conv --> pm_handoff;
 	master_flush_clarify_summary --> master_flush_clarify_conv;
 	master_flush_dev_conv --> qa_handoff;
 	master_flush_dev_summary --> master_flush_dev_conv;
 	master_flush_pm_conv --> dev_handoff;
 	master_flush_pm_summary --> master_flush_pm_conv;
-	master_flush_qa_conv --> consistency_audit;
-	master_flush_qa_summary --> master_flush_qa_conv;
 	master_reply_pm --> judge_master_reply;
-	master_review_plan -. &nbsp;qa_write_plan&nbsp; .-> master_review_plan_feedback;
-	master_review_plan -. &nbsp;qa_write_code&nbsp; .-> master_review_plan_pass;
-	master_review_plan_feedback --> qawrite_plan;
-	master_review_plan_pass --> qawrite_code;
 	pm_align_master_reply --> pm_align_read;
 	pm_align_read --> master_reply_pm;
 	pm_handoff --> pm_align_read;
@@ -188,34 +145,16 @@ graph TD;
 	pm_read_proto_letter --> review_pm_output;
 	pm_write_prd_letter --> pm_read_prd_letter;
 	pm_write_proto_letter --> pm_read_proto_letter;
-	pmwrite_criteria --> review_pm_criteria;
+	pmwrite_criteria -.-> review_pm_criteria;
 	pre_flight_clarify --> clarify_close;
 	pre_flight_init --> pre_flight_clarify;
-	qa_align_confirm --> qa_align_record;
-	qa_align_dev --> qa_align_judge;
-	qa_align_final --> qa_align_qa;
-	qa_align_judge -. &nbsp;exit&nbsp; .-> qa_align_judge_exit;
-	qa_align_judge -.-> qa_align_master;
-	qa_align_judge -.-> qa_align_qa;
-	qa_align_judge_exit --> qawrite_criteria;
-	qa_align_master -.-> qa_align_confirm;
-	qa_align_master -.-> qa_align_qa;
-	qa_align_pm --> qa_align_dev;
-	qa_align_qa --> qa_align_pm;
-	qa_align_record --> qa_align_final;
-	qa_handoff --> qa_align_qa;
-	qa_run_tests --> judge_test_result;
-	qawrite_code --> reviewer_review_code;
-	qawrite_criteria --> review_qa_criteria;
-	qawrite_plan --> master_review_plan;
+	qa_handoff --> qa_align;
 	resume_dev_exec_step --> dev_exec_step_letter;
 	resume_dev_handoff --> dev_handoff;
-	resume_phase4_handoff --> consistency_audit;
 	resume_pm_handoff --> pm_handoff;
 	resume_qa_handoff --> qa_handoff;
 	resume_router -.-> resume_dev_exec_step;
 	resume_router -.-> resume_dev_handoff;
-	resume_router -. &nbsp;resume_consistency_audit&nbsp; .-> resume_phase4_handoff;
 	resume_router -.-> resume_pm_handoff;
 	resume_router -.-> resume_qa_handoff;
 	resume_router -. &nbsp;pre_flight&nbsp; .-> resume_to_pre_flight;
@@ -228,18 +167,11 @@ graph TD;
 	review_pm_criteria_feedback --> pmwrite_criteria;
 	review_pm_output -.-> human_review;
 	review_pm_output -. &nbsp;pm_write_doc&nbsp; .-> pm_write_prd_letter;
-	review_qa_criteria -. &nbsp;qawrite_criteria&nbsp; .-> review_qa_criteria_feedback;
-	review_qa_criteria -. &nbsp;qa_write_plan&nbsp; .-> review_to_qa_plan;
-	review_qa_criteria_feedback --> qawrite_criteria;
 	review_to_dev_design --> dev_write_design_letter;
 	review_to_pm_doc --> pm_write_prd_letter;
-	review_to_qa_plan --> qawrite_plan;
-	reviewer_review_code -. &nbsp;qa_write_code&nbsp; .-> reviewer_review_code_feedback;
-	reviewer_review_code -. &nbsp;qa_run_tests&nbsp; .-> reviewer_review_code_pass;
-	reviewer_review_code_feedback --> qawrite_code;
-	reviewer_review_code_pass --> qa_run_tests;
-	write_maintenance_docs --> delivery_summary;
-	delivery_summary --> __end__;
+	qa_align --> __end__;
+	devwrite_criteria -.-> devwrite_criteria;
+	pmwrite_criteria -.-> pmwrite_criteria;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc

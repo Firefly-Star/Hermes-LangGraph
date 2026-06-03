@@ -286,7 +286,8 @@ class ConversationManager:
 
     def call(self, agent: str, conversation: str, input_text: str,
              timeout: int = None, stream_callback: callable = None,
-             tool_callback: callable = None) -> CallResult:
+             tool_callback: callable = None,
+             poll_callback: callable = None) -> CallResult:
         cfg = self._agents.get_config(agent)
         if not cfg:
             return CallResult(False, "", error=f"agent {agent} 不存在")
@@ -299,7 +300,7 @@ class ConversationManager:
         input_text = _resolve_file_refs(input_text)
 
         if stream_callback:
-            return self._call_stream(agent, conversation, input_text, port, api_key, timeout, stream_callback, t0, tool_callback)
+            return self._call_stream(agent, conversation, input_text, port, api_key, timeout, stream_callback, t0, tool_callback, poll_callback)
 
         max_retry = self._config.get("max_retry")
         last_error = None
@@ -373,8 +374,10 @@ class ConversationManager:
                 convs.append(conversation)
                 _write_json(self._registry_path, data)
 
-    def _call_stream(self, agent, conversation, input_text, port, api_key, timeout, callback, t0, tool_callback=None):
+    def _call_stream(self, agent, conversation, input_text, port, api_key, timeout, callback, t0, tool_callback=None, poll_callback=None):
         """流式调用 Hermes Gateway。timeout 只约束连接和首块到达时间。"""
+        import queue as _queue
+
         try:
             resp = requests.post(
                 f"http://127.0.0.1:{port}/v1/responses",
@@ -391,9 +394,32 @@ class ConversationManager:
         text_parts = []
         raw_data = None
         error_msg = None
+        line_q = _queue.Queue()
+
+        def _read_lines():
+            """后台线程：读取 SSE 行，放入队列。"""
+            try:
+                for line in resp.iter_lines(decode_unicode=True):
+                    line_q.put(line)
+            except Exception:
+                pass
+            finally:
+                line_q.put(None)   # 结束信号
+
+        t = threading.Thread(target=_read_lines, daemon=True)
+        t.start()
 
         try:
-            for line in resp.iter_lines(decode_unicode=True):
+            while True:
+                try:
+                    line = line_q.get(timeout=0.5)
+                except _queue.Empty:
+                    if poll_callback and not poll_callback():
+                        error_msg = "cancelled"
+                        break
+                    continue
+                if line is None:
+                    break
                 if not line or not line.startswith("data: "):
                     continue
                 try:

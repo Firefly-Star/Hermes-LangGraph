@@ -151,6 +151,7 @@ def conv_name(base: str) -> str:
 def call_agent(runtime, agent: str, conversation: str, prompt: str,
                timeout: int = 180, stream: bool = True) -> str:
     """调用 agent 并返回文本。stream=True 时逐块打印输出。失败抛异常。"""
+    global _interrupt_requested
     print(f"  → 调 {agent}/{conversation}... ", end="", flush=True)
     t0 = time.time()
 
@@ -182,17 +183,30 @@ def call_agent(runtime, agent: str, conversation: str, prompt: str,
                 sys.stdout.buffer.write(chunk.encode(enc, errors="replace"))
                 sys.stdout.flush()
             text_parts.append(chunk)
+
+        def poll_callback():
+            global _interrupt_requested
+            return not _interrupt_requested   # False = 停止读取
+
         try:
             result = runtime.conversations.call(
                 agent, conversation, prompt, timeout=timeout,
-                stream_callback=on_chunk, tool_callback=on_tool)
+                stream_callback=on_chunk, tool_callback=on_tool,
+                poll_callback=poll_callback)
         except WorkflowInterrupted:
             runtime.context.set_ctx("interrupted_agent", agent)
             runtime.context.set_ctx("interrupted_conv", conversation)
             raise
+
+        # poll_callback 中断的路径：_call_stream 正常返回，但标志已设
+        if _interrupt_requested:
+            _interrupt_requested = False
+            runtime.context.set_ctx("interrupted_agent", agent)
+            runtime.context.set_ctx("interrupted_conv", conversation)
+            raise WorkflowInterrupted()
+
         print()
     else:
-        global _interrupt_requested
         result = runtime.conversations.call(agent, conversation, prompt, timeout=timeout)
         if result.text:
             print(result.text)

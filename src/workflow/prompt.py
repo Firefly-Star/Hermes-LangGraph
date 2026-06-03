@@ -3,10 +3,13 @@
 PLAYWRIGHT_TEST_TIPS = """
 ## Playwright 测试规范（所有编写 Playwright 脚本的 agent 必须遵守）
 1. **稳定定位**：优先使用 data-testid 或 role 定位器，不要使用文本内容或深层 CSS 选择器
-2. **web-first 断言**：使用 toBeVisible()、toHaveText() 等内置等待断言，禁止使用 waitForTimeout
+2. **web-first 断言**：使用 expect(page.locator(...)).to_be_visible() 等内置等待断言，禁止使用 time.sleep 等待
 3. **复用登录态**：测试脚本之间通过 storageState 共享登录状态，不要每个用例重复登录
 4. **API 准备数据**：测试数据通过 API 请求初始化，不要靠 UI 操作来准备前置数据
 5. **业务步骤函数**：将复杂操作（登录、下单、支付）封装为命名函数，测试代码读起来像业务剧本
+6. **使用 Python Playwright**：本项目使用 Python Playwright（playwright.sync_api），
+   不要使用 Node.js/Jest Playwright。环境已全局安装，无需在每个项目目录下 pip install。
+   脚本命名格式为 *.py，用 python 直接执行，不要用 npx jest。
 """
 
 FLUSH_CONTINUATION_NOTE = (

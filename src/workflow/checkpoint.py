@@ -50,13 +50,27 @@ def clear_checkpoint(runtime):
 # ── helpers ──────────────────────────────────────────────
 
 def _clean_targets(runtime, targets):
-    """删除 targets 中的文件/目录。"""
+    """删除 targets 中的文件/目录（Windows 兼容）。"""
+    def _rmtree_win(path):
+        def _onerror(func, p, exc_info):
+            # Windows 上 node_modules 等文件可能只读，重试一次
+            try:
+                os.chmod(p, 0o777)
+                func(p)
+            except Exception:
+                pass
+        shutil.rmtree(path, onerror=_onerror)
+
     for t in targets:
         if os.path.isdir(t):
-            shutil.rmtree(t)
+            _rmtree_win(t)
             print(f"  清理目录: {t}")
         elif os.path.isfile(t):
-            os.remove(t)
+            try:
+                os.remove(t)
+            except PermissionError:
+                os.chmod(t, 0o777)
+                os.remove(t)
             print(f"  清理文件: {t}")
 
 
