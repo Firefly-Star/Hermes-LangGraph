@@ -47,6 +47,11 @@
   - 文件不存在 → 自动创建
   - 同上 `_write_json` 的异常情况
 
+### `_resolve_file_refs(text: str) -> str`
+将 prompt 中的 `{文件路径}` 替换为文件内容。非文件路径保留原样。
+- **行为：** 正则匹配 `{...}`，若路径对应真实文件则读取全文替换
+- **边界情况：** 文件读取失败 → 保留原占位符不替换
+
 ---
 
 ## 结果类型（Dataclass）
@@ -62,8 +67,8 @@
 |:-----|:-----|:------|
 | `success` | `bool` | 是否成功 |
 | `text` | `str` | 提取的纯文本（所有 output_text 拼接） |
-| `input_tokens` | `int` | 输入 token 数（整个 conversation 累计） |
-| `output_tokens` | `int` | 输出 token 数（累计） |
+| `input_tokens` | `int` | 输入 token 数（单次请求，非累计） |
+| `output_tokens` | `int` | 输出 token 数（单次请求） |
 | `latency_ms` | `int` | 总耗时（含重试） |
 | `error` | `Optional[str]` | 失败原因 |
 | `raw_data` | `Optional[dict]` | Hermes 返回的完整 JSON |
@@ -88,17 +93,47 @@
 | `action` | `str` | `"continue"` / `"modify"` / `"reject"` |
 | `message` | `str` | 用户输入的文字 |
 
-### `ProgressReport`
-> ⚠️ 已废弃。`ContextManager` 改用三段式结构，不再使用此类型。
+### `PathsConfig`
+| 字段 | 类型 | 说明 |
+|:-----|:-----|:------|
+| `runtime_dir` | `str` | 运行时数据目录（registry、context、logs、handoffs 等） |
+| `workspace` | `str` | 项目工作区根目录 |
+| `hermes_home` | `str` | Hermes 安装根目录 |
+| `handoffs` | `str` | Agent 间通信信件存放目录 |
+| `phases` | `str` | 阶段总结文件存放目录 |
+| `artifacts` | `str` | 项目固化文档存放目录 |
+| `checkpoint` | `str` | checkpoint.json 完整路径 |
+
+### `LimitsConfig`
+| 字段 | 类型 | 默认值 | 说明 |
+|:-----|:-----|:-------|:------|
+| `call_timeout` | `int` | 120 | 单次 API 调用超时（秒） |
+| `max_retry` | `int` | 3 | 失败重试次数 |
+| `max_plan_loop` | `int` | 5 | 计划审核最大循环次数 |
+| `max_bug_loop` | `int` | 5 | Bug 修复最大循环次数 |
+| `fail_rollback_threshold` | `int` | 3 | Dev 失败回滚阈值 |
+| `fail_escalation_threshold` | `int` | 5 | Dev 失败升级阈值 |
+| `gateway_start_timeout` | `int` | 30 | Gateway 启动等待超时（秒） |
+
+### `InteractionConfig`
+| 字段 | 类型 | 默认值 | 说明 |
+|:-----|:-----|:-------|:------|
+| `input_end_word` | `str` | `"EOF"` | 多行输入结束标记 |
+| `interrupt_hotkey` | `str` | `"ctrl+u"` | 工作流中断快捷键 |
+
+### `OutputConfig`
+| 字段 | 类型 | 说明 |
+|:-----|:-----|:------|
+| `targets` | `list` | 输出目标列表，每个目标含 `type`（`"console"`/`"file"`）和 `enabled` |
 
 ---
 
 ## 1. AgentManager
 
-负责 Agent 注册信息的 CRUD，不管理 Gateway 进程。Gateway 生命周期由 GatewayManager 负责。
+负责 Agent 注册信息的 CRUD。包含 profile 创建和环境变量写入。
 
-### `__init__(runtime_dir: str)`
-- **参数：** `runtime_dir` — `.agent_runtime` 目录路径
+### `__init__(runtime_dir: str, hermes_home: str)`
+- **参数：** `runtime_dir` — `.agent_runtime` 目录路径；`hermes_home` — Hermes 安装根目录（用于定位 profiles 目录）
 - **行为：** 从 `registry.json` 加载已注册的 agent 列表。
 - **边界情况：**
   - `registry.json` 不存在 → 视为空注册表
@@ -106,7 +141,10 @@
 
 ### `register(name, profile, port, api_key="kaguya")`
 注册一个新 agent。
-- **行为：** 写入 `registry.json`，status 置为 `"stopped"`。
+- **行为：**
+  1. 检查 profile 目录是否存在，不存在则通过 `hermes profile create --clone-from cg` 自动创建
+  2. 写入 `.env` 文件（`API_SERVER_ENABLED=true`、`API_SERVER_KEY`、`API_SERVER_PORT`）
+  3. 写入 `registry.json`，status 置为 `"stopped"`
 - **边界情况：** `name` 已存在 → 覆盖。
 
 ### `set_port_status(port, status)`
@@ -123,7 +161,7 @@
 
 ### `list_agents() -> list[dict]`
 返回所有 agent 列表。
-- **输出：** `[{"name", "profile", "port", "status", "pid", "conversations"}, ...]`
+- **输出：** `[{"name", "profile", "port", "status", "conversations"}, ...]`
 - **边界情况：** registry 为空 → `[]`
 
 ### `get_config(agent) -> Optional[dict]`
@@ -146,23 +184,21 @@
 ### `detect(port, api_key, expected_profile) -> tuple[str, str]`
 检测端口上的 Gateway 是否可用。返回 `("running"|"stopped", detail)`。
 - **行为：**
-  1. GET `/health` — 不是 Hermes Gateway 则返回 stopped
-  2. POST `/v1/responses`（可选）— 验证 profile 是否匹配
-  3. API 探测失败时（如旧版 Gateway 不兼容）仍返回 running（health 已确认）
+  1. GET `/health` — 检查 `platform` 是否为 `"hermes-agent"`
+  2. POST `/v1/responses` — 验证返回的 `model` 是否匹配 `expected_profile`
+  3. API 探测失败时仍返回 running（health 已确认）
 - **边界情况：** 端口无响应 → `("stopped", "端口无响应")`
 
-### `run(profile, port, api_key) -> tuple[bool, str, Optional[int]]`
+### `run(profile, port, api_key, timeout=30) -> tuple[bool, str, Optional[int]]`
 启动 Gateway 进程。
-- **行为：** 设环境变量 → `subprocess.Popen` → 轮询 30 秒等 `/health` 就绪
-- **边界情况：** 30 秒内未就绪 → `(False, "启动超时", None)`
+- **参数：** `timeout` — 最长等待秒数（每秒轮询一次 health）
+- **行为：** 设环境变量 → `subprocess.Popen`（`CREATE_NEW_CONSOLE`）→ 轮询等待 `/health` 就绪
+- **边界情况：** 超时未就绪 → `(False, "启动超时", None)`
 
 ### `stop(pid)`
 强制停止进程（`taskkill /F /PID`）。
 - **边界情况：** pid 为 None → 静默返回
 
----
-
-## 2. ConversationManager
 ---
 
 ## 2. ConversationManager
@@ -177,18 +213,22 @@
 - **参数：** `stream_callback` — 可选，每收到一个文本块回调 `callback(chunk)`；`tool_callback(name, args)` — 可选，SSE 事件 `response.output_item.added(function_call)` 时实时回调
 - **行为：**
   1. 从 registry 读取 port/api_key
-  2. POST `/v1/responses` 到 Gateway（传 `stream_callback` 时流式读取）
-  3. 超时自动重试（最多 `max_retry + 1` 次）
-  4. 成功后提取 output_text、记录日志、追踪 conversation
-  5. 失败后记录错误日志
+  2. 对 `input_text` 执行 `_resolve_file_refs`——将 `{文件路径}` 替换为文件内容
+  3. POST `/v1/responses` 到 Gateway（传 `stream_callback` 时流式读取）
+  4. 超时自动重试（最多 `max_retry + 1` 次）
+  5. 成功后提取 output_text、记录日志、追踪 conversation
+  6. 失败后记录错误日志
 - **边界情况：**
   - agent 不存在 → `CallResult(success=False, error="agent xxx 不存在")`
   - gateway 未运行 → `CallResult(success=False, error="xxx gateway 未运行")`
   - 每次超时 → 记 `call_retried` 事件，sleep 1s 后重试
   - 所有重试均失败 → `CallResult(success=False, error="重试N次失败: ...")`
   - HTTP 返回非 200 → 记 `last_error` 继续重试
-  - 连接异常（ConnectionError等）→ 被 except 捕获，继续重试
+  - 连接异常（ConnectionError 等）→ 被 except 捕获，继续重试
 - **重试策略：** `max_retry` 次重试（默认 3），加上首次尝试共 4 次。每次重试间隔 1 秒。
+
+### `close(agent, conversation)`
+`close_conversation` 的别名。
 
 ### `close_conversation(agent, conversation)`
 停止追踪指定对话。
@@ -202,6 +242,14 @@
 将 conversation 名加入 registry 的追踪列表。
 - **行为：** 读 registry → 追加（去重）→ 写回。
 - **边界情况：** agent 不存在 → 静默跳过；重复添加 → 自动去重。
+
+### `_call_stream(...)`（内部方法）
+流式调用 Hermes Gateway。解析 SSE 事件流，根据事件类型分发：
+- `response.output_text.delta` → 累积文本并通过 callback 实时返回
+- `response.output_item.added(function_call)` → 调用 tool_callback
+- `response.completed` → 提取完整 response 数据
+- `response.error` → 记录错误
+- **timeout 约束：** 只约束连接和首块到达时间（`(timeout, None)`），后续流式读取无超时
 
 ---
 
@@ -303,11 +351,13 @@
 
 ## 5. Config
 
-配置读写。直接读写 `runtime_config.json`（项目根目录下的配置文件），不再使用独立的 `config.json`。
+配置读写。直接读写 `runtime_config.json`（项目根目录下的配置文件）。
 
 ### `__init__(config_path: str)`
 - **参数：** `config_path` — `runtime_config.json` 的路径
-- **行为：** 直接从 `runtime_config.json` 加载配置。文件不存在时视为空 dict。
+- **行为：**
+  1. 从 `runtime_config.json` 加载配置。文件不存在时视为空 dict。
+  2. 执行 `_flatten_sections()`：将 `paths/limits/interaction` 等分节的值提升到顶层，兼容按 key 直接访问（如 `config.get("call_timeout")` 可读取 `limits.call_timeout`）
 - **注意：** `Config.set()` 会写回 `runtime_config.json`，因此运行时修改的配置项会持久化到同一文件。
 
 ### 默认值
@@ -353,36 +403,84 @@ DEFAULTS = {
 
 ---
 
-## 7. AgentRuntime
+## 7. OutputLayer — sys.stdout 替换层
 
-顶层编排，聚合全部模块。可通过配置文件传入路径。
+多目标输出层。替换 `sys.stdout`，将 `print()` 路由到多个输出目标（控制台、文件等）。
+
+### `ConsoleSink`
+输出到控制台（`sys.__stdout__`）。
+- `write(s)` / `flush()` / `encoding` — 直接委托给 `sys.__stdout__`
+
+### `FileSink`
+输出到文件（追加模式）。
+- `__init__(file_path)` — 自动创建父目录，以 UTF-8 编码打开文件
+- `write(s)` / `flush()` — 写入/刷入文件
+- `close()` — 关闭文件句柄
+
+### `OutputLayer`
+替代 `sys.stdout`，按配置路由到多个 sink。
+- `__init__(targets_config: list)` — 遍历配置，为每个 enabled 的 target 创建对应 sink
+- `write(s)` — 所有 sink 并行写入
+- `flush()` — 所有 sink 刷入
+- `encoding` / `buffer` / `reconfigure()` / `isatty()` / `close()` — 委托给 `sys.__stdout__` 或各 sink
+
+### `OutputConfig`
+```python
+@dataclass
+class OutputConfig:
+    targets: list = field(default_factory=lambda: [{"type": "console", "enabled": True}])
+```
+
+### 启用方式
+`runtime_config.json` 中配置 `output` 节即可自动启用：
+```json
+{
+  "output": {
+    "targets": [
+      {"type": "console", "enabled": true},
+      {"type": "file", "enabled": true, "path": "/path/to/output.log"}
+    ]
+  }
+}
+```
+启用后 `sys.stdout` 被替换为 `OutputLayer` 实例，所有 `print()` 自动路由。工作流退出时（`__exit__`）自动恢复 `sys.__stdout__`。
+
+---
+
+## 8. AgentRuntime
+
+顶层编排，聚合全部模块。
 
 ### `__init__(config_path=None)`
 - **参数：** `config_path` — JSON 配置文件路径。不传则使用默认值。
-- **配置文件格式（runtime_config.json）：**
-  ```json
-  {
-    "runtime_dir": "C:/Users/温学周/Desktop/langgraph_test/.agent_runtime",
-    "workspace": "C:/Users/温学周/Desktop/langgraph_test",
-    "hermes_home": "C:/Users/温学周/AppData/Local/hermes",
-    "call_timeout": 120,
-    "max_retry": 3,
-    "max_plan_loop": 5,
-    "max_bug_loop": 5,
-    "input_end_word": "EOF"
-  }
-  ```
-- **字段说明：**
-  - `runtime_dir` — 运行时数据目录（registry、context、logs、handoffs 等），绝对路径
-  - `workspace` — 项目根目录，用于定位测试产出（PRD.md、prototype.html、criteria.md 等），绝对路径
-  - `hermes_home` — Hermes 安装根目录
-  - 其他配置项（`call_timeout`、`max_retry` 等）由 Config 模块管理，通过 `runtime.config.get()` 读取
-- **默认值：**
-  - `runtime_dir` 不传时默认 `".agent_runtime"`（当前工作目录下）
-  - `workspace` 不传时默认 `os.getcwd()`
-  - `hermes_home` 不传时自动检测（依次检查 `~/AppData/Local/hermes`、`C:\Users\温学周\AppData\Local\hermes`、`C:\Program Files\hermes`）
-  - 其他配置项走 Config 的 DEFAULTS
-- **行为：** 创建 `runtime_dir` 目录，暴露 `self.runtime_dir` 和 `self.workspace`，实例化 Config、Logger、AgentManager、ContextManager、ConversationManager、Checkpoint
+- **行为：**
+  1. 加载配置文件，提取 `paths` 节（runtime_dir、workspace、hermes_home）
+  2. 创建 `runtime_dir` 目录
+  3. 实例化 `Config`（基于 `runtime_config.json`）
+  4. 创建三个类型化数据类：
+     - `self.paths` — `PathsConfig`（所有路径）
+     - `self.limits` — `LimitsConfig`（超时/重试/阈值）
+     - `self.interaction` — `InteractionConfig`（输入结束词/中断快捷键）
+  5. 实例化各子模块：`Logger`、`AgentManager`、`GatewayManager`、`ContextManager`、`ConversationManager`、`Checkpoint`
+  6. 若配置中有 `output.targets`，创建 `OutputLayer` 并替换 `sys.stdout`
+
+### `run_all(configs: dict)`
+注册所有 agent，逐端口检测/启动 gateway。
+- **参数：** `configs` — `{agent名: {"profile": str, "port": int}}`
+- **行为：**
+  1. 遍历 configs 注册全部 agent（registry 写入，含 profile 自动创建和 .env 写入）
+  2. 按端口去重，**并行**检测（`threading.Thread`）：
+     - 已有 Hermes Gateway → 检测 profile 匹配
+     - 无服务 → 启动新 gateway 进程
+  3. **串行**写入 registry（set_port_status / set_pid）
+- **边界情况：** 端口被非 Hermes 服务占用 → 抛出 RuntimeError
+
+### `__enter__ / __exit__`
+上下文管理器。
+- **`__exit__` 行为：**
+  1. 若 `sys.stdout` 是 `OutputLayer` 实例 → 关闭所有 sink，恢复 `sys.stdout = sys.__stdout__`
+  2. 遍历所有 agent，对 status 为 `"running"` 的调用 `self._gateway.stop(pid)`
+  3. 返回 `False`（不抑制异常）
 
 ### `_load_config(config_path)`（静态方法）
 读取 JSON 配置文件。
@@ -394,34 +492,34 @@ DEFAULTS = {
 - **检测依据：** 目录下存在 `profiles/` 子目录
 - **兜底：** 返回 `~/AppData/Local/hermes`
 
-### `run_all(configs: dict)`
-注册所有 agent，逐端口检测/启动 gateway。
-- **参数：** `configs` — `{agent名: {"profile": str, "port": int, "api_key": str}}`
-- **行为：**
-  1. 遍历 configs 注册全部 agent（registry 写入）
-  2. 按端口去重，逐个健康检测
-  3. 已有 Hermes Gateway → 检测 profile 匹配
-  4. 无服务 → 启动新 gateway 进程
-- **边界情况：** 端口被非 Hermes 服务占用 → 抛出 RuntimeError
-
-### `__enter__ / __exit__`
-上下文管理器。退出时遍历所有 agent，对 status 为 `"running"` 的调用 `self._gateway.stop(pid)`。
-- **边界情况：** `__exit__` 始终返回 `False`（不抑制异常）
-
 ---
 
 ## 调用关系图
 
 ```
 AgentRuntime
-├── Config(config_path)            # 读写 runtime_config.json
+├── Config(config_path)            # 读写 runtime_config.json（含 _flatten_sections 分节拍平）
 ├── Logger(runtime_dir)            # 读写 calls.jsonl + events.jsonl
-├── AgentManager(runtime_dir)        # 读写 registry.json（纯 CRUD）
-├── GatewayManager(hermes_home)      # gateway 进程生命周期
-├── ContextManager(runtime_dir)    # 读写 context.json
+├── AgentManager(runtime_dir, hermes_home)
+│   ├── 读写 registry.json（CRUD）
+│   ├── 创建/克隆 Hermes profile
+│   └── 写入 profile/.env（API_SERVER_*）
+├── GatewayManager(hermes_home)    # gateway 进程生命周期
+│   └── health / detect / run / stop
+├── ContextManager(runtime_dir)    # 读写 context.json（三段式）
 ├── ConversationManager(agents, logger, config, runtime_dir)
-│   └── 读写 registry.json（close_conversation / _track_conversation）
-└── Checkpoint()                  # 纯 stdin/stdout，无文件依赖
+│   ├── 读写 registry.json（_track_conversation / close_conversation）
+│   ├── _resolve_file_refs（{路径} → 文件内容）
+│   └── _call_stream（SSE 事件解析）
+├── Checkpoint()                  # 纯 stdin/stdout，无文件依赖
+├── OutputLayer                   # 替换 sys.stdout
+│   ├── ConsoleSink → sys.__stdout__
+│   └── FileSink → output.log
+└── 类型化数据类
+    ├── self.paths → PathsConfig
+    ├── self.limits → LimitsConfig
+    ├── self.interaction → InteractionConfig
+    └── self.output → OutputConfig
 ```
 
 数据文件全部位于 `runtime_dir` 目录下：
@@ -430,11 +528,52 @@ runtime_dir/
 ├── checkpoint.json       # Checkpoint（断线重连）
 ├── registry.json         # AgentManager + ConversationManager
 ├── context.json          # ContextManager
-├── config.json           # Config（从 runtime_config.json 同步）
 ├── calls.jsonl           # Logger
 ├── events.jsonl          # Logger
 ├── artifacts/            # 项目固化文档（project_context.md 等）
 ├── phases/               # 阶段总结（phase-summary-*.md）
 └── handoffs/             # Agent 间通信信件
 ```
-Config 不再在 `runtime_dir` 下独立存储文件，直接读写项目根目录的 `runtime_config.json`。
+
+## 配置文件格式（runtime_config.json）
+
+```json
+{
+  "paths": {
+    "runtime_dir": "C:/path/to/.agent_runtime",
+    "workspace": "C:/path/to/workspace",
+    "hermes_home": "C:/Users/xxx/AppData/Local/hermes",
+    "handoffs": "C:/path/to/.agent_runtime/handoffs",
+    "phases": "C:/path/to/.agent_runtime/phases",
+    "artifacts": "C:/path/to/.agent_runtime/artifacts",
+    "checkpoint": "C:/path/to/.agent_runtime/checkpoint.json"
+  },
+  "agents": {
+    "master":   {"profile": "cg", "port": 8642},
+    "judge":    {"profile": "cg", "port": 8642},
+    "reviewer": {"profile": "cg", "port": 8642},
+    "pm":       {"profile": "pm", "port": 8643},
+    "dev":      {"profile": "dev", "port": 8644},
+    "qa":       {"profile": "qa", "port": 8645}
+  },
+  "limits": {
+    "call_timeout": 120,
+    "max_retry": 3,
+    "max_plan_loop": 5,
+    "max_bug_loop": 5,
+    "fail_rollback_threshold": 3,
+    "fail_escalation_threshold": 5,
+    "gateway_start_timeout": 30
+  },
+  "interaction": {
+    "input_end_word": "EOF",
+    "interrupt_hotkey": "ctrl+u"
+  },
+  "output": {
+    "targets": [
+      {"type": "console", "enabled": true},
+      {"type": "file", "enabled": true, "path": "C:/path/to/output.log"}
+    ]
+  }
+}
+```

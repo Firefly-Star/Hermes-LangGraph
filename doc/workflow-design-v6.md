@@ -34,8 +34,10 @@ requests (2.33.0)
 
 ```
 src/workflow/
+├── __init__.py       # 包标记
+├── __main__.py       # Entry point: python -m src.workflow
 ├── graph.py          # LangGraph 图构建入口 + main()
-├── config.py         # 常量与 prompt 模板
+├── prompt.py         # 常量与 prompt 模板
 ├── utils.py          # 工具函数：call_agent, register_nodes, clarify_loop 等
 ├── phase0.py         # PreFlightClarify — 需求澄清
 ├── phase1.py         # PMHandoff ~ HumanReview — PM 出方案
@@ -460,10 +462,7 @@ PM 的疑问、Dev 的执行问题都可能回溯到初始需求。Master 单一
 | Phase 0→1 边界 | `pm_handoff` | MasterFlushClarify.flush_conv |
 | Phase 1→2 边界 | `dev_handoff` | MasterFlushPM.flush_conv |
 | Phase 2→3 边界 | `qa_handoff` | MasterFlushDev.flush_conv |
-| QA 对齐完成 | `qa_write_criteria` | QAAlign.judge（A 路由） |
-| QA 标准审查通过 | `qa_write_plan` | ReviewQACriteria.to_qa_plan |
-| QA 计划审查通过 | `qa_write_code` | MasterReviewPlan.to_qa_code |
-| QA 代码审查通过 | `qa_run_tests` | ReviewerReviewCode.to_qa_run |
+| Phase 3→4 边界 | `consistency_audit` | MasterFlushQA.flush_conv |
 | Dev 开始执行前 | `dev_exec_step` | DevGitInit.flush_context |
 | Dev 每步提交后 | `dev_exec_step` | DevCommit.flush_context |
 
@@ -491,7 +490,6 @@ Phase 4 的 ConsistencyAudit 是只读审计：
 ├── checkpoint.json          # 断线重连检查点
 ├── context.json             # 三段式上下文（bg/ctx/phase）
 ├── registry.json            # Agent 注册信息
-├── config.json              # 配置
 ├── calls.jsonl              # Agent 调用日志
 ├── events.jsonl             # 事件日志
 ├── artifacts/               # 项目顶层决策等固化文档
@@ -501,3 +499,43 @@ Phase 4 的 ConsistencyAudit 是只读审计：
 └── handoffs/                # Agent 间通信信件
     └── {name}-{ws}-{ts}.md
 ```
+
+### 10. Token 消耗特征与优化方向
+
+#### 10.1 对话层级与 flush 覆盖范围
+
+当前 flush 机制只在以下时机切断对话历史：
+- Phase 边界（MasterFlush：关旧开新）
+- Step 提交后（DevCommit.flush_context：关 dev-exec 开新）
+
+一次 call_agent 内部（一次 HTTP 请求）的 tool call 循环**无法被 flush 打断**。
+
+#### 10.2 单次请求的 token 消耗模型
+
+一次 step exec 中，agent 的内部循环：
+
+```
+read_file(design.md 70KB)   → 文件内容进 history
+read_file(plan.md 33KB)     → 同上
+read_file(design-detail.md) → 同上
+write_file × N              → 代码全文在入参中，进 history
+execute_code(jest)          → 测试日志出参进 history
+execute_code(jest 再跑)     → 又追加
+```
+
+每次 LLM 思考 → tool call → tool result → LLM 再思考的循环中，上一步的入参和出参全部带回给模型。这是 LLM chat API 的架构限制（所有 tool call 在同一 `messages[]` 数组中累加），无法避免。
+
+一次 step exec 实测消耗：**~2.1M input tokens / 10K output tokens**，其中绝大部分来自大文件反复传输和测试日志累积。
+
+#### 10.3 可行的优化方向
+
+| 方向 | 措施 | 预期效果 |
+|:-----|:-----|:---------|
+| 大文件摘要注入 | 不依赖 agent 自行 read_file，改在 system prompt 中注入摘要 | 每次循环省 20K+ tokens |
+| tool result 截断 | execute_code/terminal 返回值只保留关键行（报错、测试计数） | 每次循环省日志全文 |
+| step 内再分段 | exec 写代码和测试分两个 conversation | 失败重跑时历史减半 |
+| 惰性文件加载 | Hermes 端支持 tool result 不累加至 history | 需要 gateway 层支持 |
+
+#### 10.4 性价比结论
+
+工作流 token 效率低于纯手动对话，但这是**用 token 换用户时间**的设计取舍。Hermes 本地推理成本极低（实测 ~140M tokens = 10 元），在本地部署场景下 token 消耗不是瓶颈，无需为省 token 牺牲功能完整性。

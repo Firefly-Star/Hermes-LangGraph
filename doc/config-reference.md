@@ -42,6 +42,9 @@
 
 ## `limits` — 阈值限制
 
+> 读取方式：`runtime.limits.{key}`（通过 `LimitsConfig` 数据类），不再直接 `config.get()`。
+> `Config` 内部通过 `_flatten_sections()` 将 `limits` 节的值拍平到顶层，因此 `config.get("call_timeout")` 也能读到。新代码请走 `runtime.limits`。
+
 | Key | 默认值 | 用途 | 代码引用 |
 |:----|:--------|:-----|:---------|
 | `call_timeout` | 120 | Hermes API 单次调用超时（秒） | `agent_runtime.py:293` — `ConversationManager.call()` 传给 `requests.post(timeout=...)` |
@@ -60,6 +63,39 @@
 |:----|:--------|:-----|:---------|
 | `input_end_word` | `"EOF"` | `runtime.checkpoint.wait()` 的结束词，用户输入此词视为空输入/结束 | `utils.py:108` — `interrupt_dialog`；`utils.py:336` — `clarify_loop`；`phase1.py:689` — 人工审核；`phase2.py:1319` — escalate 对话 |
 | `interrupt_hotkey` | `"ctrl+u"` | 中断 agent 调用的热键 | `graph.py:195` — 传入 `start_interrupt_listener(hotkey)`；`utils.py:14-17` — `HOTKEY_MAP` 定义 |
+
+---
+
+## `output` — 输出路由
+
+控制 `print()` 的输出目标。启用时 `AgentRuntime.__init__` 会创建 `OutputLayer` 替换 `sys.stdout`。
+
+| Key | 类型 | 默认值 | 用途 | 代码引用 |
+|:----|:-----|:--------|:-----|:---------|
+| `targets` | `list` | `[{"type": "console", "enabled": true}]` | 输出目标列表 | `agent_runtime.py:883-889` — `OutputLayer(targets)` → `sys.stdout = OutputLayer(...)` |
+
+每个 target 支持：
+
+| 字段 | 类型 | 说明 |
+|:-----|:-----|:------|
+| `type` | `"console"` / `"file"` | 输出类型 |
+| `enabled` | `bool` | 是否启用 |
+| `path` | `str` | 仅 file 类型，输出文件路径 |
+
+示例配置：
+```json
+"output": {
+  "targets": [
+    {"type": "console", "enabled": true},
+    {"type": "file", "enabled": true, "path": "C:/path/to/output.log"}
+  ]
+}
+```
+
+- `console` 类型写入 `sys.__stdout__`（原始 stdout）
+- `file` 类型以 UTF-8 追加写入指定文件，父目录不存在时自动创建
+- 两种类型可同时启用，互不干扰
+- 工作流退出时（`__exit__`）自动恢复 `sys.stdout = sys.__stdout__`
 
 ---
 

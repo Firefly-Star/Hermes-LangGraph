@@ -6,15 +6,18 @@ An AI coding workflow framework built with LangGraph + Hermes Gateway, enabling 
 
 ```
 src/workflow/
-├── graph.py          — LangGraph StateGraph construction and entry
-├── config.py         — Constants and prompt templates
-├── utils.py          — Utilities: call_agent, register_nodes, clarify_loop, etc.
-├── phase0.py         — PreFlightClarify: requirement clarification
-├── phase1.py         — PMHandoff ~ HumanReview: PM produces PRD + prototype
-├── phase2.py         — DevHandoff ~ DevEscalate: Dev design, code, commit
-├── phase3.py         — qa_handoff, qa_align: QA alignment
-├── flush.py          — MasterFlushClarify/PM/Dev: phase boundary context flush
-└── checkpoint.py     — ResumeRouter: checkpoint save/load and resume routing
+├── __init__.py       # Package marker
+├── __main__.py       # Entry point: python -m src.workflow
+├── graph.py          # LangGraph StateGraph construction and entry
+├── prompt.py         # Constants and prompt templates
+├── utils.py          # Utilities: call_agent, register_nodes, clarify_loop, etc.
+├── phase0.py         # PreFlightClarify: requirement clarification
+├── phase1.py         # PMHandoff ~ HumanReview: PM produces PRD + prototype
+├── phase2.py         # DevHandoff ~ DevEscalate: Dev design, code, commit
+├── phase3.py         # QA full pipeline: criteria → plan → code → run → fix loop
+├── phase4.py         # ConsistencyAudit → WriteMaintenanceDocs → DeliverySummary
+├── flush.py          # MasterFlushClarify/PM/Dev/QA: phase boundary context flush
+└── checkpoint.py     # ResumeRouter: checkpoint save/load and resume routing
 ```
 
 Each logical node group follows a class-based pattern with `entries`/`exits` dicts, one `call_agent` per node for precise interrupt recovery.
@@ -33,13 +36,14 @@ Each logical node group follows a class-based pattern with `entries`/`exits` dic
 ## Workflow
 
 ```
-ResumeRouter → PreFlightClarify → MasterFlush → [PM Phase] → MasterFlush → [Dev Phase] → MasterFlush → [QA Phase] → END
+ResumeRouter → [Phase 0: Clarify] → Flush → [Phase 1: PM] → Flush → [Phase 2: Dev] → Flush → [Phase 3: QA] → Flush → [Phase 4: Delivery] → END
 ```
 
 - **Phase 0**: User ↔ Master clarification, writes project_context.md
-- **Phase 1**: PM writes PRD + prototype, reviewed by Reviewer, human review
+- **Phase 1**: PM writes PRD + prototype, reviewed by Reviewer and human
 - **Phase 2**: Dev designs, codes, commits per step plan; includes rollback and escalation
-- **Phase 3**: QA aligns with PM, Dev, Master; test plan and execution
+- **Phase 3**: QA full pipeline: criteria → test plan → test code → run → bug fix loop
+- **Phase 4**: Consistency audit → maintenance docs → delivery summary
 
 ## Key Features
 
@@ -48,18 +52,23 @@ ResumeRouter → PreFlightClarify → MasterFlush → [PM Phase] → MasterFlush
 - **Checkpoint/Resume**: Save checkpoint at phase boundaries, resume from interruption
 - **Ctrl+U interrupt**: Interrupt agent response mid-stream, enter dialog, then continue
 - **Letter communication**: Agents communicate via markdown letter files in `handoffs/`
+- **Output routing**: Console and/or file output via `sys.stdout` replacement (OutputLayer)
 - **Node organization**: Class-based pattern with `entries`/`exits`/`register` for clean topology
 
 ## Requirements
 
 - Python 3.10+
 - Hermes Gateway (agent gateway service)
-- LangGraph 1.2.0+
 
 ## Quick Start
 
 ```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Configure runtime (edit runtime_config.json)
+# Run the workflow
 python -m src.workflow
 ```
 
-Configure runtime settings in `runtime_config.json`.
+Configuration is managed in `runtime_config.json`. See [config-reference.md](doc/config-reference.md) for details.

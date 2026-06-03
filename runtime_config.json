@@ -1,12 +1,12 @@
 {
   "paths": {
-    "runtime_dir": "C:/Users/温学周/Desktop/langgraph_test/sandbox/tmp2/.agent_runtime",
-    "workspace": "C:/Users/温学周/Desktop/langgraph_test/sandbox/tmp2",
+    "runtime_dir": "C:/Users/温学周/Desktop/langgraph_test/sandbox/test/.agent_runtime",
+    "workspace": "C:/Users/温学周/Desktop/langgraph_test/sandbox/test",
     "hermes_home": "C:/Users/温学周/AppData/Local/hermes",
-    "handoffs": "C:/Users/温学周/Desktop/langgraph_test/sandbox/tmp2/.agent_runtime/handoffs",
-    "phases": "C:/Users/温学周/Desktop/langgraph_test/sandbox/tmp2/.agent_runtime/phases",
-    "artifacts": "C:/Users/温学周/Desktop/langgraph_test/sandbox/tmp2/.agent_runtime/artifacts",
-    "checkpoint": "C:/Users/温学周/Desktop/langgraph_test/sandbox/tmp2/.agent_runtime/checkpoint.json"
+    "handoffs": "C:/Users/温学周/Desktop/langgraph_test/sandbox/test/.agent_runtime/handoffs",
+    "phases": "C:/Users/温学周/Desktop/langgraph_test/sandbox/test/.agent_runtime/phases",
+    "artifacts": "C:/Users/温学周/Desktop/langgraph_test/sandbox/test/.agent_runtime/artifacts",
+    "checkpoint": "C:/Users/温学周/Desktop/langgraph_test/sandbox/test/.agent_runtime/checkpoint.json"
   },
   "agents": {
     "master":   {"profile": "cg", "port": 8642},
@@ -32,7 +32,7 @@
   "output": {
     "targets": [
       {"type": "console", "enabled": true},
-      {"type": "file", "enabled": true, "path": "C:/Users/温学周/Desktop/langgraph_test/sandbox/tmp2/.agent_runtime/output.log"}
+      {"type": "file", "enabled": true, "path": "C:/Users/温学周/Desktop/langgraph_test/sandbox/output.log"}
     ]
   }
 }
