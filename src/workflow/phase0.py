@@ -2,7 +2,7 @@
 import os
 
 from .utils import conv_name, call_agent, register_nodes, clarify_loop
-from .prompt import MASTER_SYSTEM_PROMPT, ARTIFACTS_DIR
+from .prompt import MASTER_SYSTEM_PROMPT
 
 
 class PreFlightClarify:
@@ -27,14 +27,14 @@ class PreFlightClarify:
                     "dev_conv", "devletter_path", "dev_feedback_path"]:
             runtime.context.set_ctx(key, "")
 
-        artifacts_dir = os.path.join(runtime.runtime_dir, ARTIFACTS_DIR)
+        artifacts_dir = runtime.paths.artifacts
         os.makedirs(artifacts_dir, exist_ok=True)
         project_context_path = os.path.join(artifacts_dir, "project_context.md")
         runtime.context.set_bg("project_context_path", project_context_path)
 
         runtime.logger.log_event("phase_started", detail="需求澄清")
         call_agent(runtime, "master", conv,
-                   MASTER_SYSTEM_PROMPT.format(workspace=runtime.workspace).strip())
+                   MASTER_SYSTEM_PROMPT.format(workspace=runtime.paths.workspace).strip())
         runtime.context.set_ctx("master_conv", conv)
 
         runtime.context.set_ctx("clarify_reason", "")
@@ -59,7 +59,7 @@ class PreFlightClarify:
         conv = runtime.context.get_ctx("master_conv")
         reason = runtime.context.get_ctx("clarify_reason") or "用户确认完成"
         project_context_path = runtime.context.get_bg("project_context_path") or \
-            os.path.join(runtime.runtime_dir, ARTIFACTS_DIR, "project_context.md")
+            os.path.join(runtime.paths.artifacts, "project_context.md")
 
         call_agent(runtime, "master", conv,
             "需求澄清阶段已结束。\n"

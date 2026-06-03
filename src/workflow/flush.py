@@ -2,7 +2,6 @@
 import os
 
 from .utils import call_agent, ensure_write_file, open_master_conv, register_nodes
-from .prompt import PHASES_DIR
 from .checkpoint import save_checkpoint
 
 
@@ -20,9 +19,8 @@ class MasterFlushClarify:
         runtime = MasterFlushClarify._runtime
         master_conv = runtime.context.get_ctx("master_conv")
 
-        phases_dir = os.path.join(runtime.runtime_dir, PHASES_DIR)
-        os.makedirs(phases_dir, exist_ok=True)
-        summary_path = os.path.join(phases_dir, "phase-summary-需求澄清.md")
+        os.makedirs(runtime.paths.phases, exist_ok=True)
+        summary_path = os.path.join(runtime.paths.phases, "phase-summary-需求澄清.md")
         artifacts = f"- {runtime.context.get_bg('project_context_path')}"
 
         call_agent(runtime, "master", master_conv,
@@ -85,12 +83,11 @@ class MasterFlushPM:
         """写 PM 出方案阶段总结 (1 call_agent + ensure_write_file)."""
         runtime = MasterFlushPM._runtime
         master_conv = runtime.context.get_ctx("master_conv")
-        ws = runtime.workspace
+        ws = runtime.paths.workspace
         criteria = runtime.context.get_ctx("pm_criteria_path") or f"{ws}/criteria-pm.md"
 
-        phases_dir = os.path.join(runtime.runtime_dir, PHASES_DIR)
-        os.makedirs(phases_dir, exist_ok=True)
-        summary_path = os.path.join(phases_dir, "phase-summary-PM出方案.md")
+        os.makedirs(runtime.paths.phases, exist_ok=True)
+        summary_path = os.path.join(runtime.paths.phases, "phase-summary-PM出方案.md")
         artifacts = (
             f"- {ws}/PM/PRD.md\n"
             f"- {ws}/PM/prototype.html\n"
@@ -157,11 +154,10 @@ class MasterFlushDev:
         """写 Dev 实现阶段总结 (1 call_agent + ensure_write_file)."""
         runtime = MasterFlushDev._runtime
         master_conv = runtime.context.get_ctx("master_conv")
-        ws = runtime.workspace
+        ws = runtime.paths.workspace
 
-        phases_dir = os.path.join(runtime.runtime_dir, PHASES_DIR)
-        os.makedirs(phases_dir, exist_ok=True)
-        summary_path = os.path.join(phases_dir, "phase-summary-Dev实现.md")
+        os.makedirs(runtime.paths.phases, exist_ok=True)
+        summary_path = os.path.join(runtime.paths.phases, "phase-summary-Dev实现.md")
         artifacts = (
             f"- {ws}/Dev/design.md\n"
             f"- {ws}/Dev/plan.md\n"

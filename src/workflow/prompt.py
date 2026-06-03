@@ -1,12 +1,5 @@
 """工作流配置：System Prompt、常量。"""
 
-# === Runtime 目录结构（.agent_runtime/ 下子目录） ===
-HANDOFFS_DIR = "handoffs"
-PHASES_DIR = "phases"
-ARTIFACTS_DIR = "artifacts"
-CHECKPOINT_FILE = "checkpoint.json"
-
-
 FLUSH_CONTINUATION_NOTE = (
     "\n\n【对话延续】本对话是上一轮对话的延续。"
     "上一轮对话因上下文长度限制已被关闭。"

@@ -651,7 +651,7 @@ class Config:
 
     def _flatten_sections(self):
         """将 paths/limits/interaction 等分节的值提升到顶层，兼容扁平 key 访问。"""
-        for section in ("paths", "limits", "interaction", "dirs"):
+        for section in ("paths", "limits", "interaction"):
             if section in self._data and isinstance(self._data[section], dict):
                 for k, v in self._data[section].items():
                     if k not in self._data:
@@ -707,6 +707,40 @@ class Checkpoint:
 
 
 # ============================================================
+# Config 数据类 —— runtime.paths / .limits / .interaction
+# ============================================================
+
+@dataclass
+class PathsConfig:
+    """对应 config paths 节，全部为绝对路径。"""
+    runtime_dir: str
+    workspace: str
+    hermes_home: str
+    handoffs: str
+    phases: str
+    artifacts: str
+    checkpoint: str
+
+
+@dataclass
+class LimitsConfig:
+    """对应 config limits 节。"""
+    call_timeout: int = 120
+    max_retry: int = 3
+    max_plan_loop: int = 5
+    max_bug_loop: int = 5
+    fail_rollback_threshold: int = 3
+    fail_escalation_threshold: int = 5
+
+
+@dataclass
+class InteractionConfig:
+    """对应 config interaction 节。"""
+    input_end_word: str = "EOF"
+    interrupt_hotkey: str = "ctrl+u"
+
+
+# ============================================================
 # 7. AgentRuntime — 顶层编排
 # ============================================================
 
@@ -722,15 +756,37 @@ class AgentRuntime:
 
         os.makedirs(runtime_dir, exist_ok=True)
 
-        self.runtime_dir = runtime_dir
-        self.workspace = workspace
         self.config = Config(config_path or os.path.join(os.getcwd(), "runtime_config.json"))
-        self.logger = Logger(runtime_dir)
+
+        # 类型化数据类
+        self.paths = PathsConfig(
+            runtime_dir=runtime_dir,
+            workspace=workspace,
+            hermes_home=hermes_home,
+            handoffs=self.config.get("handoffs") or os.path.join(runtime_dir, "handoffs"),
+            phases=self.config.get("phases") or os.path.join(runtime_dir, "phases"),
+            artifacts=self.config.get("artifacts") or os.path.join(runtime_dir, "artifacts"),
+            checkpoint=self.config.get("checkpoint") or os.path.join(runtime_dir, "checkpoint.json"),
+        )
+        self.limits = LimitsConfig(
+            call_timeout=self.config.get("call_timeout"),
+            max_retry=self.config.get("max_retry"),
+            max_plan_loop=self.config.get("max_plan_loop"),
+            max_bug_loop=self.config.get("max_bug_loop"),
+            fail_rollback_threshold=self.config.get("fail_rollback_threshold"),
+            fail_escalation_threshold=self.config.get("fail_escalation_threshold"),
+        )
+        self.interaction = InteractionConfig(
+            input_end_word=self.config.get("input_end_word") or "EOF",
+            interrupt_hotkey=self.config.get("interrupt_hotkey") or "ctrl+u",
+        )
+
+        self.logger = Logger(self.paths.runtime_dir)
         self._hermes_home = hermes_home
-        self.agents = AgentManager(runtime_dir, hermes_home)
+        self.agents = AgentManager(self.paths.runtime_dir, hermes_home)
         self._gateway = GatewayManager(hermes_home)
-        self.context = ContextManager(runtime_dir)
-        self.conversations = ConversationManager(self.agents, self.logger, self.config, runtime_dir)
+        self.context = ContextManager(self.paths.runtime_dir)
+        self.conversations = ConversationManager(self.agents, self.logger, self.config, self.paths.runtime_dir)
         self.checkpoint = Checkpoint()
 
     def run_all(self, configs: dict):

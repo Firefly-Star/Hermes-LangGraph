@@ -2,7 +2,11 @@
   "paths": {
     "runtime_dir": "C:/Users/温学周/Desktop/langgraph_test/sandbox/tmp/.agent_runtime",
     "workspace": "C:/Users/温学周/Desktop/langgraph_test/sandbox/tmp2",
-    "hermes_home": "C:/Users/温学周/AppData/Local/hermes"
+    "hermes_home": "C:/Users/温学周/AppData/Local/hermes",
+    "handoffs": "C:/Users/温学周/Desktop/langgraph_test/sandbox/tmp/.agent_runtime/handoffs",
+    "phases": "C:/Users/温学周/Desktop/langgraph_test/sandbox/tmp/.agent_runtime/phases",
+    "artifacts": "C:/Users/温学周/Desktop/langgraph_test/sandbox/tmp/.agent_runtime/artifacts",
+    "checkpoint": "C:/Users/温学周/Desktop/langgraph_test/sandbox/tmp/.agent_runtime/checkpoint.json"
   },
   "agents": {
     "master":   {"profile": "cg", "port": 8642},
@@ -23,11 +27,5 @@
   "interaction": {
     "input_end_word": "EOF",
     "interrupt_hotkey": "ctrl+u"
-  },
-  "dirs": {
-    "handoffs": "handoffs",
-    "phases": "phases",
-    "artifacts": "artifacts",
-    "checkpoint": "checkpoint.json"
   }
 }

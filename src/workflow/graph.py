@@ -192,7 +192,7 @@ def main():
     state = _init_state()
     stream_config = {"configurable": {"thread_id": "workflow-1"}}
 
-    hotkey = runtime.config.get("interrupt_hotkey") or ""
+    hotkey = runtime.interaction.interrupt_hotkey or ""
     if hotkey:
         from .utils import start_interrupt_listener, stop_interrupt_listener
         start_interrupt_listener(hotkey)

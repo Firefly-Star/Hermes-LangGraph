@@ -16,7 +16,7 @@ def qa_handoff(state: WorkflowState) -> dict:
     if not master_conv:
         raise RuntimeError("master conversation 不存在")
 
-    ws = runtime.workspace
+    ws = runtime.paths.workspace
     qa_dir = os.path.join(ws, "QA")
     os.makedirs(qa_dir, exist_ok=True)
 
@@ -44,7 +44,7 @@ def qa_align(state: WorkflowState) -> dict:
     """Phase 3b: QA↔PM/Dev/Master 对齐循环。"""
     runtime = getattr(qa_align, "_runtime", None)
     master_conv = runtime.context.get_ctx("master_conv")
-    ws = runtime.workspace
+    ws = runtime.paths.workspace
 
     qa_conv = conv_name("qa-align")
     pm_conv = runtime.context.get_ctx("pm_conv") or conv_name("pm-align")
@@ -184,7 +184,7 @@ def qa_align(state: WorkflowState) -> dict:
                 runtime.context.set_ctx("qa_feedback_path", master_reply_path)
 
         elif judge_result == "B":
-            feedback_dir = os.path.join(runtime.runtime_dir, "handoffs")
+            feedback_dir = runtime.paths.handoffs
             combined_path = os.path.join(feedback_dir, f"qa-combined-feedback-{int(time.time())}.md")
             with open(combined_path, "w", encoding="utf-8") as f:
                 f.write(combined_review)

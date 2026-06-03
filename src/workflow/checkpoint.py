@@ -2,12 +2,12 @@
 import os, json, time, shutil
 from typing import Optional
 
-from .prompt import FLUSH_CONTINUATION_NOTE, CHECKPOINT_FILE, HANDOFFS_DIR
+from .prompt import FLUSH_CONTINUATION_NOTE
 from .utils import conv_name, call_agent, open_master_conv, register_nodes
 
 
 def _cp_path(runtime) -> str:
-    return os.path.join(runtime.runtime_dir, CHECKPOINT_FILE)
+    return runtime.paths.checkpoint
 
 
 def save_checkpoint(runtime, resume_node, phase_name, step_idx=0, summary_path=""):
@@ -63,9 +63,9 @@ def _clean_targets(runtime, targets):
 def _restore_dev_conv(runtime, step_idx):
     """重新创建 Dev 执行对话 + git reset + 重置步进状态。"""
     dev_principles = runtime.context.get_bg("dev_principles")
-    dev_dir = os.path.join(runtime.workspace, "Dev")
+    dev_dir = os.path.join(runtime.paths.workspace, "Dev")
 
-    summary_path = os.path.join(dev_dir, "compact-summary.md")
+    summary_path = os.path.join(runtime.paths.phases, "compact-summary.md")
     design_path = os.path.join(dev_dir, "design.md")
     plan_path = os.path.join(dev_dir, "plan.md")
 
@@ -142,9 +142,9 @@ class ResumeRouter:
     def resume_pm(state) -> dict:
         """恢复 pm 阶段：清产出 + 重建 Master 对话。"""
         runtime = ResumeRouter._runtime
-        ws = runtime.workspace
+        ws = runtime.paths.workspace
         _clean_targets(runtime, [
-            os.path.join(runtime.runtime_dir, HANDOFFS_DIR),
+            runtime.paths.handoffs,
             os.path.join(ws, "PM"),
             os.path.join(ws, "criteria-pm.md"),
         ])
@@ -157,9 +157,9 @@ class ResumeRouter:
     def resume_dev(state) -> dict:
         """恢复 dev 阶段：清产出 + 重建 Master 对话。"""
         runtime = ResumeRouter._runtime
-        ws = runtime.workspace
+        ws = runtime.paths.workspace
         _clean_targets(runtime, [
-            os.path.join(runtime.runtime_dir, HANDOFFS_DIR),
+            runtime.paths.handoffs,
             os.path.join(ws, "Dev"),
         ])
         cp = load_checkpoint(runtime)
@@ -171,9 +171,9 @@ class ResumeRouter:
     def resume_qa(state) -> dict:
         """恢复 qa 阶段：清产出 + 重建 Master 对话。"""
         runtime = ResumeRouter._runtime
-        ws = runtime.workspace
+        ws = runtime.paths.workspace
         _clean_targets(runtime, [
-            os.path.join(runtime.runtime_dir, HANDOFFS_DIR),
+            runtime.paths.handoffs,
             os.path.join(ws, "QA"),
         ])
         cp = load_checkpoint(runtime)
@@ -186,7 +186,7 @@ class ResumeRouter:
         """恢复 dev 执行：清 handoffs + git reset + 重建 Dev 对话，不碰 Master。"""
         runtime = ResumeRouter._runtime
         _clean_targets(runtime, [
-            os.path.join(runtime.runtime_dir, HANDOFFS_DIR),
+            runtime.paths.handoffs,
         ])
         cp = load_checkpoint(runtime)
         _restore_dev_conv(runtime, cp.get("step_idx", 0) if cp else 0)

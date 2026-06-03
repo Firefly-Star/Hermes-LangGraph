@@ -25,7 +25,7 @@ class DevHandoff:
         print(f"\n{'='*60}\n  ==> Phase 2a: Master 写信给 Dev\n{'='*60}")
         master_conv = runtime.context.get_ctx("master_conv")
         project_context_path = runtime.context.get_bg("project_context_path")
-        ws = runtime.workspace
+        ws = runtime.paths.workspace
         lpath = letter_path(runtime, "master-to-dev")
         write_letter(runtime, "master", master_conv, lpath,
                      "Master 给 Dev 的信",
@@ -283,7 +283,7 @@ class DevWriteCriteria:
         runtime = DevWriteCriteria._runtime
         master_conv = runtime.context.get_ctx("master_conv")
         project_context_path = runtime.context.get_bg("project_context_path")
-        ws = runtime.workspace
+        ws = runtime.paths.workspace
 
         runtime.logger.log_event("phase_started", detail="Dev 设计审核标准制定")
 
@@ -447,7 +447,7 @@ class DevWriteDesign:
         if not master_conv:
             raise RuntimeError("master conversation 不存在")
 
-        dev_dir = os.path.join(runtime.workspace, "Dev")
+        dev_dir = os.path.join(runtime.paths.workspace, "Dev")
         os.makedirs(dev_dir, exist_ok=True)
 
         criteria_path = runtime.context.get_ctx("dev_criteria_path") or ""
@@ -532,7 +532,7 @@ class DevReviewDesign:
         runtime = DevReviewDesign._runtime
         print(f"\n{'='*60}\n  ==> Reviewer 审查 Dev 详细设计\n{'='*60}")
 
-        dev_dir = os.path.join(runtime.workspace, "Dev")
+        dev_dir = os.path.join(runtime.paths.workspace, "Dev")
         design_path = os.path.join(dev_dir, "design.md")
         criteria_path = runtime.context.get_ctx("dev_criteria_path") or ""
 
@@ -633,7 +633,7 @@ class DevWritePlan:
         if not master_conv:
             raise RuntimeError("master conversation 不存在")
 
-        dev_dir = os.path.join(runtime.workspace, "Dev")
+        dev_dir = os.path.join(runtime.paths.workspace, "Dev")
         os.makedirs(dev_dir, exist_ok=True)
 
         design_path = os.path.join(dev_dir, "design.md")
@@ -736,7 +736,7 @@ class DevReviewPlan:
         runtime = DevReviewPlan._runtime
         print(f"\n{'='*60}\n  ==> Reviewer 审查 Dev 实现计划\n{'='*60}")
 
-        dev_dir = os.path.join(runtime.workspace, "Dev")
+        dev_dir = os.path.join(runtime.paths.workspace, "Dev")
         plan_path = os.path.join(dev_dir, "plan.md")
         design_path = os.path.join(dev_dir, "design.md")
         criteria_path = runtime.context.get_ctx("dev_criteria_path") or ""
@@ -840,7 +840,7 @@ class DevGitInit:
         dev_conv = runtime.context.get_ctx("dev_conv") or conv_name("dev-git-init")
         runtime.context.set_ctx("dev_conv", dev_conv)
 
-        dev_dir = os.path.join(runtime.workspace, "Dev")
+        dev_dir = os.path.join(runtime.paths.workspace, "Dev")
         runtime.context.set_ctx("dev_git_dir", dev_dir)
         print(f"\n  ── Dev 初始化 Git 仓库 ──")
 
@@ -861,7 +861,7 @@ class DevGitInit:
         runtime = DevGitInit._runtime
         dev_conv = runtime.context.get_ctx("dev_conv")
         dev_dir = runtime.context.get_ctx("dev_git_dir")
-        summary_path = os.path.join(dev_dir, "compact-summary.md")
+        summary_path = os.path.join(runtime.paths.phases, "compact-summary.md")
 
         call_agent(runtime, "dev", dev_conv,
             f"请将你的工作进度写入 {summary_path}。格式如下：\n\n"
@@ -896,7 +896,11 @@ class DevGitInit:
                     return f.read()
             return ""
 
-        summary_text = _read("compact-summary.md")
+        summary_text = ""
+        cp = os.path.join(runtime.paths.phases, "compact-summary.md")
+        if os.path.exists(cp):
+            with open(cp, "r", encoding="utf-8") as f:
+                summary_text = f.read()
         design_text = _read("design.md")
         plan_text = _read("plan.md")
 
@@ -942,8 +946,8 @@ class DevExecStep:
         runtime.context.set_ctx("dev_conv", dev_conv)
 
         step_idx = int(runtime.context.get_ctx("dev_step_index") or "0")
-        plan_path = os.path.join(runtime.workspace, "Dev", "plan.md")
-        design_path = os.path.join(runtime.workspace, "Dev", "design.md")
+        plan_path = os.path.join(runtime.paths.workspace, "Dev", "plan.md")
+        design_path = os.path.join(runtime.paths.workspace, "Dev", "design.md")
 
         step_content = get_step_from_plan(plan_path, step_idx)
         if not step_content:
@@ -963,7 +967,7 @@ class DevExecStep:
             feedback += f"\n\n## 人工决策\n{escalation_decision}"
             runtime.context.set_ctx("dev_escalation_decision", "")
 
-        dev_dir = os.path.join(runtime.workspace, "Dev")
+        dev_dir = os.path.join(runtime.paths.workspace, "Dev")
         os.makedirs(dev_dir, exist_ok=True)
         runtime.context.set_ctx("dev_exec_dir", dev_dir)
 
@@ -1029,8 +1033,8 @@ class DevReviewStep:
 
         step_idx = int(runtime.context.get_ctx("dev_step_index") or "0")
         total = int(runtime.context.get_ctx("dev_total_steps") or "0")
-        plan_path = os.path.join(runtime.workspace, "Dev", "plan.md")
-        design_path = os.path.join(runtime.workspace, "Dev", "design.md")
+        plan_path = os.path.join(runtime.paths.workspace, "Dev", "plan.md")
+        design_path = os.path.join(runtime.paths.workspace, "Dev", "design.md")
 
         step_content = get_step_from_plan(plan_path, step_idx)
         if not step_content:
@@ -1098,8 +1102,8 @@ class DevReviewStep:
                 count = int(runtime.context.get_ctx("dev_step_fail_count") or "0") + 1
                 runtime.context.set_ctx("dev_step_fail_count", str(count))
 
-            rollback_threshold = runtime.config.get("fail_rollback_threshold")
-            escalation_threshold = runtime.config.get("fail_escalation_threshold")
+            rollback_threshold = runtime.limits.fail_rollback_threshold
+            escalation_threshold = runtime.limits.fail_escalation_threshold
             if rollback_threshold is None:
                 raise RuntimeError("config 中缺少 fail_rollback_threshold")
             if escalation_threshold is None:
@@ -1166,9 +1170,9 @@ class DevCommit:
         step_idx = int(runtime.context.get_ctx("commit_step_idx") or "0")
         total = int(runtime.context.get_ctx("dev_total_steps") or "0")
 
-        summary_path = os.path.join(runtime.workspace, "Dev", "compact-summary.md")
-        design_path = os.path.join(runtime.workspace, "Dev", "design.md")
-        plan_path = os.path.join(runtime.workspace, "Dev", "plan.md")
+        summary_path = os.path.join(runtime.paths.phases, "compact-summary.md")
+        design_path = os.path.join(runtime.paths.workspace, "Dev", "design.md")
+        plan_path = os.path.join(runtime.paths.workspace, "Dev", "plan.md")
 
         call_agent(runtime, "dev", dev_conv,
             f"请将你的工作进度写入 {summary_path}。格式如下：\n\n"
@@ -1316,7 +1320,7 @@ class DevEscalate:
         runtime = DevEscalate._runtime
         dev_conv = runtime.context.get_ctx("dev_conv")
         step_idx = int(runtime.context.get_ctx("dev_step_index") or "0")
-        end_word = runtime.config.get("input_end_word") or None
+        end_word = runtime.interaction.input_end_word or None
 
         print("进入对话模式。输入你的意见／修改要求，Dev 将回应。直接 EOF 结束对话。\n")
 

@@ -328,7 +328,7 @@ class PMWriteCriteria:
         write_criteria(
             runtime, master_conv,
             title="Master 制定 PM 审核标准",
-            file_path=os.path.join(runtime.workspace, "criteria-pm.md"),
+            file_path=os.path.join(runtime.paths.workspace, "criteria-pm.md"),
             prompt=prompt,
             context_key="pm_criteria",
         )
@@ -453,7 +453,7 @@ class PMWriteDoc:
         runtime.logger.log_event("phase_started", detail="PM 出方案")
         print(f"\n  ── PM 出方案 ──")
 
-        pm_dir = os.path.join(runtime.workspace, "PM")
+        pm_dir = os.path.join(runtime.paths.workspace, "PM")
         os.makedirs(pm_dir, exist_ok=True)
         runtime.context.set_ctx("pm_dir", pm_dir)
 
@@ -537,7 +537,7 @@ class PMWriteDoc:
         protoletter_path = runtime.context.get_ctx("protoletter_path")
         proto_path = runtime.context.get_ctx("proto_path")
         pm_dir = runtime.context.get_ctx("pm_dir")
-        pm_agent_dir = os.path.join(runtime.workspace, "pm")
+        pm_agent_dir = os.path.join(runtime.paths.workspace, "pm")
         pm_script_dir = os.path.join(pm_agent_dir, "tests")
 
         read_letter(runtime, "pm", pm_conv, protoletter_path,
@@ -597,13 +597,13 @@ class ReviewPMOutput:
         runtime = ReviewPMOutput._runtime
         print(f"\n{'='*60}\n  ==> Reviewer 审查 PM 产出\n{'='*60}")
 
-        criteria_path = os.path.join(runtime.workspace, "criteria-pm.md")
-        prd_path = os.path.join(runtime.workspace, "PM", "PRD.md")
-        proto_path = os.path.join(runtime.workspace, "PM", "prototype.html")
+        criteria_path = os.path.join(runtime.paths.workspace, "criteria-pm.md")
+        prd_path = os.path.join(runtime.paths.workspace, "PM", "PRD.md")
+        proto_path = os.path.join(runtime.paths.workspace, "PM", "prototype.html")
         project_context_path = runtime.context.get_bg("project_context_path") or ""
 
         human_feedback = runtime.context.get_ctx("human_feedback") or "(无人工反馈)"
-        reviewer_dir = os.path.join(runtime.workspace, "reviewer")
+        reviewer_dir = os.path.join(runtime.paths.workspace, "reviewer")
         script_dir = os.path.join(reviewer_dir, "pm")
 
         prompt = "你是一个项目审查员。请根据以下材料审查 PM 的产出。\n"
@@ -675,9 +675,9 @@ class HumanReview:
         """Human reviews PM output. EOF passes, input triggers revision."""
         runtime = HumanReview._runtime
 
-        prd_path = os.path.join(runtime.workspace, "PM", "PRD.md")
-        proto_path = os.path.join(runtime.workspace, "PM", "prototype.html")
-        criteria_path = os.path.join(runtime.workspace, "criteria-pm.md")
+        prd_path = os.path.join(runtime.paths.workspace, "PM", "PRD.md")
+        proto_path = os.path.join(runtime.paths.workspace, "PM", "prototype.html")
+        criteria_path = os.path.join(runtime.paths.workspace, "criteria-pm.md")
 
         print(f"\n{'='*60}\n  ==> 人工审核 PM 产出\n{'='*60}")
         print(f"  PM 产出位置：")
@@ -686,7 +686,7 @@ class HumanReview:
         print(f"    审核标准:   {criteria_path}")
         print()
 
-        end_word = runtime.config.get("input_end_word") or None
+        end_word = runtime.interaction.input_end_word or None
         cp = runtime.checkpoint.wait(
             "人工审核 PM 产出",
             f"请查看以上文件，确认 PM 产出符合要求。\n"

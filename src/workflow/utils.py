@@ -4,7 +4,7 @@ from typing import TypedDict
 
 import agent_runtime as ap
 from .prompt import (MASTER_SYSTEM_PROMPT, DEV_SYSTEM_PROMPT,
-                     FLUSH_CONTINUATION_NOTE, HANDOFFS_DIR)
+                     FLUSH_CONTINUATION_NOTE)
 
 # ── Agent 中断机制 ──
 
@@ -105,7 +105,7 @@ def interrupt_dialog(state) -> dict:
     conv = runtime.context.get_ctx("interrupted_conv") or ""
     return_node = runtime.context.get_ctx("interrupted_node") or "pre_flight_init"
 
-    end_word = runtime.config.get("input_end_word") or None
+    end_word = runtime.interaction.input_end_word or None
 
     print(f"\n{'='*60}")
     print(f"  [用户介入] 正在与 {agent} 对话 (conversation: {conv})")
@@ -218,7 +218,7 @@ def call_agent(runtime, agent: str, conversation: str, prompt: str,
 
 def letter_path(runtime, name: str) -> str:
     """生成 handoff 信件路径。"""
-    handoff_dir = os.path.join(runtime.runtime_dir, HANDOFFS_DIR)
+    handoff_dir = runtime.paths.handoffs
     os.makedirs(handoff_dir, exist_ok=True)
     ws = os.path.basename(os.getcwd())
     ts = time.strftime("%Y%m%d_%H%M%S")
@@ -227,7 +227,7 @@ def letter_path(runtime, name: str) -> str:
 
 def ensure_write_file(runtime, receiver, conv, file_path, max_retry=None):
     """检查文件是否存在，不存在则提醒 agent 写入。max_retry 默认从 config 读。"""
-    max_retry = int(runtime.config.get("write_retry", "2")) if max_retry is None else max_retry
+    max_retry = int(runtime.config.get("write_retry") or "2") if max_retry is None else max_retry
     for attempt in range(max_retry):
         if os.path.exists(file_path):
             return True
@@ -333,7 +333,7 @@ def clarify_loop(runtime, conv, title: str, first_hint: str) -> str:
     global _interrupt_requested
     _interrupt_requested = False
 
-    end_word = runtime.config.get("input_end_word") or None
+    end_word = runtime.interaction.input_end_word or None
 
     round_num = 0
     while True:
@@ -366,8 +366,8 @@ def setup_runtime(config_path: str = None) -> ap.AgentRuntime:
     runtime.run_all(agent_configs)
     runtime.logger.log_event("workflow_started")
 
-    runtime.context.set_bg("master_principles", MASTER_SYSTEM_PROMPT.format(workspace=runtime.workspace).strip())
-    runtime.context.set_bg("dev_principles", DEV_SYSTEM_PROMPT.format(workspace=runtime.workspace).strip())
+    runtime.context.set_bg("master_principles", MASTER_SYSTEM_PROMPT.format(workspace=runtime.paths.workspace).strip())
+    runtime.context.set_bg("dev_principles", DEV_SYSTEM_PROMPT.format(workspace=runtime.paths.workspace).strip())
 
     return runtime
 
