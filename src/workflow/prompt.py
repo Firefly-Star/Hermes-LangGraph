@@ -10,6 +10,10 @@ PLAYWRIGHT_TEST_TIPS = """
 6. **使用 Python Playwright**：本项目使用 Python Playwright（playwright.sync_api），
    不要使用 Node.js/Jest Playwright。环境已全局安装，无需在每个项目目录下 pip install。
    脚本命名格式为 *.py，用 python 直接执行，不要用 npx jest。
+7. **Ant Design 中文文本陷阱**：Ant Design 的 letter-spacing 样式会让渲染出的中文
+   变成"登 录"（字符间带空格），get_by_text("登录") 无法匹配。解决方案：
+   - 优先用 data-testid 或 role 定位器（已经由规则 1 约束）
+   - 如果必须匹配文本，使用 re.compile 模糊匹配，或通过父容器 get_by_role 定位
 """
 
 FLUSH_CONTINUATION_NOTE = (
