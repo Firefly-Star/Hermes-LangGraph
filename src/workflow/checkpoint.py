@@ -140,7 +140,7 @@ class ResumeRouter:
 
     @staticmethod
     def resume_pm(state) -> dict:
-        """恢复 pm 阶段：清产出 + 重建 Master 对话。"""
+        """恢复 pm 阶段：清产出 + 清 context + 重建 Master 对话。"""
         runtime = ResumeRouter._runtime
         ws = runtime.paths.workspace
         _clean_targets(runtime, [
@@ -148,6 +148,11 @@ class ResumeRouter:
             os.path.join(ws, "PM"),
             os.path.join(ws, "criteria-pm.md"),
         ])
+        # 清理 PM 阶段 context 残留，避免拿着上一轮的路径/轮次去找已被删除的信件
+        for key in ("pm_align_round", "masterletter_path", "pmletter_path",
+                     "pm_reply_path", "pm_reply_text", "pm_conv", "master_reply",
+                     "clarify_reason"):
+            runtime.context.set_ctx(key, "")
         cp = load_checkpoint(runtime)
         open_master_conv(runtime, cp.get("summary_path", "") if cp else "")
         print(f"  → 从 PM 阶段继续")
@@ -155,13 +160,26 @@ class ResumeRouter:
 
     @staticmethod
     def resume_dev(state) -> dict:
-        """恢复 dev 阶段：清产出 + 重建 Master 对话。"""
+        """恢复 dev 阶段：清产出 + 清 context + 重建 Master 对话。"""
         runtime = ResumeRouter._runtime
         ws = runtime.paths.workspace
         _clean_targets(runtime, [
             runtime.paths.handoffs,
             os.path.join(ws, "Dev"),
         ])
+        # 清理 Dev 阶段所有 context 残留
+        for key in ("devletter_path", "dev_conv", "dev_reply_path", "pm_conv",
+                     "pm_reply_text", "pm_reply_path", "dev_feedback_path",
+                     "master_reply_path", "dev_criteria_feedback_path",
+                     "review_text", "design_feedback_path", "designletter_path",
+                     "design_path", "plan_feedback_path", "planletter_path",
+                     "plan_path", "dev_step_index", "dev_total_steps",
+                     "dev_step_fail_count", "dev_step_has_failed",
+                     "dev_git_dir", "dev_exec_dir", "exec_letter_path",
+                     "dev_step_review_feedback", "commit_step_idx",
+                     "commit_summary_path", "commit_design_path", "commit_plan_path",
+                     "dev_escalation_decision"):
+            runtime.context.set_ctx(key, "")
         cp = load_checkpoint(runtime)
         open_master_conv(runtime, cp.get("summary_path", "") if cp else "")
         print(f"  → 从 Dev 阶段继续")
@@ -169,13 +187,19 @@ class ResumeRouter:
 
     @staticmethod
     def resume_qa(state) -> dict:
-        """恢复 qa 阶段：清产出 + 重建 Master 对话。"""
+        """恢复 qa 阶段：清产出 + 清 context + 重建 Master 对话。"""
         runtime = ResumeRouter._runtime
         ws = runtime.paths.workspace
         _clean_targets(runtime, [
             runtime.paths.handoffs,
             os.path.join(ws, "QA"),
         ])
+        # 清理 QA 阶段 context 残留
+        for key in ("qaletter_path", "qa_feedback_path", "qa_understanding_path"):
+            runtime.context.set_ctx(key, "")
+        # 同时也清理 Dev/PM 对齐阶段的 pm_conv/dev_conv，避免 QA 拿到旧对话
+        for key in ("pm_conv", "dev_conv"):
+            runtime.context.set_ctx(key, "")
         cp = load_checkpoint(runtime)
         open_master_conv(runtime, cp.get("summary_path", "") if cp else "")
         print(f"  → 从 QA 阶段继续")

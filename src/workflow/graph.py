@@ -12,12 +12,11 @@ from .phase2 import (DevHandoff, DevAlign, DevWriteCriteria,
                      ReviewDevCriteria, DevWriteDesign, DevReviewDesign,
                      DevWritePlan, DevReviewPlan, DevGitInit, DevExecStep,
                      DevReviewStep, DevCommit, DevRollback, DevEscalate)
-from .phase3 import qa_handoff, qa_align
+from .phase3 import QAHandoff, QAAlign
 from .flush import (MasterFlushClarify, MasterFlushPM, MasterFlushDev)
 from .checkpoint import ResumeRouter
 
 NODES = [
-    interruptible(qa_handoff), interruptible(qa_align),
 ]
 
 
@@ -63,6 +62,8 @@ def build_graph(runtime) -> StateGraph:
     MasterFlushClarify.register(graph, runtime)
     MasterFlushPM.register(graph, runtime)
     MasterFlushDev.register(graph, runtime)
+    QAHandoff.register(graph, runtime)
+    QAAlign.register(graph, runtime)
 
     graph.set_entry_point(ResumeRouter.entries["router"])
 
@@ -135,9 +136,9 @@ def build_graph(runtime) -> StateGraph:
     graph.add_edge(DevEscalate.exits["run"], DevExecStep.entries["run"])
 
     # ── Phase 3: QA ──
-    graph.add_edge(MasterFlushDev.exits["flush_conv"], "qa_handoff")
-    graph.add_edge("qa_handoff", "qa_align")
-    graph.add_edge("qa_align", END)
+    graph.add_edge(MasterFlushDev.exits["flush_conv"], QAHandoff.entries["run"])
+    graph.add_edge(QAHandoff.exits["run"], QAAlign.entries["qa_read"])
+    graph.add_edge(QAAlign.exits["judge_exit"], END)
 
     return graph.compile(checkpointer=MemorySaver())
 
