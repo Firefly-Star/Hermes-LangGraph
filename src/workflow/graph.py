@@ -17,6 +17,7 @@ from .phase3 import (QAHandoff, QAAlign, QAWriteCriteria, ReviewQACriteria,
                      ReviewerReviewCode, QARunTests, JudgeTestResult, DevFix)
 from .flush import (MasterFlushClarify, MasterFlushPM, MasterFlushDev, MasterFlushQA)
 from .checkpoint import ResumeRouter
+from .phase4 import ConsistencyAudit, WriteMaintenanceDocs, DeliverySummary
 
 NODES = [
 ]
@@ -76,6 +77,9 @@ def build_graph(runtime) -> StateGraph:
     JudgeTestResult.register(graph, runtime)
     DevFix.register(graph, runtime)
     MasterFlushQA.register(graph, runtime)
+    ConsistencyAudit.register(graph, runtime)
+    WriteMaintenanceDocs.register(graph, runtime)
+    DeliverySummary.register(graph, runtime)
 
     graph.set_entry_point(ResumeRouter.entries["router"])
 
@@ -158,7 +162,15 @@ def build_graph(runtime) -> StateGraph:
     graph.add_edge(JudgeTestResult.exits["to_flush"], MasterFlushQA.entries["write_summary"])
     graph.add_edge(JudgeTestResult.exits["to_dev_fix"], DevFix.entries["run"])
     graph.add_edge(DevFix.exits["run"], QARunTests.entries["run"])
-    graph.add_edge(MasterFlushQA.exits["flush_conv"], END)
+    graph.add_edge(MasterFlushQA.exits["flush_conv"], ConsistencyAudit.entries["run"])
+
+    # ── Phase 4: 交付 ──
+    graph.add_edge(ConsistencyAudit.exits["run"], WriteMaintenanceDocs.entries["run"])
+    graph.add_edge(WriteMaintenanceDocs.exits["run"], DeliverySummary.entries["run"])
+    graph.add_edge(DeliverySummary.exits["run"], END)
+
+    # ── Resume → Phase 4 ──
+    graph.add_edge(ResumeRouter.exits["resume_phase4"], ConsistencyAudit.entries["run"])
 
     return graph.compile(checkpointer=MemorySaver())
 

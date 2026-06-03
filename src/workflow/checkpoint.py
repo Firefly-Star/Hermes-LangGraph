@@ -103,7 +103,8 @@ class ResumeRouter:
              "resume_pm": "resume_pm_handoff",
              "resume_dev": "resume_dev_handoff",
              "resume_qa": "resume_qa_handoff",
-             "resume_dev_exec": "resume_dev_exec_step"}
+             "resume_dev_exec": "resume_dev_exec_step",
+             "resume_phase4": "resume_phase4_handoff"}
 
     _runtime = None
 
@@ -220,6 +221,19 @@ class ResumeRouter:
         print(f"  → 从 Dev 执行继续")
         return {"phase": "dev_exec_step"}
 
+    @staticmethod
+    def resume_phase4(state) -> dict:
+        """恢复交付阶段：清 handoffs + 重建 Master 对话。"""
+        runtime = ResumeRouter._runtime
+        _clean_targets(runtime, [
+            runtime.paths.handoffs,
+        ])
+        cp = load_checkpoint(runtime)
+        open_master_conv(runtime, cp.get("summary_path", "") if cp else "")
+        clear_checkpoint(runtime)
+        print(f"  → 从交付阶段继续")
+        return {"phase": "consistency_audit"}
+
     @classmethod
     def register(cls, graph, runtime):
         cls._runtime = runtime
@@ -230,6 +244,7 @@ class ResumeRouter:
             "resume_dev_handoff": cls.resume_dev,
             "resume_qa_handoff": cls.resume_qa,
             "resume_dev_exec_step": cls.resume_dev_exec,
+            "resume_phase4_handoff": cls.resume_phase4,
         })
         graph.add_conditional_edges("resume_router", lambda s: s.get("phase", ""), {
             "pre_flight": "resume_to_pre_flight",
@@ -237,4 +252,5 @@ class ResumeRouter:
             "resume_dev_handoff": "resume_dev_handoff",
             "resume_qa_handoff": "resume_qa_handoff",
             "resume_dev_exec_step": "resume_dev_exec_step",
+            "resume_consistency_audit": "resume_phase4_handoff",
         })

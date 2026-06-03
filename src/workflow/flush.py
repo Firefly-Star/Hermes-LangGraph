@@ -267,7 +267,7 @@ class MasterFlushQA:
 
         runtime.conversations.close("master", master_conv)
         new_conv = open_master_conv(runtime, summary_path)
-        save_checkpoint(runtime, "done", "QA 测试", summary_path=summary_path)
+        save_checkpoint(runtime, "consistency_audit", "QA 测试", summary_path=summary_path)
         print(f"\n  ── Master flush: QA 测试完成 (新对话: {new_conv})")
         return {"phase": "qa_conv_flushed", "judge_result": ""}
 
