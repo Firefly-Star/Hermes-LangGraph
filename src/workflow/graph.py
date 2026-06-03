@@ -12,8 +12,10 @@ from .phase2 import (DevHandoff, DevAlign, DevWriteCriteria,
                      ReviewDevCriteria, DevWriteDesign, DevReviewDesign,
                      DevWritePlan, DevReviewPlan, DevGitInit, DevExecStep,
                      DevReviewStep, DevCommit, DevRollback, DevEscalate)
-from .phase3 import QAHandoff, QAAlign, QAWriteCriteria, ReviewQACriteria
-from .flush import (MasterFlushClarify, MasterFlushPM, MasterFlushDev)
+from .phase3 import (QAHandoff, QAAlign, QAWriteCriteria, ReviewQACriteria,
+                     QAWriteTestPlan, MasterReviewPlan, QAWriteTestCase,
+                     ReviewerReviewCode, QARunTests, JudgeTestResult, DevFix)
+from .flush import (MasterFlushClarify, MasterFlushPM, MasterFlushDev, MasterFlushQA)
 from .checkpoint import ResumeRouter
 
 NODES = [
@@ -66,6 +68,14 @@ def build_graph(runtime) -> StateGraph:
     QAAlign.register(graph, runtime)
     QAWriteCriteria.register(graph, runtime)
     ReviewQACriteria.register(graph, runtime)
+    QAWriteTestPlan.register(graph, runtime)
+    MasterReviewPlan.register(graph, runtime)
+    QAWriteTestCase.register(graph, runtime)
+    ReviewerReviewCode.register(graph, runtime)
+    QARunTests.register(graph, runtime)
+    JudgeTestResult.register(graph, runtime)
+    DevFix.register(graph, runtime)
+    MasterFlushQA.register(graph, runtime)
 
     graph.set_entry_point(ResumeRouter.entries["router"])
 
@@ -137,7 +147,18 @@ def build_graph(runtime) -> StateGraph:
     graph.add_edge(QAAlign.exits["judge_exit"], QAWriteCriteria.entries["run"])
     graph.add_edge(QAWriteCriteria.exits["run"], ReviewQACriteria.entries["review"])
     graph.add_edge(ReviewQACriteria.exits["write_feedback"], QAWriteCriteria.entries["run"])
-    graph.add_edge(ReviewQACriteria.exits["to_qa_plan"], END)
+    graph.add_edge(ReviewQACriteria.exits["to_qa_plan"], QAWriteTestPlan.entries["run"])
+    graph.add_edge(QAWriteTestPlan.exits["run"], MasterReviewPlan.entries["review"])
+    graph.add_edge(MasterReviewPlan.exits["to_qa_code"], QAWriteTestCase.entries["run"])
+    graph.add_edge(MasterReviewPlan.exits["write_feedback"], QAWriteTestPlan.entries["run"])
+    graph.add_edge(QAWriteTestCase.exits["run"], ReviewerReviewCode.entries["review"])
+    graph.add_edge(ReviewerReviewCode.exits["to_qa_run"], QARunTests.entries["run"])
+    graph.add_edge(ReviewerReviewCode.exits["write_feedback"], QAWriteTestCase.entries["run"])
+    graph.add_edge(QARunTests.exits["run"], JudgeTestResult.entries["judge"])
+    graph.add_edge(JudgeTestResult.exits["to_flush"], MasterFlushQA.entries["write_summary"])
+    graph.add_edge(JudgeTestResult.exits["to_dev_fix"], DevFix.entries["run"])
+    graph.add_edge(DevFix.exits["run"], QARunTests.entries["run"])
+    graph.add_edge(MasterFlushQA.exits["flush_conv"], END)
 
     return graph.compile(checkpointer=MemorySaver())
 

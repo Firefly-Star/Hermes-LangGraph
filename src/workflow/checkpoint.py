@@ -195,7 +195,10 @@ class ResumeRouter:
             os.path.join(ws, "QA"),
         ])
         # 清理 QA 阶段 context 残留
-        for key in ("qaletter_path", "qa_feedback_path", "qa_understanding_path"):
+        for key in ("qaletter_path", "qa_feedback_path", "qa_understanding_path",
+                     "qa_plan_path", "qa_plan_feedback_path", "qa_plan_review",
+                     "qa_code_path", "qa_code_feedback_path", "qa_code_review",
+                     "qa_test_report_path", "qa_bug_report_path", "qa_conv"):
             runtime.context.set_ctx(key, "")
         # 同时也清理 Dev/PM 对齐阶段的 pm_conv/dev_conv，避免 QA 拿到旧对话
         for key in ("pm_conv", "dev_conv"):

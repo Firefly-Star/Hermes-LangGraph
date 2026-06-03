@@ -487,6 +487,8 @@ class DevWriteDesign:
 
         write_letter(runtime, "master", master_conv, designletter_path,
                      "详细设计编写说明", prompt)
+        if feedback_path:
+            os.remove(feedback_path)
         runtime.context.set_ctx("designletter_path", designletter_path)
         runtime.context.set_ctx("design_path", design_path)
         return {"phase": "dev_design_letter_done", "judge_result": ""}
@@ -695,6 +697,8 @@ class DevWritePlan:
                      "分步实现计划编写说明", prompt)
         runtime.context.set_ctx("planletter_path", planletter_path)
         runtime.context.set_ctx("plan_path", plan_path)
+        if feedback_path:
+            os.remove(feedback_path)
         return {"phase": "dev_plan_letter_done", "judge_result": ""}
 
     @staticmethod
@@ -1073,7 +1077,9 @@ class DevReviewStep:
             "1. 代码是否与详细设计方案一致\n"
             "2. 代码质量和错误处理是否合理\n"
             "3. 不能出现「间接证明」「应该可行」「等后续检查」等想法，"
-            "如果是环境缺失导致无法运行测试，报 FAIL 并反馈给 DEV\n\n"
+            "如果是环境缺失导致无法运行测试，报 FAIL 并反馈给 DEV\n"
+            "注意，在此过程中你不需要写任何的代码、配置任何的环境、做任何的修复，这些都是 DEV 的责任，"
+            "出现任何问题都只需要反馈给 DEV 即可\n\n"
             "最后一行输出 == PASS == 或 == FAIL ==。\n"
             "如果 FAIL，写明需要修正的具体问题和原因。",
             stream=True)

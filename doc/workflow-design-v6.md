@@ -15,6 +15,7 @@
 | Phase 2 flush | 单函数 | `MasterFlushPM` 类，2 节点 |
 | Phase 3 flush | 单函数 | `MasterFlushDev` 类，2 节点 |
 | QA 阶段 | `qa_handoff` + `qa_align` 两个独立函数 | `QAHandoff` + `QAAlign` 类，9 节点；扩展为测试全流程（写标准 → 写计划 → 写代码 → 运行 → 修 bug 循环） |
+| Phase 4 交付 | 不存在 | 新增 `ConsistencyAudit` + `WriteMaintenanceDocs` + `DeliverySummary`，交付阶段（一致性审计 → 写维护文档 → 交付总结） |
 | Resume 节点 | 5 个独立函数 | `ResumeRouter` 类，5+1 节点 |
 | 中断 flag 清理 | except 块冗余清除 | 全部移除（call_agent 抛出异常前已自清） |
 | ensure_write_file | stream=True | stream=False，不与中断冲突 |
@@ -39,8 +40,9 @@ src/workflow/
 ├── phase0.py         # PreFlightClarify — 需求澄清
 ├── phase1.py         # PMHandoff ~ HumanReview — PM 出方案
 ├── phase2.py         # DevHandoff ~ DevEscalate — Dev 设计 + 编码
-├── phase3.py         # QAHandoff + QAAlign + 待实现的 QA 测试全流程
-├── flush.py          # MasterFlushClarify/PM/Dev — phase 边界 flush
+├── phase3.py         # QAHandoff + QAAlign + QA 测试全流程（计划→代码→运行→修 bug）
+├── phase4.py         # ConsistencyAudit + WriteMaintenanceDocs + DeliverySummary — 交付
+├── flush.py          # MasterFlushClarify/PM/Dev/QA — phase 边界 flush
 ├── checkpoint.py     # ResumeRouter + save/load/clear_checkpoint
 ```
 
@@ -148,6 +150,9 @@ judge_reply(runtime, target_role, reply, options, tag)
 | QA 测试计划 | qa | `qa-plan-{ws}-{ts}` |
 | QA 测试代码 | qa | `qa-code-{ws}-{ts}` |
 | QA 测试运行 | qa | `qa-run-{ws}-{ts}` |
+| 一致性审计 | master | `master-{ws}-{ts}`（沿用） |
+| 写维护文档 | dev | `dev-doc-{ws}-{ts}` |
+| 交付总结 | master | `master-{ws}-{ts}`（沿用） |
 
 ## 图结构
 
@@ -324,6 +329,15 @@ qa_handoff → QAAlign（9 节点对齐循环）→ align done
                           MasterFlushQA  │
                               │          │
                               ▼          │
+                       ConsistencyAudit  │
+                              │          │
+                              ▼          │
+                      WriteMaintenanceDocs│
+                              │          │
+                              ▼          │
+                         DeliverySummary  │
+                              │          │
+                              ▼          │
                              END     DevFix
                                        │
                                        ▼
@@ -349,6 +363,9 @@ qa_handoff → QAAlign（9 节点对齐循环）→ align done
 | JudgeTestResult | Judge | 1（judge_reply） | pass / bug 列表 |
 | DevFix | Dev | 1（read_letter） | 修复代码 |
 | MasterFlushQA | Master | 2（write_summary + flush_conv） | 阶段总结 |
+| ConsistencyAudit | Master | 1（call_agent） | audit-report.md |
+| WriteMaintenanceDocs | Dev | 1（call_agent） | README.md, deployment-guide.md |
+| DeliverySummary | Master | 1（call_agent） | delivery-summary.md |
 
 ### 测试计划不分步
 
@@ -371,6 +388,33 @@ QA 测试计划为一次性产出，不接受分步（与 Dev plan 不同）：
 3. 回到 QARunTests 重新运行测试
 4. 循环直到全部通过
 
+
+### Phase 4: 交付
+
+#### ConsistencyAudit — 一致性审计
+
+只读审计，不修改任何文件。
+
+Master 做全局四方自洽检查：
+1. **需求 vs 方案** — PRD 中的每个功能点在 design.md 中是否有对应实现方案？
+2. **方案 vs 代码** — design.md 中的每个组件/接口在代码中是否有对应实现？
+3. **代码 vs 测试** — 核心功能路径是否有测试覆盖？测试是否通过？
+4. **配置一致性** — runtime_config.json 与代码中的配置引用是否对应？
+
+输出 `audit-report.md`，列出全部不一致项及严重程度（阻塞 / 建议）。
+
+#### WriteMaintenanceDocs — 写维护文档
+
+Dev 一次性产出：
+- **README.md** — 项目介绍、技术栈、快速启动
+- **deployment-guide.md** — 部署步骤、环境要求、配置说明
+
+不出设计方案和计划，直接编写，不分步。
+
+#### DeliverySummary — 交付总结
+
+Master 汇总整个项目的产出物清单和阶段回顾，写入 `delivery-summary.md`。
+
 ### Conversation 生命周期
 
 | 子阶段 | Agent | Conversation 名 |
@@ -379,6 +423,9 @@ QA 测试计划为一次性产出，不接受分步（与 Dev plan 不同）：
 | QA 测试计划 | qa | `qa-plan-{ws}-{ts}` |
 | QA 测试代码 | qa | `qa-code-{ws}-{ts}` |
 | QA 测试运行 | qa | `qa-run-{ws}-{ts}` |
+| 一致性审计 | master | `master-{ws}-{ts}`（沿用） |
+| 写维护文档 | dev | `dev-doc-{ws}-{ts}` |
+| 交付总结 | master | `master-{ws}-{ts}`（沿用） |
 
 ## 关键设计决策
 
@@ -420,7 +467,16 @@ PM 的疑问、Dev 的执行问题都可能回溯到初始需求。Master 单一
 | Dev 开始执行前 | `dev_exec_step` | DevGitInit.flush_context |
 | Dev 每步提交后 | `dev_exec_step` | DevCommit.flush_context |
 
-### 7. QA 测试不分步
+### 7. 一致性审计只审计不修改
+
+Phase 4 的 ConsistencyAudit 是只读审计：
+- 检查 PRD / design / code / tests 四方自洽性
+- 输出不一致清单及严重程度（阻塞/建议）
+- 不自动修改任何文件
+- 不一致项由用户决定是否修复、何时修复
+- 避免审计节点变成「隐形的回归修改者」，引入新 bug
+
+### 8. QA 测试不分步
 
 测试计划和测试代码均不分步编写（与 Dev plan 不同）：
 
@@ -428,7 +484,7 @@ PM 的疑问、Dev 的执行问题都可能回溯到初始需求。Master 单一
 
 **代码不分步**：测试代码之间有依赖关系（注册测试先于登录测试），拆分步骤需要处理前置条件传递；且测试代码的真正验证在运行时才发生，不是编写时。
 
-### 8. `.agent_runtime` 目录结构
+### 9. `.agent_runtime` 目录结构
 
 ```
 {runtime_dir}/

@@ -209,3 +209,73 @@ class MasterFlushDev:
             "master_flush_dev_conv": cls.flush_conv,
         })
         graph.add_edge("master_flush_dev_summary", "master_flush_dev_conv")
+
+
+class MasterFlushQA:
+    """Phase 3→END 边界: flush Master，2 节点。"""
+
+    entries = {"write_summary": "master_flush_qa_summary"}
+    exits = {"flush_conv": "master_flush_qa_conv"}
+
+    _runtime = None
+
+    @staticmethod
+    def write_summary(state) -> dict:
+        """写 QA 测试阶段总结 (1 call_agent + ensure_write_file)."""
+        runtime = MasterFlushQA._runtime
+        master_conv = runtime.context.get_ctx("master_conv")
+        ws = runtime.paths.workspace
+
+        os.makedirs(runtime.paths.phases, exist_ok=True)
+        summary_path = os.path.join(runtime.paths.phases, "phase-summary-QA测试.md")
+        artifacts = (
+            f"- {ws}/QA/test-plan.md\n"
+            f"- {ws}/QA/tests/\n"
+            f"- {ws}/QA/test-report.md"
+        )
+
+        call_agent(runtime, "master", master_conv,
+            f"请将你刚完成的阶段总结写入 {summary_path}。格式如下：\n\n"
+            "Summary:\n"
+            "1. Phase Completed:\n"
+            "   - 阶段：QA 测试\n"
+            "   - 核心产出物\n\n"
+            "2. Key Decisions Made:\n"
+            "   - 本阶段的关键决策\n\n"
+            "3. Artifacts Produced:\n"
+            "   - 文件清单（含路径）\n\n"
+            "4. Open Issues / Risks:\n"
+            "   - 遗留问题及风险\n\n"
+            "5. Current Status:\n"
+            "   - 已完成: QA 测试\n"
+            "   - 下一步: 项目完成\n\n"
+            f"本阶段的实际产出文件（供撰写总结参考）：\n{artifacts}")
+
+        if not ensure_write_file(runtime, "master", master_conv, summary_path):
+            call_agent(runtime, "master", master_conv,
+                       f"将阶段总结写入文件 {summary_path}，使用 write_file 工具。")
+
+        runtime.context.set_ctx("phase_summary_path", summary_path)
+        return {"phase": "qa_flushed", "judge_result": ""}
+
+    @staticmethod
+    def flush_conv(state) -> dict:
+        """关旧对话、开新对话、存 checkpoint (open_master_conv → 1 call_agent)."""
+        runtime = MasterFlushQA._runtime
+        master_conv = runtime.context.get_ctx("master_conv")
+        summary_path = runtime.context.get_ctx("phase_summary_path")
+
+        runtime.conversations.close("master", master_conv)
+        new_conv = open_master_conv(runtime, summary_path)
+        save_checkpoint(runtime, "done", "QA 测试", summary_path=summary_path)
+        print(f"\n  ── Master flush: QA 测试完成 (新对话: {new_conv})")
+        return {"phase": "qa_conv_flushed", "judge_result": ""}
+
+    @classmethod
+    def register(cls, graph, runtime):
+        cls._runtime = runtime
+        register_nodes(graph, runtime, {
+            "master_flush_qa_summary": cls.write_summary,
+            "master_flush_qa_conv": cls.flush_conv,
+        })
+        graph.add_edge("master_flush_qa_summary", "master_flush_qa_conv")
