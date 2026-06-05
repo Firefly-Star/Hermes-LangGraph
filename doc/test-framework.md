@@ -1,16 +1,33 @@
 # 测试框架
 
-> 基于 MockClient 的节点级单元测试。LLM 调用用测试桩替换，不连 Hermes Gateway。
+> 基于 MockClient 的四层测试体系。LLM 调用用测试桩替换，不连 Hermes Gateway。
 
 ## 目录结构
 
 ```
 test/
-├── conftest.py              # MockClient + fixture（全局共享）
-├── unit/                    # 单元测试 — 单节点 / 单函数
+├── conftest.py              # MockClient + sys.path（全局 fixture）
+├── static/                  # 第 1 层：静态校验 — 图结构、node_name 存在性
+│   ├── __init__.py
+│   └── test_graph_edges.py
+├── unit/                    # 第 2 层：逐 node — 每个节点函数的 state/prompt 验证
+│   ├── __init__.py
 │   ├── test_conversation_client.py   # ConversationClient 接口 + MockClient 测试
-│   └── test_phase4.py                # 节点测试示例
-└── integration/             # 集成测试 — 子图 / 管道（待填充）
+│   ├── test_phase1.py
+│   ├── test_phase2.py
+│   ├── test_phase3.py
+│   ├── test_phase4.py
+│   └── test_flush.py
+├── integration/             # 第 3 层：逐 phase 线性段 — 串联 3-5 个 node 的调用序列
+│   ├── __init__.py
+│   ├── conftest.py
+│   ├── test_phase0_flow.py
+│   ├── test_phase1_flow.py
+│   └── test_phase2_flow.py
+└── e2e/                     # 第 4 层：全流程 — 完整图结构下的路径验证
+    ├── __init__.py
+    ├── conftest.py
+    └── test_full_workflow.py
 ```
 
 ## MockClient
@@ -25,13 +42,26 @@ assert result.text == "模拟回复"
 
 调用记录存在 `call_history` 中，每条为 `(agent, conversation, prompt)`。
 
-## 节点测试模式
+## 四层测试
 
-每个节点测试的标准步骤：
+| 层级 | 目录 | 关注问题 | 用例数 |
+|------|------|---------|--------|
+| 静态校验 | static | graph edge → node_name 存在性 | 1-2 |
+| 逐 node | unit | state 转换、prompt 构造、agent/conv 选择 | 每个 node 2-3 |
+| 逐 phase | integration | context 传递、线性段调用序列 | 每个 phase 1-2 |
+| 全流程 | e2e | 跨 phase 状态累积、中断恢复 | 2-3 |
+
+### static — 静态校验
+
+遍历 graph.py 中注册的所有 node，确保被 `add_edge()` 和 `add_conditional_edges()` 引用的 node_name 在图的 node 集合中存在。不需要 MockClient。
+
+### unit — 逐 node 测试
+
+每个 node 函数在隔离环境中运行，MockClient 拦截所有 `call_agent` 调用。步骤：
 
 1. 创建 `AgentRuntime(conversation_client=mock_client)`
-2. 把 runtime 注入到被测试节点：`NodeClass._runtime = rt`
-3. 设好 runtime context：`rt.context.set_ctx("master_conv", "...")`
+2. 注入 runtime：`NodeClass._runtime = rt`
+3. 设好 context：`rt.context.set_ctx("master_conv", "...")`
 4. 调用节点函数：`result = NodeClass.run(state)`
 5. 断言 state、prompt、agent 选择、call 次数
 
@@ -44,25 +74,16 @@ def test_node_returns_correct_state(self, mock_client):
     result = NodeClass.run({"phase": "start"})
 
     assert result["phase"] == "expected_end_state"
-    assert "期望的关键词" in mock_client.call_history[0][2]  # prompt 验证
+    assert "关键词" in mock_client.call_history[0][2]
 ```
 
-## 测试范围
+### integration — 逐 phase 线性段
 
-### 能测
-- state 转换是否正确
-- prompt 构造（agent/conv/prompt 内容）
-- call_agent 调用次数
-- context 读写
-- 多层 retry 路径
+固定 judge 返回（如 "A"），验证多个 node 串联时 context 的传递和调用顺序。
 
-### 不测
-- LLM 回复质量（MockClient 返回固定文本）
-- 图路由（graph.py 的边不执行）
-- 文件系统（ensure_write_file 在 mock 下永远 False）
-- 中断机制（键盘监听线程不跑）
-- Gateway 生命周期
-- 节点间串联
+### e2e — 全流程
+
+构建完整 graph，设置完整的 mock 回复表，按预设的 judge 返回值走通指定路径。
 
 ## 运行
 
@@ -70,9 +91,11 @@ def test_node_returns_correct_state(self, mock_client):
 # 全部测试
 python -m pytest test/
 
-# 按类型
+# 按层级
+python -m pytest test/static/
 python -m pytest test/unit/
 python -m pytest test/integration/
+python -m pytest test/e2e/
 
 # 按文件
 python -m pytest test/unit/test_phase4.py -v
