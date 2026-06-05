@@ -77,6 +77,17 @@ def test_node_returns_correct_state(self, mock_client):
     assert "关键词" in mock_client.call_history[0][2]
 ```
 
+#### 按 node 类型确定测试重点
+
+| 类型 | 特征 | 用例数 | 关注点 |
+|------|------|--------|--------|
+| A 纯 call | 调 agent → 设 context → 返 state | 2-3 | agent/conv 选择、关键路径关键词 |
+| B judge/路由 | judge_reply 返回值决定分支 | 3-4 | 每条分支至少 1 个用例 |
+| C letter 读写 | 跨节点文件传递 | 3-4 | 路径字符串、删信时机 |
+| D flush/checkpoint | 关/开对话、存恢复点 | 3-4 | conv 生命周期、checkpoint 写入 |
+
+类型 A 的额外覆盖（prompt 中不同关键词的组合）留给集成测试。
+
 ### integration — 逐 phase 线性段
 
 固定 judge 返回（如 "A"），验证多个 node 串联时 context 的传递和调用顺序。
