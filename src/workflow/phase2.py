@@ -8,46 +8,33 @@ from .utils import (WorkflowState, conv_name, call_agent, letter_path,
                     count_steps, WorkflowInterrupted)
 from .prompt import DEV_SYSTEM_PROMPT, FLUSH_CONTINUATION_NOTE, PLAYWRIGHT_TEST_TIPS
 from .checkpoint import save_checkpoint
+from .subgraphs import HandoffConfig
 from langgraph.graph import END
 
 
-class DevHandoff:
-    """Master 写 handoff 信给 Dev (1 call_agent via write_letter)."""
+DEV_HANDOFF_LETTER = (
+    "介绍项目上下文。信件需包含：\n"
+    "1. 开宗明义：这是 Master 给 Dev 的信\n"
+    "2. 项目概况和核心需求（简要描述即可）\n"
+    "3. 告知 Dev 详细内容在以下文件：\n"
+    "   项目顶层决策：{project_context}\n"
+    "   PRD：{workspace}/PM/PRD.md\n"
+    "   原型：{workspace}/PM/prototype.html\n"
+    "4. 要求 Dev：先阅读以上所有文档，"
+    "然后写出你对需求的理解总结和疑问清单\n"
+    "5. 你的直接对接人是 PM，PM 无法回答的问题会由 Master 处理\n"
+    "6. 在 PM 明确许可之前，不得开始写详细设计\n\n"
+    "信件要有 Master 的口吻，是上级对下的沟通与任务委派。"
+)
 
-    entries = {"run": "dev_handoff"}
-    exits = {"run": "dev_handoff"}
+DEV_HANDOFF_CONFIG = HandoffConfig(
+    receiver="dev",
+    letter_title="Master 给 Dev 的信",
+    letter_prompt=DEV_HANDOFF_LETTER,
+    context_letter_key="devletter_path",
+)
 
-    _runtime = None
 
-    @staticmethod
-    def run(state) -> dict:
-        runtime = DevHandoff._runtime
-        print(f"\n{'='*60}\n  ==> Phase 2a: Master 写信给 Dev\n{'='*60}")
-        master_conv = runtime.context.get_ctx("master_conv")
-        project_context_path = runtime.context.get_bg("project_context_path")
-        ws = runtime.paths.workspace
-        lpath = letter_path(runtime, "master-to-dev")
-        write_letter(runtime, "master", master_conv, lpath,
-                     "Master 给 Dev 的信",
-                     f"介绍项目上下文。信件需包含：\n"
-                     "1. 开宗明义：这是 Master 给 Dev 的信\n"
-                     "2. 项目概况和核心需求（简要描述即可）\n"
-                     f"3. 告知 Dev 详细内容在以下文件：\n"
-                     f"   项目顶层决策：{project_context_path}\n"
-                     f"   PRD：{ws}/PM/PRD.md\n"
-                     f"   原型：{ws}/PM/prototype.html\n"
-                     "4. 要求 Dev：先阅读以上所有文档，然后写出你对需求的理解总结和疑问清单\n"
-                     "5. 你的直接对接人是 PM，PM 无法回答的问题会由 Master 处理\n"
-                     "6. 在 PM 明确许可之前，不得开始写详细设计\n\n"
-                     "信件要有 Master 的口吻，是上级对下的沟通与任务委派。")
-        runtime.context.set_ctx("devletter_path", lpath)
-        print(f"\n  ── Master 给 Dev 的信件已就绪 ──")
-        return {"phase": "dev_handoff_done"}
-
-    @classmethod
-    def register(cls, graph, runtime):
-        cls._runtime = runtime
-        register_nodes(graph, runtime, {"dev_handoff": cls.run})
 
 class DevAlign:
     """Dev-PM-Master 对齐循环，7 节点 + 1 空节点。"""

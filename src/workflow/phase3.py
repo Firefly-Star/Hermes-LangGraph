@@ -7,52 +7,32 @@ from .utils import (WorkflowState, conv_name, call_agent, letter_path,
                     register_nodes, write_criteria)
 from .checkpoint import clear_checkpoint
 from .prompt import PLAYWRIGHT_TEST_TIPS
+from .subgraphs import HandoffConfig
 
 
-class QAHandoff:
-    """Master 写 handoff 信给 QA (1 call_agent via write_letter)."""
+QA_HANDOFF_LETTER = (
+    "介绍项目上下文。信件需包含：\n"
+    "1. 开宗明义：这是 Master 给 QA 的信\n"
+    "2. 项目概况和核心需求（简要描述）\n"
+    "3. 项目决策记录：{project_context}\n"
+    "4. PRD：{workspace}/PM/PRD.md\n"
+    "5. 详细设计：{workspace}/Dev/design.md\n"
+    "6. 实现计划：{workspace}/Dev/plan.md\n"
+    "7. 要求 QA：先阅读所有文档，写出你对项目的理解"
+    "和初步测试思路大纲（测什么、怎么测），"
+    "得到 PM 和 Dev 确认后才能开始写详细测试计划\n"
+    "8. 强调：在确认之前，不得开始写测试用例或执行测试"
+)
 
-    entries = {"run": "qa_handoff"}
-    exits = {"run": "qa_handoff"}
+QA_HANDOFF_CONFIG = HandoffConfig(
+    receiver="qa",
+    letter_title="Master 给 QA 的信",
+    letter_prompt=QA_HANDOFF_LETTER,
+    context_letter_key="qaletter_path",
+    create_dirs=("QA",),
+)
 
-    _runtime = None
 
-    @staticmethod
-    def run(state) -> dict:
-        runtime = QAHandoff._runtime
-        print(f"\n{'='*60}\n  ==> Phase 3a: Master 写信给 QA\n{'='*60}")
-
-        master_conv = runtime.context.get_ctx("master_conv")
-        if not master_conv:
-            raise RuntimeError("master conversation 不存在")
-
-        ws = runtime.paths.workspace
-        qa_dir = os.path.join(ws, "QA")
-        os.makedirs(qa_dir, exist_ok=True)
-
-        lpath = letter_path(runtime, "master-to-qa")
-        write_letter(runtime, "master", master_conv, lpath,
-                     "Master 给 QA 的信",
-                     f"介绍项目上下文。信件需包含：\n"
-                     "1. 开宗明义：这是 Master 给 QA 的信\n"
-                     "2. 项目概况和核心需求（简要描述）\n"
-                     f"3. 项目决策记录：{runtime.context.get_bg('project_context_path')}\n"
-                     f"4. PRD：{ws}/PM/PRD.md\n"
-                     f"5. 详细设计：{ws}/Dev/design.md\n"
-                     f"6. 实现计划：{ws}/Dev/plan.md\n"
-                     "7. 要求 QA：先阅读所有文档，写出你对项目的理解"
-                     "和初步测试思路大纲（测什么、怎么测），"
-                     "得到 PM 和 Dev 确认后才能开始写详细测试计划\n"
-                     "8. 强调：在确认之前，不得开始写测试用例或执行测试")
-
-        runtime.context.set_ctx("qaletter_path", lpath)
-        print(f"\n  ── Master 给 QA 的信件已就绪 ──")
-        return {"phase": "qa_handoff_done"}
-
-    @classmethod
-    def register(cls, graph, runtime):
-        cls._runtime = runtime
-        register_nodes(graph, runtime, {"qa_handoff": cls.run})
 
 
 class QAAlign:

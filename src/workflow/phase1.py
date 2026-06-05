@@ -6,52 +6,28 @@ from .utils import (WorkflowState, conv_name, call_agent, letter_path,
                     read_and_write_letter, judge_reply, clarify_loop,
                     write_criteria, interruptible, register_nodes)
 from .prompt import PLAYWRIGHT_TEST_TIPS
+from .subgraphs import HandoffConfig
 from langgraph.graph import END
 
 
-class PMHandoff:
-    """原 pm_handoff 节点 — Master 写信给 PM。"""
+PM_HANDOFF_LETTER = (
+    "介绍项目上下文。信件需包含：\n"
+    "1. 开宗明义：这是 Master 给 PM 的信\n"
+    "2. 项目概况和核心需求（简要描述即可）\n"
+    "3. 告知 PM 详细内容在项目顶层决策文件中，"
+    "路径：{project_context}，让 PM 自行阅读\n"
+    "4. 要求 PM：先汇报你对项目的理解和疑问，"
+    "得到 Master 明确许可后才能动手产出\n"
+    "5. 强调：在确认之前，不得开始写 PRD 或原型\n\n"
+    "信件要有 Master 的口吻，是上级对下级的沟通与任务委派。"
+)
 
-    entries = {"run": "pm_handoff"}
-    exits = {"run": "pm_handoff"}
-
-    _runtime = None
-
-    @staticmethod
-    def run(state) -> dict:
-        """Master 写 handoff 信给 PM。"""
-        runtime = PMHandoff._runtime
-
-        print(f"\n{'='*60}\n  ==> Phase 1a: Master 写信给 PM\n{'='*60}")
-
-        project_context_path = runtime.context.get_bg("project_context_path")
-        if not project_context_path or not os.path.exists(project_context_path):
-            raise RuntimeError(f"project_context.md 不存在：{project_context_path}")
-
-        master_conv = runtime.context.get_ctx("master_conv")
-        if not master_conv:
-            raise RuntimeError("clarify conversation 不存在")
-
-        lpath = letter_path(runtime, "master-to-pm")
-        write_letter(runtime, "master", master_conv, lpath,
-                     "Master 给 PM 的信",
-                     f"介绍项目上下文。信件需包含：\n"
-                     "1. 开宗明义：这是 Master 给 PM 的信\n"
-                     "2. 项目概况和核心需求（简要描述即可）\n"
-                     f"3. 告知 PM 详细内容在项目顶层决策文件中，路径：{project_context_path}，让 PM 自行阅读\n"
-                     "4. 要求 PM：先汇报你对项目的理解和疑问，得到 Master 明确许可后才能动手产出\n"
-                     "5. 强调：在确认之前，不得开始写 PRD 或原型\n\n"
-                     "信件要有 Master 的口吻，是上级对下级的沟通与任务委派。")
-
-        runtime.context.set_ctx("pmletter_path", lpath)
-        print(f"\n  ── Master 给 PM 的信件已就绪 ──")
-        return {"phase": "pm_handoff_done"}
-
-    @classmethod
-    def register(cls, graph, runtime):
-        """Register nodes with LangGraph."""
-        cls._runtime = runtime
-        register_nodes(graph, runtime, {"pm_handoff": cls.run})
+PM_HANDOFF_CONFIG = HandoffConfig(
+    receiver="pm",
+    letter_title="Master 给 PM 的信",
+    letter_prompt=PM_HANDOFF_LETTER,
+    context_letter_key="pmletter_path",
+)
 
 
 class PMAlign:

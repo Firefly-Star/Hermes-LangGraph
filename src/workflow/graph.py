@@ -5,14 +5,15 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
 from .utils import WorkflowState, setup_runtime, interruptible
+from .subgraphs import HandoffSubgraph
 from .phase0 import PreFlightClarify
-from .phase1 import (PMHandoff, PMAlign, MasterReplyPM, JudgeMasterReply, ClarifyInject,
+from .phase1 import (PM_HANDOFF_CONFIG, PMAlign, MasterReplyPM, JudgeMasterReply, ClarifyInject,
                      PMWriteCriteria, ReviewPMCriteria, PMWriteDoc, ReviewPMOutput, HumanReview)
-from .phase2 import (DevHandoff, DevAlign, DevWriteCriteria,
+from .phase2 import (DEV_HANDOFF_CONFIG, DevAlign, DevWriteCriteria,
                      ReviewDevCriteria, DevWriteDesign, DevReviewDesign,
                      DevWritePlan, DevReviewPlan, DevGitInit, DevExecStep,
                      DevReviewStep, DevCommit, DevRollback, DevEscalate)
-from .phase3 import (QAHandoff, QAAlign, QAWriteCriteria, ReviewQACriteria,
+from .phase3 import (QA_HANDOFF_CONFIG, QAAlign, QAWriteCriteria, ReviewQACriteria,
                      QAWriteTestPlan, MasterReviewPlan, QAWriteTestCase,
                      ReviewerReviewCode, QARunTests, JudgeTestResult, DevFix)
 from .flush import (MasterFlushClarify, MasterFlushPM, MasterFlushDev, MasterFlushQA)
@@ -38,7 +39,7 @@ def build_graph(runtime) -> StateGraph:
         graph.add_node(f.__name__, f)
     ResumeRouter.register(graph, runtime)
     PreFlightClarify.register(graph, runtime)
-    PMHandoff.register(graph, runtime)
+    pm_handoff = HandoffSubgraph.register(graph, runtime, PM_HANDOFF_CONFIG)
     PMAlign.register(graph, runtime)
     MasterReplyPM.register(graph, runtime)
     JudgeMasterReply.register(graph, runtime)
@@ -48,7 +49,7 @@ def build_graph(runtime) -> StateGraph:
     PMWriteDoc.register(graph, runtime)
     ReviewPMOutput.register(graph, runtime)
     HumanReview.register(graph, runtime)
-    DevHandoff.register(graph, runtime)
+    dev_handoff = HandoffSubgraph.register(graph, runtime, DEV_HANDOFF_CONFIG)
     DevAlign.register(graph, runtime)
     DevWriteCriteria.register(graph, runtime)
     ReviewDevCriteria.register(graph, runtime)
@@ -65,7 +66,7 @@ def build_graph(runtime) -> StateGraph:
     MasterFlushClarify.register(graph, runtime)
     MasterFlushPM.register(graph, runtime)
     MasterFlushDev.register(graph, runtime)
-    QAHandoff.register(graph, runtime)
+    qa_handoff = HandoffSubgraph.register(graph, runtime, QA_HANDOFF_CONFIG)
     QAAlign.register(graph, runtime)
     QAWriteCriteria.register(graph, runtime)
     ReviewQACriteria.register(graph, runtime)
@@ -85,17 +86,17 @@ def build_graph(runtime) -> StateGraph:
 
     # ── resume 节点 → 实际工作节点（ResumeRouter 内部已处理条件路由）──
     graph.add_edge(ResumeRouter.exits["to_pre_flight"], PreFlightClarify.entries["init"])
-    graph.add_edge(ResumeRouter.exits["resume_pm"], PMHandoff.entries["run"])
-    graph.add_edge(ResumeRouter.exits["resume_dev"], DevHandoff.entries["run"])
-    graph.add_edge(ResumeRouter.exits["resume_qa"], QAHandoff.entries["run"])
+    graph.add_edge(ResumeRouter.exits["resume_pm"], pm_handoff.entries["run"])
+    graph.add_edge(ResumeRouter.exits["resume_dev"], dev_handoff.entries["run"])
+    graph.add_edge(ResumeRouter.exits["resume_qa"], qa_handoff.entries["run"])
     graph.add_edge(ResumeRouter.exits["resume_dev_exec"], DevExecStep.entries["run"])
 
     # ── Phase 0 跨阶段边 ──
     graph.add_edge(PreFlightClarify.exits["close"], MasterFlushClarify.entries["write_summary"])
-    graph.add_edge(MasterFlushClarify.exits["flush_conv"], PMHandoff.entries["run"])
+    graph.add_edge(MasterFlushClarify.exits["flush_conv"], pm_handoff.entries["run"])
 
     # ── Phase 1: PM 出方案 ──
-    graph.add_edge(PMHandoff.exits["run"], PMAlign.entries["read"])
+    graph.add_edge(pm_handoff.exits["run"], PMAlign.entries["read"])
     graph.add_edge(PMAlign.exits["read"], MasterReplyPM.entries["run"])
     graph.add_edge(MasterReplyPM.exits["run"], JudgeMasterReply.entries["run"])
     graph.add_conditional_edges(JudgeMasterReply.exits["run"], lambda s: s.get("judge_result", ""), {
@@ -118,8 +119,8 @@ def build_graph(runtime) -> StateGraph:
     })
 
     # ── Phase 2: Dev 出设计 + 编码执行 ──
-    graph.add_edge(MasterFlushPM.exits["flush_conv"], DevHandoff.entries["run"])
-    graph.add_edge(DevHandoff.exits["run"], DevAlign.entries["dev"])
+    graph.add_edge(MasterFlushPM.exits["flush_conv"], dev_handoff.entries["run"])
+    graph.add_edge(dev_handoff.exits["run"], DevAlign.entries["dev"])
     graph.add_edge(DevAlign.exits["judge_exit"], DevWriteCriteria.entries["run"])
     graph.add_edge(DevWriteCriteria.exits["run"], ReviewDevCriteria.entries["review"])
     graph.add_edge(ReviewDevCriteria.exits["to_dev_design"], DevWriteDesign.entries["run"])
@@ -146,8 +147,8 @@ def build_graph(runtime) -> StateGraph:
     graph.add_edge(DevEscalate.exits["run"], DevExecStep.entries["run"])
 
     # ── Phase 3: QA ──
-    graph.add_edge(MasterFlushDev.exits["flush_conv"], QAHandoff.entries["run"])
-    graph.add_edge(QAHandoff.exits["run"], QAAlign.entries["qa_read"])
+    graph.add_edge(MasterFlushDev.exits["flush_conv"], qa_handoff.entries["run"])
+    graph.add_edge(qa_handoff.exits["run"], QAAlign.entries["qa_read"])
     graph.add_edge(QAAlign.exits["judge_exit"], QAWriteCriteria.entries["run"])
     graph.add_edge(QAWriteCriteria.exits["run"], ReviewQACriteria.entries["review"])
     graph.add_edge(ReviewQACriteria.exits["write_feedback"], QAWriteCriteria.entries["run"])
