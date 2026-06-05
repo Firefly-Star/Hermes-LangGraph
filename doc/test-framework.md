@@ -42,6 +42,11 @@ assert result.text == "模拟回复"
 
 调用记录存在 `call_history` 中，每条为 `(agent, conversation, prompt)`。
 
+## 测试编写规范
+
+- 每个测试函数必须有 docstring 或单行注释，说明**测什么**和**为什么**。后续审阅者不依赖测试函数名理解意图。
+- 一个测试函数只断言一个关注点。例外：校验 call_agent 参数时可在同一条中验证 agent + conversation + prompt。
+
 ## 四层测试
 
 | 层级 | 目录 | 关注问题 | 用例数 |
