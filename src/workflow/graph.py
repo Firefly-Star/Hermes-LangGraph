@@ -15,7 +15,8 @@ from .phase2 import (DEV_HANDOFF_DEF, DEV_CRITERIA_DEF, DevAlign,
 from .phase3 import (QA_HANDOFF_DEF, QA_CRITERIA_DEF, QAAlign,
                      QAWriteTestPlan, MASTER_PLAN_REVIEW_DEF, QAWriteTestCase,
                      REVIEWER_CODE_REVIEW_DEF, QARunTests, JudgeTestResult, DevFix)
-from .flush import (MasterFlushClarify, MasterFlushPM, MasterFlushDev, MasterFlushQA)
+from .flush import (MASTER_FLUSH_CLARIFY_DEF, MASTER_FLUSH_PM_DEF,
+                     MASTER_FLUSH_DEV_DEF, MASTER_FLUSH_QA_DEF)
 from .checkpoint import ResumeRouter
 from .phase4 import ConsistencyAudit, WriteMaintenanceDocs, DeliverySummary
 
@@ -60,9 +61,9 @@ def build_graph(runtime) -> StateGraph:
     DevCommit.register(graph, runtime)
     DevRollback.register(graph, runtime)
     DevEscalate.register(graph, runtime)
-    MasterFlushClarify.register(graph, runtime)
-    MasterFlushPM.register(graph, runtime)
-    MasterFlushDev.register(graph, runtime)
+    master_flush_clarify = MASTER_FLUSH_CLARIFY_DEF.register(graph, runtime)
+    master_flush_pm = MASTER_FLUSH_PM_DEF.register(graph, runtime)
+    master_flush_dev = MASTER_FLUSH_DEV_DEF.register(graph, runtime)
     qa_handoff = QA_HANDOFF_DEF.register(graph, runtime)
     QAAlign.register(graph, runtime)
     qa_criteria = QA_CRITERIA_DEF.register(graph, runtime)
@@ -73,7 +74,7 @@ def build_graph(runtime) -> StateGraph:
     QARunTests.register(graph, runtime)
     JudgeTestResult.register(graph, runtime)
     DevFix.register(graph, runtime)
-    MasterFlushQA.register(graph, runtime)
+    master_flush_qa = MASTER_FLUSH_QA_DEF.register(graph, runtime)
     ConsistencyAudit.register(graph, runtime)
     WriteMaintenanceDocs.register(graph, runtime)
     DeliverySummary.register(graph, runtime)
@@ -88,8 +89,8 @@ def build_graph(runtime) -> StateGraph:
     graph.add_edge(ResumeRouter.exits["resume_dev_exec"], DevExecStep.entries["run"])
 
     # ── Phase 0 跨阶段边 ──
-    graph.add_edge(PreFlightClarify.exits["close"], MasterFlushClarify.entries["write_summary"])
-    graph.add_edge(MasterFlushClarify.exits["flush_conv"], pm_handoff.entries["run"])
+    graph.add_edge(PreFlightClarify.exits["close"], master_flush_clarify.entries["write_summary"])
+    graph.add_edge(master_flush_clarify.exits["flush_conv"], pm_handoff.entries["run"])
 
     # ── Phase 1: PM 出方案 ──
     graph.add_edge(pm_handoff.exits["run"], PMAlign.entries["read"])
@@ -108,12 +109,12 @@ def build_graph(runtime) -> StateGraph:
         "pm_write_doc": PMWriteDoc.entries["write_prd_letter"],
     })
     graph.add_conditional_edges(HumanReview.exits["run"], lambda s: s.get("judge_result", ""), {
-        END: MasterFlushPM.entries["write_summary"],
+        END: master_flush_pm.entries["write_summary"],
         "review_pm_output": ReviewPMOutput.entries["run"],
     })
 
     # ── Phase 2: Dev 出设计 + 编码执行 ──
-    graph.add_edge(MasterFlushPM.exits["flush_conv"], dev_handoff.entries["run"])
+    graph.add_edge(master_flush_pm.exits["flush_conv"], dev_handoff.entries["run"])
     graph.add_edge(dev_handoff.exits["run"], DevAlign.entries["dev"])
     graph.add_edge(DevAlign.exits["judge_exit"], dev_criteria.entries["run"])
     graph.add_edge(dev_criteria.exits["pass"], DevWriteDesign.entries["run"])
@@ -133,13 +134,13 @@ def build_graph(runtime) -> StateGraph:
     })
     graph.add_conditional_edges(DevCommit.exits["run"], lambda s: s.get("judge_result", ""), {
         "dev_exec_step": DevExecStep.entries["run"],
-        "done": MasterFlushDev.entries["write_summary"],
+        "done": master_flush_dev.entries["write_summary"],
     })
     graph.add_edge(DevRollback.exits["run"], DevExecStep.entries["run"])
     graph.add_edge(DevEscalate.exits["run"], DevExecStep.entries["run"])
 
     # ── Phase 3: QA ──
-    graph.add_edge(MasterFlushDev.exits["flush_conv"], qa_handoff.entries["run"])
+    graph.add_edge(master_flush_dev.exits["flush_conv"], qa_handoff.entries["run"])
     graph.add_edge(qa_handoff.exits["run"], QAAlign.entries["qa_read"])
     graph.add_edge(QAAlign.exits["judge_exit"], qa_criteria.entries["run"])
     graph.add_edge(qa_criteria.exits["pass"], QAWriteTestPlan.entries["run"])
@@ -150,10 +151,10 @@ def build_graph(runtime) -> StateGraph:
     graph.add_edge(reviewer_code_review.exits["pass"], QARunTests.entries["run"])
     graph.add_edge(reviewer_code_review.exits["fail"], QAWriteTestCase.entries["run"])
     graph.add_edge(QARunTests.exits["run"], JudgeTestResult.entries["judge"])
-    graph.add_edge(JudgeTestResult.exits["to_flush"], MasterFlushQA.entries["write_summary"])
+    graph.add_edge(JudgeTestResult.exits["to_flush"], master_flush_qa.entries["write_summary"])
     graph.add_edge(JudgeTestResult.exits["to_dev_fix"], DevFix.entries["run"])
     graph.add_edge(DevFix.exits["run"], QARunTests.entries["run"])
-    graph.add_edge(MasterFlushQA.exits["flush_conv"], ConsistencyAudit.entries["run"])
+    graph.add_edge(master_flush_qa.exits["flush_conv"], ConsistencyAudit.entries["run"])
 
     # ── Phase 4: 交付 ──
     graph.add_edge(ConsistencyAudit.exits["run"], WriteMaintenanceDocs.entries["run"])
