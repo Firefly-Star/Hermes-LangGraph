@@ -8,7 +8,9 @@ from .utils import (WorkflowState, conv_name, call_agent, letter_path,
                     count_steps, WorkflowInterrupted)
 from .prompt import DEV_SYSTEM_PROMPT, FLUSH_CONTINUATION_NOTE, PLAYWRIGHT_TEST_TIPS
 from .checkpoint import save_checkpoint
-from .subgraphs import HandoffConfig, HandoffSubgraph, CriteriaDefinitionConfig, CriteriaDefinitionSubgraph
+from .subgraphs import (HandoffConfig, HandoffSubgraph,
+                         CriteriaDefinitionConfig, CriteriaDefinitionSubgraph,
+                         ArtifactReviewConfig, ArtifactReviewSubgraph)
 from langgraph.graph import END
 
 
@@ -388,96 +390,35 @@ class DevWriteDesign:
         graph.add_edge("dev_write_design_letter", "dev_write_design_read")
 
 
-class DevReviewDesign:
-    """Reviewer 审查 Dev 详细设计，2 节点 + 1 空节点。"""
+DEV_DESIGN_REVIEW_PROMPT = (
+    "请审查 Dev 的详细设计方案。\n\n"
+    "## 审查标准\n"
+    "1. 架构合理性 — 设计方案是否与 PRD 一致？技术选型是否合理？\n"
+    "2. 功能完整性 — 设计方案是否覆盖了 PRD 中所有功能点？\n"
+    "3. 数据流正确性 — 数据流转路径是否清晰？前后端接口定义是否完整？\n"
+    "4. 可实现性 — 在当前技术栈和约束下是否可行？\n"
+    "5. 可测试性 — 设计是否考虑了如何验证每个功能？\n"
+    "6. 边界与异常 — 是否涵盖了错误处理、空状态、异常场景等边界情况？\n"
+    "\n设计文件在：{workspace}/Dev/design.md\n"
+    "\n逐条给出评价，最后一行输出 == PASS == 或 == FAIL ==。\n"
+    "如果 FAIL，写明需要修正的具体问题。"
+)
 
-    entries = {"run": "dev_review_design"}
-    exits = {"run": "dev_review_design_exit",
-             "write_feedback": "dev_review_design_feedback"}
-
-    _runtime = None
-
-    @staticmethod
-    def review_design(state) -> dict:
-        """Reviewer 审查 design.md + judge_reply (2 call_agents)."""
-        runtime = DevReviewDesign._runtime
-        print(f"\n{'='*60}\n  ==> Reviewer 审查 Dev 详细设计\n{'='*60}")
-
-        dev_dir = os.path.join(runtime.paths.workspace, "Dev")
-        design_path = os.path.join(dev_dir, "design.md")
-        criteria_path = runtime.context.get_ctx("dev_criteria_path") or ""
-
-        if not os.path.exists(design_path):
-            print(f"  ✗ 设计文件不存在：{design_path}")
-            return {"phase": "review_design_fail", "judge_result": "dev_write_design"}
-
-        criteria_ref = ""
-        if criteria_path and os.path.exists(criteria_path):
-            criteria_ref = f"\n审核标准文件：{criteria_path}"
-
-        review = call_agent(runtime, "reviewer", conv_name("review-design"),
-            "请审查 Dev 的详细设计方案。\n\n"
-            "## 审查标准\n"
-            "1. 架构合理性 — 设计方案是否与 PRD 一致？技术选型是否合理？\n"
-            "2. 功能完整性 — 设计方案是否覆盖了 PRD 中所有功能点？\n"
-            "3. 数据流正确性 — 数据流转路径是否清晰？前后端接口定义是否完整？\n"
-            "4. 可实现性 — 在当前技术栈和约束下是否可行？\n"
-            "5. 可测试性 — 设计是否考虑了如何验证每个功能？\n"
-            "6. 边界与异常 — 是否涵盖了错误处理、空状态、异常场景等边界情况？\n"
-            f"\n设计文件在：{design_path}"
-            + criteria_ref +
-            "\n\n逐条给出评价，最后一行输出 == PASS == 或 == FAIL ==。\n"
-            "如果 FAIL，写明需要修正的具体问题。",
-            stream=True)
-
-        judge_result = judge_reply(runtime, "Reviewer", review, [
-            "P. 设计审查通过。",
-            "F. 设计审查不通过，需要修改。",
-        ], tag="judge-dev-design")
-        passed = judge_result.strip() == "P"
-
-        runtime.logger.log_event("design_reviewed",
-            detail=f"Dev 设计审查{'通过' if passed else '不通过'}")
-
-        if passed:
-            return {"phase": "review_design_done", "judge_result": "dev_write_plan"}
-        else:
-            runtime.context.set_ctx("review_text", review)
-            return {"phase": "review_design_fail", "judge_result": "dev_write_design"}
-
-    @staticmethod
-    def write_feedback(state) -> dict:
-        """不通过时写反馈信 (1 call_agent via write_letter)."""
-        runtime = DevReviewDesign._runtime
-        review = runtime.context.get_ctx("review_text") or ""
-
-        feedback_path = letter_path(runtime, "reviewer-design-feedback")
-        write_letter(runtime, "reviewer", conv_name("review-design-feedback"),
-                     feedback_path, "Dev 设计审查反馈",
-                     f"以下是你在上一轮审查中给出的评审意见，请整理成一封反馈信。\n\n"
-                     f"## 你的审查意见\n{review}")
-        runtime.context.set_ctx("design_feedback_path", feedback_path)
-        runtime.context.set_ctx("review_text", "")
-        return {"phase": "design_feedback_done", "judge_result": "dev_write_design"}
-
-    @staticmethod
-    def exit_pass(state) -> dict:
-        """空节点：PASS 出口 (0 call_agent)."""
-        return state
-
-    @classmethod
-    def register(cls, graph, runtime):
-        cls._runtime = runtime
-        register_nodes(graph, runtime, {
-            "dev_review_design": cls.review_design,
-            "dev_review_design_feedback": cls.write_feedback,
-            "dev_review_design_exit": cls.exit_pass,
-        })
-
-        graph.add_conditional_edges("dev_review_design", lambda s: s.get("judge_result", ""), {
-            "dev_write_plan": "dev_review_design_exit",
-            "dev_write_design": "dev_review_design_feedback",
-        })
+DEV_DESIGN_REVIEW_CONFIG = ArtifactReviewConfig(
+    domain="dev_design",
+    review_title="Reviewer 审查 Dev 详细设计",
+    review_prompt=DEV_DESIGN_REVIEW_PROMPT,
+    review_conv="review-design",
+    pass_judge_result="dev_write_plan",
+    fail_judge_result="dev_write_design",
+    review_text_key="review_text",
+    feedback_path_key="design_feedback_path",
+    criteria_path_key="dev_criteria_path",
+    judge_tag="judge-dev-design",
+    feedback_conv="review-dev-design-feedback",
+    feedback_letter_title="Dev 设计审查反馈",
+)
+DEV_DESIGN_REVIEW_DEF = ArtifactReviewSubgraph.define(DEV_DESIGN_REVIEW_CONFIG)
 
 
 class DevWritePlan:
@@ -596,111 +537,57 @@ class DevWritePlan:
         graph.add_edge("dev_write_plan_letter", "dev_write_plan_read")
 
 
-class DevReviewPlan:
-    """Reviewer 审查 Dev 实现计划，2 节点 + 1 空节点。"""
+DEV_PLAN_REVIEW_PROMPT = (
+    "你是一个项目审查员。请审查 Dev 的分步实现计划。\n\n"
+    "## 审查标准\n"
+    "逐条检查以下维度，每一条回复 ✓ 或 ✗：\n\n"
+    "1. **步骤完整性** — 计划是否覆盖了设计文档中的所有功能点？\n"
+    "   设计文档在：{workspace}/Dev/design.md\n"
+    "2. **验收可执行性** — 每个 Step 的验收方法是否为可运行的命令、\n"
+    "   Playwright 脚本、或测试代码？不允许'确认代码正确'、'检查逻辑'这类主观描述。\n"
+    "3. **步骤粒度** — 每个 Step 的改动是否不超过 3-5 个文件？\n"
+    "4. **步骤顺序** — 步骤是否按依赖关系排列？\n"
+    "5. **可验证性** — 每个 Step 完成后是否可独立验证？\n"
+    "6. **验收覆盖度** — 每个 Step 的验收方法是否覆盖了该步骤的所有改动？\n"
+    "   如果用了 Playwright/E2E 方式，是否写明了具体的验证步骤和预期结果？\n"
+    "7. **Playwright 规范** — 计划中的 Playwright 测试是否遵守以下规范：\n"
+    + "\n".join("   " + l for l in PLAYWRIGHT_TEST_TIPS.strip().split("\n"))
+    + "\n\n"
+    "## Dev 的实现计划\n"
+    "计划文件在：{workspace}/Dev/plan.md\n\n"
+    "## 输出格式\n"
+    "逐条给出评价，最后一行输出 == PASS == 或 == FAIL ==。\n"
+    "如果 FAIL，写明需要修正的具体问题。"
+)
 
-    entries = {"run": "dev_review_plan"}
-    exits = {"run": "dev_review_plan_exit",
-             "write_feedback": "dev_review_plan_feedback"}
 
-    _runtime = None
+def _dev_plan_on_pass(state, runtime):
+    """DevReviewPlan 通过时初始化 step 计数器。"""
+    plan_path = os.path.join(runtime.paths.workspace, "Dev", "plan.md")
+    total = count_steps(plan_path)
+    runtime.context.set_ctx("dev_step_index", "0")
+    runtime.context.set_ctx("dev_total_steps", str(total))
+    runtime.context.set_ctx("dev_step_fail_count", "0")
+    runtime.context.set_ctx("dev_step_has_failed", "false")
+    return {"phase": "plan_review_done", "judge_result": "dev_exec"}
 
-    @staticmethod
-    def review_plan(state) -> dict:
-        """Reviewer 审查 + judge_reply (2 call_agents, judge 是 stream=False)."""
-        runtime = DevReviewPlan._runtime
-        print(f"\n{'='*60}\n  ==> Reviewer 审查 Dev 实现计划\n{'='*60}")
 
-        dev_dir = os.path.join(runtime.paths.workspace, "Dev")
-        plan_path = os.path.join(dev_dir, "plan.md")
-        design_path = os.path.join(dev_dir, "design.md")
-        criteria_path = runtime.context.get_ctx("dev_criteria_path") or ""
-
-        if not os.path.exists(plan_path):
-            print(f"  ✗ 计划文件不存在：{plan_path}")
-            return {"phase": "review_plan_fail", "judge_result": "dev_write_plan"}
-
-        prompt = (
-            "你是一个项目审查员。请审查 Dev 的分步实现计划。\n\n"
-            "## 审查标准\n"
-            "逐条检查以下维度，每一条回复 ✓ 或 ✗：\n\n"
-            "1. **步骤完整性** — 计划是否覆盖了设计文档中的所有功能点？\n"
-            f"   设计文档在：{design_path}\n"
-            "2. **验收可执行性** — 每个 Step 的验收方法是否为可运行的命令、\n"
-            "   Playwright 脚本、或测试代码？不允许'确认代码正确'、'检查逻辑'这类主观描述。\n"
-            "3. **步骤粒度** — 每个 Step 的改动是否不超过 3-5 个文件？\n"
-            "4. **步骤顺序** — 步骤是否按依赖关系排列？\n"
-            "5. **可验证性** — 每个 Step 完成后是否可独立验证？\n"
-            "6. **验收覆盖度** — 每个 Step 的验收方法是否覆盖了该步骤的所有改动？\n"
-            "   如果用了 Playwright/E2E 方式，是否写明了具体的验证步骤和预期结果？\n"
-            "7. **Playwright 规范** — 计划中的 Playwright 测试是否遵守以下规范：\n"
-            + "\n".join("   " + l for l in PLAYWRIGHT_TEST_TIPS.strip().split("\n"))
-            + "\n\n"
-            "## Dev 的实现计划\n"
-            f"计划文件在：{plan_path}\n\n"
-            f"## 审核标准参考\n{criteria_path}\n\n"
-            "## 输出格式\n"
-            "逐条给出评价，最后一行输出 == PASS == 或 == FAIL ==。\n"
-            "如果 FAIL，写明需要修正的具体问题。"
-        )
-
-        review = call_agent(runtime, "reviewer", conv_name("review-plan"),
-                            prompt, stream=True)
-        print(f"\n── Reviewer 审查结果 ──\n{review}\n")
-
-        judge_result = judge_reply(runtime, "Reviewer", review, [
-            "P. 计划审查通过。",
-            "F. 计划审查不通过，需要修改。",
-        ], tag="judge-dev-plan")
-        passed = judge_result.strip() == "P"
-
-        runtime.logger.log_event("plan_reviewed",
-            detail=f"Dev 计划审查{'通过' if passed else '不通过'}")
-
-        if passed:
-            total = count_steps(plan_path)
-            runtime.context.set_ctx("dev_step_index", "0")
-            runtime.context.set_ctx("dev_total_steps", str(total))
-            runtime.context.set_ctx("dev_step_fail_count", "0")
-            runtime.context.set_ctx("dev_step_has_failed", "false")
-            return {"phase": "plan_review_done", "judge_result": "dev_exec"}
-        else:
-            runtime.context.set_ctx("review_text", review)
-            return {"phase": "plan_review_fail", "judge_result": "dev_write_plan"}
-
-    @staticmethod
-    def write_feedback(state) -> dict:
-        """不通过时写反馈信 (1 call_agent via write_letter)."""
-        runtime = DevReviewPlan._runtime
-        review = runtime.context.get_ctx("review_text") or ""
-
-        feedback_path = letter_path(runtime, "reviewer-plan-feedback")
-        write_letter(runtime, "reviewer", conv_name("review-plan-feedback"),
-                     feedback_path, "Dev 计划审查反馈",
-                     f"以下是你在上一轮审查中给出的评审意见，请整理成一封反馈信。\n\n"
-                     f"## 你的审查意见\n{review}")
-        runtime.context.set_ctx("plan_feedback_path", feedback_path)
-        runtime.context.set_ctx("review_text", "")
-        return {"phase": "plan_feedback_done", "judge_result": "dev_write_plan"}
-
-    @staticmethod
-    def exit_pass(state) -> dict:
-        """空节点：PASS 出口 (0 call_agent)."""
-        return state
-
-    @classmethod
-    def register(cls, graph, runtime):
-        cls._runtime = runtime
-        register_nodes(graph, runtime, {
-            "dev_review_plan": cls.review_plan,
-            "dev_review_plan_feedback": cls.write_feedback,
-            "dev_review_plan_exit": cls.exit_pass,
-        })
-
-        graph.add_conditional_edges("dev_review_plan", lambda s: s.get("judge_result", ""), {
-            "dev_exec": "dev_review_plan_exit",
-            "dev_write_plan": "dev_review_plan_feedback",
-        })
+DEV_PLAN_REVIEW_CONFIG = ArtifactReviewConfig(
+    domain="dev_plan",
+    review_title="Reviewer 审查 Dev 实现计划",
+    review_prompt=DEV_PLAN_REVIEW_PROMPT,
+    review_conv="review-plan",
+    pass_judge_result="dev_exec",
+    fail_judge_result="dev_write_plan",
+    review_text_key="review_text",
+    feedback_path_key="plan_feedback_path",
+    criteria_path_key="dev_criteria_path",
+    judge_tag="judge-dev-plan",
+    feedback_conv="review-dev-plan-feedback",
+    feedback_letter_title="Dev 计划审查反馈",
+    on_pass=_dev_plan_on_pass,
+)
+DEV_PLAN_REVIEW_DEF = ArtifactReviewSubgraph.define(DEV_PLAN_REVIEW_CONFIG)
 
 
 class DevGitInit:

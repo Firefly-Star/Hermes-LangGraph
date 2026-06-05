@@ -9,12 +9,12 @@ from .phase0 import PreFlightClarify
 from .phase1 import (PM_HANDOFF_DEF, PM_CRITERIA_DEF, PMAlign, MasterReplyPM, JudgeMasterReply, ClarifyInject,
                      PMWriteDoc, ReviewPMOutput, HumanReview)
 from .phase2 import (DEV_HANDOFF_DEF, DEV_CRITERIA_DEF, DevAlign,
-                     DevWriteDesign, DevReviewDesign,
-                     DevWritePlan, DevReviewPlan, DevGitInit, DevExecStep,
+                     DevWriteDesign, DEV_DESIGN_REVIEW_DEF,
+                     DevWritePlan, DEV_PLAN_REVIEW_DEF, DevGitInit, DevExecStep,
                      DevReviewStep, DevCommit, DevRollback, DevEscalate)
 from .phase3 import (QA_HANDOFF_DEF, QA_CRITERIA_DEF, QAAlign,
-                     QAWriteTestPlan, MasterReviewPlan, QAWriteTestCase,
-                     ReviewerReviewCode, QARunTests, JudgeTestResult, DevFix)
+                     QAWriteTestPlan, MASTER_PLAN_REVIEW_DEF, QAWriteTestCase,
+                     REVIEWER_CODE_REVIEW_DEF, QARunTests, JudgeTestResult, DevFix)
 from .flush import (MasterFlushClarify, MasterFlushPM, MasterFlushDev, MasterFlushQA)
 from .checkpoint import ResumeRouter
 from .phase4 import ConsistencyAudit, WriteMaintenanceDocs, DeliverySummary
@@ -51,9 +51,9 @@ def build_graph(runtime) -> StateGraph:
     DevAlign.register(graph, runtime)
     dev_criteria = DEV_CRITERIA_DEF.register(graph, runtime)
     DevWriteDesign.register(graph, runtime)
-    DevReviewDesign.register(graph, runtime)
+    dev_design_review = DEV_DESIGN_REVIEW_DEF.register(graph, runtime)
     DevWritePlan.register(graph, runtime)
-    DevReviewPlan.register(graph, runtime)
+    dev_plan_review = DEV_PLAN_REVIEW_DEF.register(graph, runtime)
     DevGitInit.register(graph, runtime)
     DevExecStep.register(graph, runtime)
     DevReviewStep.register(graph, runtime)
@@ -67,9 +67,9 @@ def build_graph(runtime) -> StateGraph:
     QAAlign.register(graph, runtime)
     qa_criteria = QA_CRITERIA_DEF.register(graph, runtime)
     QAWriteTestPlan.register(graph, runtime)
-    MasterReviewPlan.register(graph, runtime)
+    master_plan_review = MASTER_PLAN_REVIEW_DEF.register(graph, runtime)
     QAWriteTestCase.register(graph, runtime)
-    ReviewerReviewCode.register(graph, runtime)
+    reviewer_code_review = REVIEWER_CODE_REVIEW_DEF.register(graph, runtime)
     QARunTests.register(graph, runtime)
     JudgeTestResult.register(graph, runtime)
     DevFix.register(graph, runtime)
@@ -117,12 +117,12 @@ def build_graph(runtime) -> StateGraph:
     graph.add_edge(dev_handoff.exits["run"], DevAlign.entries["dev"])
     graph.add_edge(DevAlign.exits["judge_exit"], dev_criteria.entries["run"])
     graph.add_edge(dev_criteria.exits["pass"], DevWriteDesign.entries["run"])
-    graph.add_edge(DevWriteDesign.exits["run"], DevReviewDesign.entries["run"])
-    graph.add_edge(DevReviewDesign.exits["run"], DevWritePlan.entries["run"])
-    graph.add_edge(DevReviewDesign.exits["write_feedback"], DevWriteDesign.entries["run"])
-    graph.add_edge(DevWritePlan.exits["run"], DevReviewPlan.entries["run"])
-    graph.add_edge(DevReviewPlan.exits["run"], DevGitInit.entries["run"])
-    graph.add_edge(DevReviewPlan.exits["write_feedback"], DevWritePlan.entries["run"])
+    graph.add_edge(DevWriteDesign.exits["run"], dev_design_review.entries["run"])
+    graph.add_edge(dev_design_review.exits["pass"], DevWritePlan.entries["run"])
+    graph.add_edge(dev_design_review.exits["fail"], DevWriteDesign.entries["run"])
+    graph.add_edge(DevWritePlan.exits["run"], dev_plan_review.entries["run"])
+    graph.add_edge(dev_plan_review.exits["pass"], DevGitInit.entries["run"])
+    graph.add_edge(dev_plan_review.exits["fail"], DevWritePlan.entries["run"])
     graph.add_edge(DevGitInit.exits["run"], DevExecStep.entries["run"])
     graph.add_edge(DevExecStep.exits["run"], DevReviewStep.entries["run"])
     graph.add_conditional_edges(DevReviewStep.exits["run"], lambda s: s.get("judge_result", ""), {
@@ -143,12 +143,12 @@ def build_graph(runtime) -> StateGraph:
     graph.add_edge(qa_handoff.exits["run"], QAAlign.entries["qa_read"])
     graph.add_edge(QAAlign.exits["judge_exit"], qa_criteria.entries["run"])
     graph.add_edge(qa_criteria.exits["pass"], QAWriteTestPlan.entries["run"])
-    graph.add_edge(QAWriteTestPlan.exits["run"], MasterReviewPlan.entries["review"])
-    graph.add_edge(MasterReviewPlan.exits["to_qa_code"], QAWriteTestCase.entries["run"])
-    graph.add_edge(MasterReviewPlan.exits["write_feedback"], QAWriteTestPlan.entries["run"])
-    graph.add_edge(QAWriteTestCase.exits["run"], ReviewerReviewCode.entries["review"])
-    graph.add_edge(ReviewerReviewCode.exits["to_qa_run"], QARunTests.entries["run"])
-    graph.add_edge(ReviewerReviewCode.exits["write_feedback"], QAWriteTestCase.entries["run"])
+    graph.add_edge(QAWriteTestPlan.exits["run"], master_plan_review.entries["run"])
+    graph.add_edge(master_plan_review.exits["pass"], QAWriteTestCase.entries["run"])
+    graph.add_edge(master_plan_review.exits["fail"], QAWriteTestPlan.entries["run"])
+    graph.add_edge(QAWriteTestCase.exits["run"], reviewer_code_review.entries["run"])
+    graph.add_edge(reviewer_code_review.exits["pass"], QARunTests.entries["run"])
+    graph.add_edge(reviewer_code_review.exits["fail"], QAWriteTestCase.entries["run"])
     graph.add_edge(QARunTests.exits["run"], JudgeTestResult.entries["judge"])
     graph.add_edge(JudgeTestResult.exits["to_flush"], MasterFlushQA.entries["write_summary"])
     graph.add_edge(JudgeTestResult.exits["to_dev_fix"], DevFix.entries["run"])

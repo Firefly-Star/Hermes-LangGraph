@@ -7,7 +7,9 @@ from .utils import (WorkflowState, conv_name, call_agent, letter_path,
                     register_nodes)
 from .checkpoint import clear_checkpoint
 from .prompt import PLAYWRIGHT_TEST_TIPS
-from .subgraphs import HandoffConfig, HandoffSubgraph, CriteriaDefinitionConfig, CriteriaDefinitionSubgraph
+from .subgraphs import (HandoffConfig, HandoffSubgraph,
+                         CriteriaDefinitionConfig, CriteriaDefinitionSubgraph,
+                         ArtifactReviewConfig, ArtifactReviewSubgraph)
 
 
 QA_HANDOFF_LETTER = (
@@ -426,87 +428,37 @@ class QAWriteTestPlan:
         register_nodes(graph, runtime, {"qawrite_plan": cls.run})
 
 
-class MasterReviewPlan:
-    """Master 审查测试计划 (1 call_agent + 1 judge_reply)."""
+MASTER_PLAN_REVIEW_PROMPT = (
+    "请审查 QA 的测试计划。\n\n"
+    "## 测试计划文件\n"
+    "{workspace}/QA/test-plan.md\n\n"
+    "请先使用 read_file 工具读取测试计划，然后逐项检查：\n"
+    "1. 是否覆盖了 PRD 中的所有功能点？\n"
+    "2. 测试方法选择是否合理（E2E/API/单元）？\n"
+    "3. 是否涵盖了边界场景和异常路径？\n"
+    "4. 测试环境要求是否明确？\n\n"
+    "如果完全没问题，最后一行输出 == PASS ==\n"
+    "如果有任何问题，最后一行输出 == FAIL ==，并写明需要修正的具体问题。"
+)
 
-    entries = {"review": "master_review_plan"}
-    exits = {"to_qa_code": "master_review_plan_pass",
-             "write_feedback": "master_review_plan_feedback"}
-
-    _runtime = None
-
-    @staticmethod
-    def review(state) -> dict:
-        """Master 审查 + judge_reply."""
-        runtime = MasterReviewPlan._runtime
-        plan_path = runtime.context.get_ctx("qa_plan_path") or ""
-        master_conv = runtime.context.get_ctx("master_conv")
-
-        print(f"\n{'='*60}\n  ==> Master 审查测试计划\n{'='*60}")
-
-        if not plan_path or not os.path.exists(plan_path):
-            raise RuntimeError(f"测试计划文件不存在：{plan_path}")
-
-        review = call_agent(runtime, "master", master_conv,
-            "请审查 QA 的测试计划。\n\n"
-            f"## 测试计划文件\n{plan_path}\n\n"
-            "请先使用 read_file 工具读取测试计划，然后逐项检查：\n"
-            "1. 是否覆盖了 PRD 中的所有功能点？\n"
-            "2. 测试方法选择是否合理（E2E/API/单元）？\n"
-            "3. 是否涵盖了边界场景和异常路径？\n"
-            "4. 测试环境要求是否明确？\n\n"
-            "如果完全没问题，最后一行输出 == PASS ==\n"
-            "如果有任何问题，最后一行输出 == FAIL ==，并写明需要修正的具体问题。",
-            stream=True)
-
-        judge_result = judge_reply(runtime, "Master", review, [
-            "P. 测试计划通过，可以开始编写测试代码。",
-            "F. 测试计划需要修改。",
-        ], tag="judge-qa-plan")
-        passed = judge_result.strip() == "P"
-
-        if passed:
-            runtime.logger.log_event("plan_reviewed", detail="QA 测试计划审查通过")
-            return {"phase": "qa_plan_reviewed", "judge_result": "qa_write_code"}
-        else:
-            runtime.context.set_ctx("qa_plan_review", review)
-            runtime.logger.log_event("plan_reviewed", detail="QA 测试计划审查不通过")
-            return {"phase": "qa_plan_fail", "judge_result": "qa_write_plan"}
-
-    @staticmethod
-    def write_feedback(state) -> dict:
-        """写反馈信 (1 call_agent via write_letter)."""
-        runtime = MasterReviewPlan._runtime
-        review = runtime.context.get_ctx("qa_plan_review") or ""
-        master_conv = runtime.context.get_ctx("master_conv")
-
-        feedback_path = letter_path(runtime, "master-plan-feedback")
-        write_letter(runtime, "master", master_conv, feedback_path,
-                     "Master 对测试计划的审查反馈",
-                     f"以下是你在上轮审查中给出的评审意见，请整理成一封反馈信。\n\n"
-                     f"## 你的审查意见\n{review}")
-        runtime.context.set_ctx("qa_plan_feedback_path", feedback_path)
-        runtime.context.set_ctx("qa_plan_review", "")
-        return {"phase": "qa_plan_feedback_done", "judge_result": "qa_write_plan"}
-
-    @staticmethod
-    def to_qa_code(state) -> dict:
-        """空节点：PASS 出口 (0 call_agent)."""
-        return state
-
-    @classmethod
-    def register(cls, graph, runtime):
-        cls._runtime = runtime
-        register_nodes(graph, runtime, {
-            "master_review_plan": cls.review,
-            "master_review_plan_pass": cls.to_qa_code,
-            "master_review_plan_feedback": cls.write_feedback,
-        })
-
-        graph.add_conditional_edges("master_review_plan", lambda s: s.get("judge_result", ""), {
-            "qa_write_code": "master_review_plan_pass",
-            "qa_write_plan": "master_review_plan_feedback",
-        })
+MASTER_PLAN_REVIEW_CONFIG = ArtifactReviewConfig(
+    domain="master_plan",
+    review_title="Master 审查测试计划",
+    review_prompt=MASTER_PLAN_REVIEW_PROMPT,
+    review_conv="",                            # 使用 review_conv_key
+    review_conv_key="master_conv",
+    pass_judge_result="qa_write_code",
+    fail_judge_result="qa_write_plan",
+    review_text_key="qa_plan_review",
+    feedback_path_key="qa_plan_feedback_path",
+    agent_role="master",
+    feedback_sender="master",
+    feedback_letter_title="Master 对测试计划的审查反馈",
+    judge_tag="judge-qa-plan",
+    feedback_conv="",
+    feedback_conv_key="master_conv",
+)
+MASTER_PLAN_REVIEW_DEF = ArtifactReviewSubgraph.define(MASTER_PLAN_REVIEW_CONFIG)
 
 
 class QAWriteTestCase:
@@ -577,97 +529,39 @@ class QAWriteTestCase:
         register_nodes(graph, runtime, {"qawrite_code": cls.run})
 
 
-class ReviewerReviewCode:
-    """Reviewer 审查测试代码 (1 call_agent + 1 judge_reply)."""
+REVIEWER_CODE_REVIEW_PROMPT = (
+    "请审查 QA 的测试代码。\n\n"
+    "## 测试代码目录\n"
+    "{workspace}/QA/tests\n"
+    "请先使用 read_file 工具读取所有测试文件，然后逐项检查：\n"
+    "1. 测试是否覆盖了 PRD 中的所有功能点\n"
+    "2. 测试方法选择是否合适\n"
+    "3. 边界场景和异常路径是否有覆盖\n"
+    "4. 测试代码质量：定位器是否稳定、断言是否正确、是否有不必要的等待\n"
+    "5. 测试是否遵守 Playwright 测试规范：\n"
+    + "\n".join("   " + l for l in PLAYWRIGHT_TEST_TIPS.strip().split("\n"))
+    + "\n"
+    "6. 测试是否可独立重复执行、是否幂等\n"
+    "7. 在此过程中，你不需要执行测试代码，你只需要检验测试代码的合理性和可用性。\n"
+    "\n逐条给出评价，如果完全没问题，最后一行输出 == PASS ==\n"
+    "如果有任何问题，最后一行输出 == FAIL ==，并写明需要修正的具体问题。"
+)
 
-    entries = {"review": "reviewer_review_code"}
-    exits = {"to_qa_run": "reviewer_review_code_pass",
-             "write_feedback": "reviewer_review_code_feedback"}
-
-    _runtime = None
-
-    @staticmethod
-    def review(state) -> dict:
-        """Reviewer 审查 + judge_reply."""
-        runtime = ReviewerReviewCode._runtime
-        qa_test_dir = runtime.context.get_ctx("qa_code_path") or ""
-        criteria_path = runtime.context.get_ctx("qa_criteria_path") or ""
-
-        print(f"\n{'='*60}\n  ==> Reviewer 审查测试代码\n{'='*60}")
-
-        if not qa_test_dir or not os.path.isdir(qa_test_dir):
-            raise RuntimeError(f"测试代码目录不存在：{qa_test_dir}")
-
-        criteria_ref = ""
-        if criteria_path and os.path.exists(criteria_path):
-            criteria_ref = f"\n## 审核标准\n{criteria_path}"
-
-        prompt_text = (
-            "请审查 QA 的测试代码。\n\n"
-            f"## 测试代码目录\n{qa_test_dir}\n"
-            "请先使用 read_file 工具读取所有测试文件，然后逐项检查：\n"
-            "1. 测试是否覆盖了 PRD 中的所有功能点\n"
-            "2. 测试方法选择是否合适\n"
-            "3. 边界场景和异常路径是否有覆盖\n"
-            "4. 测试代码质量：定位器是否稳定、断言是否正确、是否有不必要的等待\n"
-            "5. 测试是否遵守 Playwright 测试规范：\n"
-            + "\n".join("   " + l for l in PLAYWRIGHT_TEST_TIPS.strip().split("\n"))
-            + "\n"
-            "6. 测试是否可独立重复执行、是否幂等"
-            "7. 在此过程中，你不需要执行测试代码，你只需要检验测试代码的合理性和可用性。"
-            + criteria_ref +
-            "\n\n逐条给出评价，如果完全没问题，最后一行输出 == PASS ==\n"
-            "如果有任何问题，最后一行输出 == FAIL ==，并写明需要修正的具体问题。")
-        review = call_agent(runtime, "reviewer", conv_name("review-qa-code"),
-            prompt_text, stream=True)
-
-        judge_result = judge_reply(runtime, "Reviewer", review, [
-            "P. 测试代码审查通过，可以运行测试。",
-            "F. 测试代码需要修改。",
-        ], tag="judge-qa-code")
-        passed = judge_result.strip() == "P"
-
-        if passed:
-            runtime.logger.log_event("code_reviewed", detail="QA 测试代码审查通过")
-            return {"phase": "qa_code_reviewed", "judge_result": "qa_run_tests"}
-        else:
-            runtime.context.set_ctx("qa_code_review", review)
-            runtime.logger.log_event("code_reviewed", detail="QA 测试代码审查不通过")
-            return {"phase": "qa_code_fail", "judge_result": "qa_write_code"}
-
-    @staticmethod
-    def write_feedback(state) -> dict:
-        """写反馈信 (1 call_agent via write_letter)."""
-        runtime = ReviewerReviewCode._runtime
-        review = runtime.context.get_ctx("qa_code_review") or ""
-
-        feedback_path = letter_path(runtime, "reviewer-code-feedback")
-        write_letter(runtime, "reviewer", conv_name("review-code-feedback"),
-                     feedback_path, "测试代码审查反馈",
-                     f"以下是你在上轮审查中给出的评审意见，请整理成一封反馈信。\n\n"
-                     f"## 你的审查意见\n{review}")
-        runtime.context.set_ctx("qa_code_feedback_path", feedback_path)
-        runtime.context.set_ctx("qa_code_review", "")
-        return {"phase": "qa_code_feedback_done", "judge_result": "qa_write_code"}
-
-    @staticmethod
-    def to_qa_run(state) -> dict:
-        """空节点：PASS 出口 (0 call_agent)."""
-        return state
-
-    @classmethod
-    def register(cls, graph, runtime):
-        cls._runtime = runtime
-        register_nodes(graph, runtime, {
-            "reviewer_review_code": cls.review,
-            "reviewer_review_code_pass": cls.to_qa_run,
-            "reviewer_review_code_feedback": cls.write_feedback,
-        })
-
-        graph.add_conditional_edges("reviewer_review_code", lambda s: s.get("judge_result", ""), {
-            "qa_run_tests": "reviewer_review_code_pass",
-            "qa_write_code": "reviewer_review_code_feedback",
-        })
+REVIEWER_CODE_REVIEW_CONFIG = ArtifactReviewConfig(
+    domain="reviewer_code",
+    review_title="Reviewer 审查测试代码",
+    review_prompt=REVIEWER_CODE_REVIEW_PROMPT,
+    review_conv="review-qa-code",
+    pass_judge_result="qa_run_tests",
+    fail_judge_result="qa_write_code",
+    review_text_key="qa_code_review",
+    feedback_path_key="qa_code_feedback_path",
+    criteria_path_key="qa_criteria_path",
+    judge_tag="judge-qa-code",
+    feedback_conv="review-qa-code-feedback",
+    feedback_letter_title="测试代码审查反馈",
+)
+REVIEWER_CODE_REVIEW_DEF = ArtifactReviewSubgraph.define(REVIEWER_CODE_REVIEW_CONFIG)
 
 
 class QARunTests:
