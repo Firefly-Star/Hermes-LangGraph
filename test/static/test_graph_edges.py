@@ -12,13 +12,13 @@ class DummyClient(ConversationClient):
         pass
 
 
-@pytest.fixture(scope="module")
-def app():
-    rt = AgentRuntime(config_path=None, conversation_client=DummyClient())
+@pytest.fixture
+def app(test_config):
+    rt = AgentRuntime(config_path=test_config, conversation_client=DummyClient())
     return build_graph(rt)
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def graph(app):
     return app.get_graph()
 

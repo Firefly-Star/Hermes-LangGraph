@@ -123,7 +123,7 @@ class CriteriaDefinitionSubgraph:
                 return {"phase": f"review_{domain}_criteria_fail",
                         "judge_result": config.fail_judge_result}
 
-            review = call_agent(rt, "reviewer", conv_name(config.review_conv),
+            review_text = call_agent(rt, "reviewer", conv_name(config.review_conv),
                 "请审查以下审核标准。\n\n"
                 "逐条检查：\n"
                 "1. 每条标准是否具体、可衡量(审核标准不能带有\"恰当\"，\"合理\"等主观判断)？\n"
@@ -138,7 +138,7 @@ class CriteriaDefinitionSubgraph:
                 "如果 FAIL，写明需要修正的具体问题。",
                 stream=True)
 
-            judge_result = judge_reply(rt, "Reviewer", review, [
+            judge_result = judge_reply(rt, "Reviewer", review_text, [
                 "P. 审查通过，所有标准具体可衡量。",
                 "F. 审查不通过，标准需要修正。",
             ], tag=config.judge_tag)
@@ -151,7 +151,7 @@ class CriteriaDefinitionSubgraph:
                 return {"phase": f"review_{domain}_criteria_done",
                         "judge_result": config.pass_judge_result}
             else:
-                rt.context.set_ctx(review_text_key, review)
+                rt.context.set_ctx(review_text_key, review_text)
                 rt.logger.log_event("criteria_reviewed",
                     detail=f"{config.criteria_title}审查不通过")
                 return {"phase": f"review_{domain}_criteria_fail",

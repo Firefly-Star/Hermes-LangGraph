@@ -30,6 +30,43 @@ test/
     └── test_full_workflow.py
 ```
 
+## 测试配置隔离
+
+测试使用独立的 `test_config` fixture（定义在 `test/conftest.py`），完全不加载 `runtime_config.json`。
+
+```python
+@pytest.fixture
+def test_config(tmp_path):
+    """生成隔离的测试用 config.json，所有路径指向 tmp_path。"""
+    p = tmp_path / ".agent_runtime"
+    cfg = {
+        "paths": {
+            "runtime_dir": str(p),
+            "workspace": str(tmp_path / "workspace"),
+            "handoffs": str(p / "handoffs"),
+            "phases": str(p / "phases"),
+            "artifacts": str(p / "artifacts"),
+            "checkpoint": str(p / "checkpoint.json"),
+        }
+    }
+    config_path = tmp_path / "test_config.json"
+    json.dump(cfg, open(config_path, "w", encoding="utf-8"))
+    return str(config_path)
+```
+
+- 每个测试函数获得独立的 `tmp_path`，零交叉污染
+- 目录建在系统临时目录下（`%TEMP%\pytest-*`），不在项目内
+- pytest 保留最近 3 次运行的 tmp 目录，下次启动时自动清理旧的
+- 传递给 `AgentRuntime(config_path=test_config, ...)` 使用
+
+如果需要为特定测试类定制配置，直接在该类的 fixture 中覆盖：
+
+```python
+@pytest.fixture(autouse=True)
+def _rt(self, mock_client, test_config):
+    self.rt = AgentRuntime(config_path=test_config, conversation_client=mock_client)
+```
+
 ## MockClient
 
 `ConversationClient` 的生产实现是 `HermesClient`（走 HTTP → Gateway），测试实现是 `MockClient`（返回预设文本）。
@@ -46,6 +83,18 @@ assert result.text == "模拟回复"
 
 - 每个测试函数必须有 docstring 或单行注释，说明**测什么**和**为什么**。后续审阅者不依赖测试函数名理解意图。
 - 一个测试函数只断言一个关注点。例外：校验 call_agent 参数时可在同一条中验证 agent + conversation + prompt。
+- **子图节点也需单元测试。** `SubgraphDef` 生成的闭包函数通过 `Def.nodes[node_name]` 访问，注入 `_runtime` 后直接调用。不能因为节点来自子图就跳过。
+
+	```python
+	def test_handoff_run_calls_master(self, mock_client):
+	    rt = AgentRuntime(config_path=None, conversation_client=mock_client)
+	    rt.context.set_ctx("master_conv", "master-test")
+	    HandoffDef._runtime = rt  # ❌ 不行，Def 没有 _runtime
+	    fn = PM_HANDOFF_DEF.nodes["handoff_pm_run"]  # ✅ 从.nodes 取闭包
+	    fn._runtime = rt
+	    result = fn({})
+	    assert result["phase"] == "handoff_done"
+	```
 
 ## 四层测试
 
