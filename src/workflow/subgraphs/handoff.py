@@ -1,16 +1,10 @@
-"""通用子图工厂。"""
+"""Master 写信给下游 agent 的子图。"""
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
-from .utils import register_nodes, letter_path, write_letter
-
-
-@dataclass
-class SubgraphResult:
-    """子图注册返回结果，统一 entries/exits 接入方式。"""
-    entries: dict
-    exits: dict
+from ..utils import register_nodes, letter_path, write_letter
+from .base import SubgraphResult
 
 
 @dataclass
@@ -20,6 +14,7 @@ class HandoffConfig:
     letter_title: str                   # 信件标题
     letter_prompt: str                  # 信件模板，可用 {workspace} {project_context} 占位
     context_letter_key: str             # 信件路径存 context 的 key
+    domain: Optional[str] = None        # 节点的前缀，默认为{receiver}
     sender: str = "master"              # 发信人 agent 名
     conversation_key: str = "master_conv"  # 发信人对话的 context key
     create_dirs: tuple[str, ...] = ()   # 写信前要创建的目录（相对 workspace）
@@ -28,6 +23,8 @@ class HandoffConfig:
     def __post_init__(self):
         if self.next_phase is None:
             self.next_phase = f"{self.receiver}_handoff_done"
+        if self.domain is None:
+            self.domain = self.receiver
 
 
 class HandoffSubgraph:
@@ -35,7 +32,7 @@ class HandoffSubgraph:
 
     @staticmethod
     def register(graph, runtime, config: HandoffConfig):
-        node_name = f"{config.receiver}_handoff"
+        node_name = f"{config.domain}_handoff"
 
         def run(state):
             rt = runtime

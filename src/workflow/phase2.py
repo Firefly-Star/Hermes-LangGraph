@@ -4,11 +4,11 @@ import os
 from .utils import (WorkflowState, conv_name, call_agent, letter_path,
                     ensure_write_file, write_letter, read_letter,
                     read_and_write_letter, judge_reply, clarify_loop,
-                    register_nodes, write_criteria, get_step_from_plan,
+                    register_nodes, get_step_from_plan,
                     count_steps, WorkflowInterrupted)
 from .prompt import DEV_SYSTEM_PROMPT, FLUSH_CONTINUATION_NOTE, PLAYWRIGHT_TEST_TIPS
 from .checkpoint import save_checkpoint
-from .subgraphs import HandoffConfig
+from .subgraphs import HandoffConfig, CriteriaDefinitionConfig
 from langgraph.graph import END
 
 
@@ -257,157 +257,38 @@ class DevAlign:
         graph.add_edge("dev_align_record", "dev_align_final")
         graph.add_edge("dev_align_final", "dev_align_dev")
 
-class DevWriteCriteria:
-    """Master 制定 Dev 审核标准 (1 call_agent via write_criteria)."""
+DEV_CRITERIA_PROMPT = (
+    "你即将为 Dev 的详细设计方案制定审核标准。\n\n"
+    "## 上游约束\n"
+    "标准必须与以下已确认的内容对齐：\n"
+    "- 项目决策记录：{project_context}\n"
+    "- PRD：{workspace}/PM/PRD.md\n"
+    "- 原型：{workspace}/PM/prototype.html\n\n"
+    "## 标准覆盖维度\n"
+    "1. 架构合理性 — 设计方案是否与 PRD 一致？技术选型是否合理？\n"
+    "2. 功能完整性 — 设计方案是否覆盖了 PRD 中所有功能点？\n"
+    "3. 数据流正确性 — 数据流转路径是否清晰？前后端接口定义是否完整？\n"
+    "4. 可实现性 — 在当前技术栈和约束下是否可行？\n"
+    "5. 可测试性 — 设计是否考虑了如何验证每个功能？\n"
+    "6. 边界与异常 — 是否涵盖了错误处理、空状态、异常场景等边界情况？\n"
+    "## 下游需求\n"
+    "- Dev 将按这些标准撰写详细设计方案\n"
+    "- Reviewer 将按这些标准审查 Dev 的设计\n\n"
+    "## 要求\n"
+    "文件中只需要写测什么以及怎么样算是测试完成，"
+    "不需要写审查方法（reviewer 自己知道怎么测）。\n"
+    "请具体、可操作，避免空泛描述。"
+)
 
-    entries = {"run": "devwrite_criteria"}
-    exits = {"run": "devwrite_criteria"}
-
-    _runtime = None
-
-    @staticmethod
-    def run(state) -> dict:
-        runtime = DevWriteCriteria._runtime
-        master_conv = runtime.context.get_ctx("master_conv")
-        project_context_path = runtime.context.get_bg("project_context_path")
-        ws = runtime.paths.workspace
-
-        runtime.logger.log_event("phase_started", detail="Dev 设计审核标准制定")
-
-        feedback_path = runtime.context.get_ctx("dev_criteria_feedback_path") or ""
-        feedback_note = ""
-        if feedback_path and os.path.exists(feedback_path):
-            feedback_note = (
-                "\n## 反馈意见\n"
-                "上一轮审查中有反馈意见需要处理，请先使用 read_file 工具读取反馈意见文件，"
-                "然后根据反馈修改标准。\n\n"
-                f"反馈意见文件：{feedback_path}\n\n"
-            )
-            runtime.context.set_ctx("dev_criteria_feedback_path", "")
-
-        prompt = (
-            "你即将为 Dev 的详细设计方案制定审核标准。\n\n"
-            "## 上游约束\n"
-            "标准必须与以下已确认的内容对齐：\n"
-            f"- 项目决策记录：{project_context_path or '（无项目决策记录）'}\n"
-            f"- PRD：{ws}/PM/PRD.md\n"
-            f"- 原型：{ws}/PM/prototype.html\n\n"
-            "## 标准覆盖维度\n"
-            "1. 架构合理性 — 设计方案是否与 PRD 一致？技术选型是否合理？\n"
-            "2. 功能完整性 — 设计方案是否覆盖了 PRD 中所有功能点？\n"
-            "3. 数据流正确性 — 数据流转路径是否清晰？前后端接口定义是否完整？\n"
-            "4. 可实现性 — 在当前技术栈和约束下是否可行？\n"
-            "5. 可测试性 — 设计是否考虑了如何验证每个功能？\n"
-            "6. 边界与异常 — 是否涵盖了错误处理、空状态、异常场景等边界情况？\n"
-            "## 下游需求\n"
-            "- Dev 将按这些标准撰写详细设计方案\n"
-            "- Reviewer 将按这些标准审查 Dev 的设计\n\n"
-            "## 要求\n"
-            "文件中只需要写测什么以及怎么样算是测试完成，不需要写审查方法（reviewer 自己知道怎么测）。\n"
-            "请具体、可操作，避免空泛描述。"
-        )
-
-        if feedback_note:
-            prompt = feedback_note + prompt
-
-        write_criteria(
-            runtime, master_conv,
-            title="Master 制定 Dev 设计审核标准",
-            file_path=os.path.join(ws, "criteria-design.md"),
-            prompt=prompt,
-            context_key="dev_criteria",
-        )
-
-        if feedback_path:
-            os.remove(feedback_path)
-
-        return {"phase": "dev_criteria_done", "judge_result": "review_dev_criteria"}
-
-    @classmethod
-    def register(cls, graph, runtime):
-        cls._runtime = runtime
-        register_nodes(graph, runtime, {"devwrite_criteria": cls.run})
-
-class ReviewDevCriteria:
-    """Reviewer 审查 Dev 审核标准，2 节点 + 1 空节点。"""
-
-    entries = {"review": "review_dev_criteria"}
-    exits = {"to_dev_design": "review_to_dev_design",
-             "write_feedback": "review_dev_criteria_feedback"}
-
-    _runtime = None
-
-    @staticmethod
-    def review(state) -> dict:
-        """Reviewer 审查 + judge_reply (2 call_agents, judge 是 stream=False)."""
-        runtime = ReviewDevCriteria._runtime
-        criteria_path = runtime.context.get_ctx("dev_criteria_path") or ""
-        print(f"\n{'='*60}\n  ==> Reviewer 审查 Dev 审核标准\n{'='*60}")
-
-        if not criteria_path or not os.path.exists(criteria_path):
-            print(f"  ✗ Dev 审核标准文件不存在：{criteria_path}")
-            return {"phase": "review_criteria_fail", "judge_result": "devwrite_criteria"}
-
-        review = call_agent(runtime, "reviewer", conv_name("review-dev-criteria"),
-            "请审查以下审核标准。\n\n"
-            "逐条检查：\n"
-            "1. 每条标准是否具体、可衡量(审核标准不能带有“恰当”，“合理”等主观判断)？\n"
-            "2. 每条标准是否都拥有可以完整完成审查的审查方法？(agent可以使用tool如file_read等方法进行审查，不需要标准中写明，但是你可以根据标准确定改用什么方法进行完整的审查)\n"
-            "3. 标准是否覆盖了所有应覆盖的维度？\n"
-            f"审核标准文件在：{criteria_path}\n\n"
-            "逐条给出评价，如果完全没有任何问题，且没有任何可以提高的建议，则最后一行输出 == PASS =="
-            "如果有任何问题或有任何建议则输出 == FAIL ==。\n"
-            "如果 FAIL，写明需要修正的具体问题。",
-            stream=True)
-
-        judge_result = judge_reply(runtime, "Reviewer", review, [
-            "P. 审查通过，所有标准具体可衡量。",
-            "F. 审查不通过，标准需要修正。",
-        ], tag="judge-dev-criteria")
-        passed = judge_result.strip() == "P"
-
-        if passed:
-            runtime.context.set_ctx("dev_criteria_feedback_path", "")
-            runtime.logger.log_event("criteria_reviewed", detail="Dev 审核标准审查通过")
-            return {"phase": "review_dev_criteria_done", "judge_result": "dev_write_design"}
-        else:
-            runtime.context.set_ctx("review_text", review)
-            runtime.logger.log_event("criteria_reviewed", detail="Dev 审核标准审查不通过")
-            return {"phase": "review_dev_criteria_fail", "judge_result": "devwrite_criteria"}
-
-    @staticmethod
-    def write_feedback(state) -> dict:
-        """不通过时写反馈信 (1 call_agent via write_letter)."""
-        runtime = ReviewDevCriteria._runtime
-        review = runtime.context.get_ctx("review_text") or ""
-
-        feedback_path = letter_path(runtime, "reviewer-dev-criteria-feedback")
-        write_letter(runtime, "reviewer", conv_name("review-dev-criteria-feedback"),
-                     feedback_path, "Dev 审核标准审查反馈",
-                     f"以下是你在上一轮审查中给出的评审意见，请整理成一封反馈信。\n\n"
-                     f"## 你的审查意见\n{review}")
-        runtime.context.set_ctx("dev_criteria_feedback_path", feedback_path)
-        runtime.context.set_ctx("review_text", "")
-        return {"phase": "review_criteria_feedback_done", "judge_result": "devwrite_criteria"}
-
-    @staticmethod
-    def to_dev_design(state) -> dict:
-        """空节点：PASS 出口 (0 call_agent)."""
-        return state
-
-    @classmethod
-    def register(cls, graph, runtime):
-        cls._runtime = runtime
-        register_nodes(graph, runtime, {
-            "review_dev_criteria": cls.review,
-            "review_dev_criteria_feedback": cls.write_feedback,
-            "review_to_dev_design": cls.to_dev_design,
-        })
-
-        graph.add_conditional_edges("review_dev_criteria", lambda s: s.get("judge_result", ""), {
-            "dev_write_design": "review_to_dev_design",
-            "devwrite_criteria": "review_dev_criteria_feedback",
-        })
+DEV_CRITERIA_CONFIG = CriteriaDefinitionConfig(
+    domain="dev",
+    criteria_title="Master 制定 Dev 设计审核标准",
+    criteria_prompt=DEV_CRITERIA_PROMPT,
+    criteria_filename="criteria-design.md",
+    context_key="dev_criteria",
+    review_conv="review-dev-criteria",
+    pass_judge_result="dev_write_design",
+)
 
 
 class DevWriteDesign:

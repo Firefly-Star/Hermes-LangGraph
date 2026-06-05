@@ -5,15 +5,15 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
 from .utils import WorkflowState, setup_runtime, interruptible
-from .subgraphs import HandoffSubgraph
+from .subgraphs import HandoffSubgraph, CriteriaDefinitionSubgraph
 from .phase0 import PreFlightClarify
-from .phase1 import (PM_HANDOFF_CONFIG, PMAlign, MasterReplyPM, JudgeMasterReply, ClarifyInject,
-                     PMWriteCriteria, ReviewPMCriteria, PMWriteDoc, ReviewPMOutput, HumanReview)
-from .phase2 import (DEV_HANDOFF_CONFIG, DevAlign, DevWriteCriteria,
-                     ReviewDevCriteria, DevWriteDesign, DevReviewDesign,
+from .phase1 import (PM_HANDOFF_CONFIG, PM_CRITERIA_CONFIG, PMAlign, MasterReplyPM, JudgeMasterReply, ClarifyInject,
+                     PMWriteDoc, ReviewPMOutput, HumanReview)
+from .phase2 import (DEV_HANDOFF_CONFIG, DEV_CRITERIA_CONFIG, DevAlign,
+                     DevWriteDesign, DevReviewDesign,
                      DevWritePlan, DevReviewPlan, DevGitInit, DevExecStep,
                      DevReviewStep, DevCommit, DevRollback, DevEscalate)
-from .phase3 import (QA_HANDOFF_CONFIG, QAAlign, QAWriteCriteria, ReviewQACriteria,
+from .phase3 import (QA_HANDOFF_CONFIG, QA_CRITERIA_CONFIG, QAAlign,
                      QAWriteTestPlan, MasterReviewPlan, QAWriteTestCase,
                      ReviewerReviewCode, QARunTests, JudgeTestResult, DevFix)
 from .flush import (MasterFlushClarify, MasterFlushPM, MasterFlushDev, MasterFlushQA)
@@ -44,15 +44,13 @@ def build_graph(runtime) -> StateGraph:
     MasterReplyPM.register(graph, runtime)
     JudgeMasterReply.register(graph, runtime)
     ClarifyInject.register(graph, runtime)
-    PMWriteCriteria.register(graph, runtime)
-    ReviewPMCriteria.register(graph, runtime)
+    pm_criteria = CriteriaDefinitionSubgraph.register(graph, runtime, PM_CRITERIA_CONFIG)
     PMWriteDoc.register(graph, runtime)
     ReviewPMOutput.register(graph, runtime)
     HumanReview.register(graph, runtime)
     dev_handoff = HandoffSubgraph.register(graph, runtime, DEV_HANDOFF_CONFIG)
     DevAlign.register(graph, runtime)
-    DevWriteCriteria.register(graph, runtime)
-    ReviewDevCriteria.register(graph, runtime)
+    dev_criteria = CriteriaDefinitionSubgraph.register(graph, runtime, DEV_CRITERIA_CONFIG)
     DevWriteDesign.register(graph, runtime)
     DevReviewDesign.register(graph, runtime)
     DevWritePlan.register(graph, runtime)
@@ -68,8 +66,7 @@ def build_graph(runtime) -> StateGraph:
     MasterFlushDev.register(graph, runtime)
     qa_handoff = HandoffSubgraph.register(graph, runtime, QA_HANDOFF_CONFIG)
     QAAlign.register(graph, runtime)
-    QAWriteCriteria.register(graph, runtime)
-    ReviewQACriteria.register(graph, runtime)
+    qa_criteria = CriteriaDefinitionSubgraph.register(graph, runtime, QA_CRITERIA_CONFIG)
     QAWriteTestPlan.register(graph, runtime)
     MasterReviewPlan.register(graph, runtime)
     QAWriteTestCase.register(graph, runtime)
@@ -100,14 +97,12 @@ def build_graph(runtime) -> StateGraph:
     graph.add_edge(PMAlign.exits["read"], MasterReplyPM.entries["run"])
     graph.add_edge(MasterReplyPM.exits["run"], JudgeMasterReply.entries["run"])
     graph.add_conditional_edges(JudgeMasterReply.exits["run"], lambda s: s.get("judge_result", ""), {
-        "A": PMWriteCriteria.entries["run"],
+        "A": pm_criteria.entries["run"],
         "B": PMAlign.entries["master_reply"],
         "C": ClarifyInject.entries["interact"],
     })
     graph.add_edge(ClarifyInject.exits["record"], MasterReplyPM.entries["run"])
-    graph.add_edge(PMWriteCriteria.exits["run"], ReviewPMCriteria.entries["review"])
-    graph.add_edge(ReviewPMCriteria.exits["to_pm_doc"], PMWriteDoc.entries["write_prd_letter"])
-    graph.add_edge(ReviewPMCriteria.exits["write_feedback"], PMWriteCriteria.entries["run"])
+    graph.add_edge(pm_criteria.exits["pass"], PMWriteDoc.entries["write_prd_letter"])
     graph.add_edge(PMWriteDoc.exits["read_proto_letter"], ReviewPMOutput.entries["run"])
     graph.add_conditional_edges(ReviewPMOutput.exits["run"], lambda s: s.get("judge_result", ""), {
         "human_review": HumanReview.entries["run"],
@@ -121,10 +116,8 @@ def build_graph(runtime) -> StateGraph:
     # ── Phase 2: Dev 出设计 + 编码执行 ──
     graph.add_edge(MasterFlushPM.exits["flush_conv"], dev_handoff.entries["run"])
     graph.add_edge(dev_handoff.exits["run"], DevAlign.entries["dev"])
-    graph.add_edge(DevAlign.exits["judge_exit"], DevWriteCriteria.entries["run"])
-    graph.add_edge(DevWriteCriteria.exits["run"], ReviewDevCriteria.entries["review"])
-    graph.add_edge(ReviewDevCriteria.exits["to_dev_design"], DevWriteDesign.entries["run"])
-    graph.add_edge(ReviewDevCriteria.exits["write_feedback"], DevWriteCriteria.entries["run"])
+    graph.add_edge(DevAlign.exits["judge_exit"], dev_criteria.entries["run"])
+    graph.add_edge(dev_criteria.exits["pass"], DevWriteDesign.entries["run"])
     graph.add_edge(DevWriteDesign.exits["run"], DevReviewDesign.entries["run"])
     graph.add_edge(DevReviewDesign.exits["run"], DevWritePlan.entries["run"])
     graph.add_edge(DevReviewDesign.exits["write_feedback"], DevWriteDesign.entries["run"])
@@ -149,10 +142,8 @@ def build_graph(runtime) -> StateGraph:
     # ── Phase 3: QA ──
     graph.add_edge(MasterFlushDev.exits["flush_conv"], qa_handoff.entries["run"])
     graph.add_edge(qa_handoff.exits["run"], QAAlign.entries["qa_read"])
-    graph.add_edge(QAAlign.exits["judge_exit"], QAWriteCriteria.entries["run"])
-    graph.add_edge(QAWriteCriteria.exits["run"], ReviewQACriteria.entries["review"])
-    graph.add_edge(ReviewQACriteria.exits["write_feedback"], QAWriteCriteria.entries["run"])
-    graph.add_edge(ReviewQACriteria.exits["to_qa_plan"], QAWriteTestPlan.entries["run"])
+    graph.add_edge(QAAlign.exits["judge_exit"], qa_criteria.entries["run"])
+    graph.add_edge(qa_criteria.exits["pass"], QAWriteTestPlan.entries["run"])
     graph.add_edge(QAWriteTestPlan.exits["run"], MasterReviewPlan.entries["review"])
     graph.add_edge(MasterReviewPlan.exits["to_qa_code"], QAWriteTestCase.entries["run"])
     graph.add_edge(MasterReviewPlan.exits["write_feedback"], QAWriteTestPlan.entries["run"])

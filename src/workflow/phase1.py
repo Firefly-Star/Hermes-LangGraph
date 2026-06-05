@@ -2,11 +2,11 @@
 import os
 
 from .utils import (WorkflowState, conv_name, call_agent, letter_path,
-                    ensure_write_file, write_letter, read_letter,
+                    write_letter, read_letter,
                     read_and_write_letter, judge_reply, clarify_loop,
-                    write_criteria, interruptible, register_nodes)
+                    register_nodes)
 from .prompt import PLAYWRIGHT_TEST_TIPS
-from .subgraphs import HandoffConfig
+from .subgraphs import HandoffConfig, CriteriaDefinitionConfig
 from langgraph.graph import END
 
 
@@ -23,10 +23,8 @@ PM_HANDOFF_LETTER = (
 )
 
 PM_HANDOFF_CONFIG = HandoffConfig(
-    receiver="pm",
-    letter_title="Master 给 PM 的信",
-    letter_prompt=PM_HANDOFF_LETTER,
-    context_letter_key="pmletter_path",
+    receiver="pm", letter_title="Master 给 PM 的信",
+    letter_prompt=PM_HANDOFF_LETTER, context_letter_key="pmletter_path",
 )
 
 
@@ -43,9 +41,8 @@ class PMAlign:
 
     @staticmethod
     def master_reply(state) -> dict:
-        """Master writes reply to PM (Call 1 in round > 0)."""
+        """Master writes reply letter to PM's understanding (1 call_agent)."""
         runtime = PMAlign._runtime
-
         master_conv = runtime.context.get_ctx("master_conv")
         if not master_conv:
             raise RuntimeError("clarify conversation 不存在")
@@ -249,161 +246,42 @@ class ClarifyInject:
         graph.add_edge("clarify_inject", "clarify_inject_write")
 
 
-class PMWriteCriteria:
-    """原 pmwrite_criteria 节点 — Master 制定 PM 审核标准。"""
+PM_CRITERIA_PROMPT = (
+    "你即将为 PM 产出的 PRD 和 prototype 制定审核标准。\n\n"
+    "## 上游约束\n"
+    "项目决策是你要考虑的上游上下文，标准必须与之对齐：\n"
+    "项目决策记录的文件地址为：{project_context}\n\n"
+    "## 标准覆盖维度\n"
+    "1. 需求完整性 — PRD 是否覆盖了所有已确认的功能？\n"
+    "2. MVP 边界 — 范围是否控制在 MVP 内？有无超额？\n"
+    "3. 逻辑自洽性 — 功能描述是否完整无矛盾？数据流是否有断点？\n"
+    "4. 一致性 — 功能定义、用户角色、技术假设是否与项目决策文件冲突？\n"
+    "5. 原型质量 — prototype 是否体现了核心交互和页面结构？\n"
+    "   - 页面要素完整（输入框、按钮、链接等）\n"
+    "   - 交互行为正确（表单校验触发、错误提示展示、页面切换、登出流程等）\n"
+    "   - 边界情况体现（空输入拦截、重复注册检测、非法字符过滤等）\n"
+    "   - 数据流一致性（注册后可登录、大小写区分、密码错误提示等信息流是否自洽）\n"
+    "   - 视觉风格统一\n"
+    "## 下游需求\n"
+    "- PM 将按这些标准撰写 PRD 和 prototype\n"
+    "- Reviewer 将按这些标准审查 PM 产出\n\n"
+    "## 要求\n"
+    "文件中只需要写测什么以及怎么样算是测试完成，不需要写审查方法（reviewer 自己知道怎么测）。\n"
+    "（对于原型的审核，优先考虑Playwright可以验收的标准，不需要你编写playwright标准，"
+    "但是需要体现playwright脚本可审核的标准）。\n"
+    "确保标准不是模板化的文字堆砌，而是真正能为审查提供 actionable 的判断依据。\n"
+    "请具体、可操作，避免空泛描述。"
+)
 
-    entries = {"run": "pmwrite_criteria"}
-    exits = {"run": "pmwrite_criteria"}
-
-    _runtime = None
-
-    @staticmethod
-    def run(state) -> dict:
-        """Master writes review criteria for PM output (1 call_agent via write_criteria)."""
-        runtime = PMWriteCriteria._runtime
-        master_conv = runtime.context.get_ctx("master_conv")
-        project_context_path = runtime.context.get_bg("project_context_path")
-
-        runtime.logger.log_event("phase_started", detail="PM 审核标准制定")
-
-        feedback_path = runtime.context.get_ctx("pm_criteria_feedback_path") or ""
-        feedback_note = ""
-        if feedback_path and os.path.exists(feedback_path):
-            feedback_note = (
-                "\n## 反馈意见\n"
-                f"上一轮审查中有反馈意见需要处理，请先阅读反馈意见文件：{feedback_path}"
-                "然后根据反馈修改标准。\n\n"
-            )
-            runtime.context.set_ctx("pm_criteria_feedback_path", "")
-
-        prompt = (
-            f"{feedback_note}你即将为 PM 产出的 PRD 和 prototype 制定审核标准。\n\n"
-            "## 上游约束\n"
-            "项目决策是你要考虑的上游上下文，标准必须与之对齐：\n"
-            f"项目决策记录的文件地址为：{project_context_path or '（无项目决策记录）'}\n\n"
-            "## 标准覆盖维度\n"
-            "1. 需求完整性 — PRD 是否覆盖了所有已确认的功能？\n"
-            "2. MVP 边界 — 范围是否控制在 MVP 内？有无超额？\n"
-            "3. 逻辑自洽性 — 功能描述是否完整无矛盾？数据流是否有断点？\n"
-            "4. 一致性 — 功能定义、用户角色、技术假设是否与项目决策文件冲突？\n"
-            "5. 原型质量 — prototype 是否体现了核心交互和页面结构？\n"
-            "   - 页面要素完整（输入框、按钮、链接等）\n"
-            "   - 交互行为正确（表单校验触发、错误提示展示、页面切换、登出流程等）\n"
-            "   - 边界情况体现（空输入拦截、重复注册检测、非法字符过滤等）\n"
-            "   - 数据流一致性（注册后可登录、大小写区分、密码错误提示等信息流是否自洽）\n"
-            "   - 视觉风格统一\n"
-            "## 下游需求\n"
-            "- PM 将按这些标准撰写 PRD 和 prototype\n"
-            "- Reviewer 将按这些标准审查 PM 产出\n\n"
-            "## 要求\n"
-            "文件中只需要写测什么以及怎么样算是测试完成，不需要写审查方法（reviewer 自己知道怎么测）。\n"
-            "（对于原型的审核，优先考虑Playwright可以验收的标准，不需要你编写playwright标准，但是需要体现playwright脚本可审核的标准）。\n"
-            "确保标准不是模板化的文字堆砌，而是真正能为审查提供 actionable 的判断依据。\n"
-            "请具体、可操作，避免空泛描述。"
-        )
-
-        write_criteria(
-            runtime, master_conv,
-            title="Master 制定 PM 审核标准",
-            file_path=os.path.join(runtime.paths.workspace, "criteria-pm.md"),
-            prompt=prompt,
-            context_key="pm_criteria",
-        )
-
-        if feedback_path and os.path.exists(feedback_path):
-            os.remove(feedback_path)
-
-        return {"phase": "criteria_done", "judge_result": "review_pm_criteria"}
-
-    @classmethod
-    def register(cls, graph, runtime):
-        cls._runtime = runtime
-        register_nodes(graph, runtime, {"pmwrite_criteria": cls.run})
-
-
-class ReviewPMCriteria:
-    """原 review_pm_criteria 节点 — Reviewer 审查 PM 审核标准。"""
-
-    entries = {"review": "review_pm_criteria"}
-    exits = {"to_pm_doc": "review_to_pm_doc", "write_feedback": "review_pm_criteria_feedback"}
-
-    _runtime = None
-
-    @staticmethod
-    def review(state) -> dict:
-        """Reviewer checks criteria + judge (2 call_agents: review + judge_reply)."""
-        runtime = ReviewPMCriteria._runtime
-        criteria_path = runtime.context.get_ctx("pm_criteria_path") or ""
-        print(f"\n{'='*60}\n  ==> Reviewer 审查 PM 审核标准\n{'='*60}")
-
-        if not criteria_path or not os.path.exists(criteria_path):
-            print(f"  ✗ PM 审核标准文件不存在：{criteria_path}")
-            return {"phase": "review_criteria_fail", "judge_result": "pmwrite_criteria"}
-
-        review = call_agent(runtime, "reviewer", conv_name("review-pm-criteria"),
-            "请审查以下审核标准。\n\n"
-            "逐条检查：\n"
-            "1. 每条标准是否具体、可衡量(审核标准不能带有\"恰当\"，\"合理\"等主观判断)？\n"
-            "2. 每条标准是否都拥有可以完整完成审查的审查方法？(agent可以使用tool如file_read等方法进行审查，不需要标准中写明，但是你可以根据标准确定改用什么方法进行完整的审查)\n"
-            "3. 标准是否覆盖了所有应覆盖的维度？\n"
-            f"审核标准文件在：{criteria_path}\n\n"
-            "逐条给出评价，最后一行输出 == PASS == 或 == FAIL ==。\n"
-            "如果 FAIL，写明需要修正的具体问题。",
-            stream=True)
-
-        judge_result = judge_reply(runtime, "Reviewer", review, [
-            "PASS. 审查通过，满足所有条件。",
-            "FAIL. 审查不通过，存在问题需要修正。",
-        ], tag="judge-pm-criteria")
-        passed = judge_result.strip() == "P"
-
-        if passed:
-            runtime.context.set_ctx("pm_criteria_feedback_path", "")
-        else:
-            feedback_path = letter_path(runtime, "reviewer-pm-criteria-feedback")
-            runtime.context.set_ctx("pm_criteria_feedback_path", feedback_path)
-            runtime.context.set_ctx("pm_criteria_review", review)
-
-        runtime.logger.log_event("criteria_reviewed",
-            detail=f"PM 审核标准审查{'通过' if passed else '不通过'}")
-        return {
-            "phase": "review_pm_criteria_done" if passed else "review_pm_criteria_fail",
-            "judge_result": "pm_write_doc" if passed else "pmwrite_criteria",
-        }
-
-    @staticmethod
-    def to_pm_doc(state) -> dict:
-        """Pass-through: routes to PMWriteDoc."""
-        return state
-
-    @staticmethod
-    def write_feedback(state) -> dict:
-        """Write review feedback letter to PMWriteCriteria (write_letter)."""
-        runtime = ReviewPMCriteria._runtime
-        feedback_path = runtime.context.get_ctx("pm_criteria_feedback_path")
-        review = runtime.context.get_ctx("pm_criteria_review")
-        if not feedback_path:
-            raise RuntimeError("反馈信路径不存在")
-
-        write_letter(runtime, "reviewer", conv_name("review-pm-criteria-feedback"),
-                     feedback_path, "PM 审核标准审查反馈",
-                     f"以下是你在上一轮审查中给出的评审意见，请整理成一封反馈信。\n\n"
-                     f"## 你的审查意见\n{review}")
-        runtime.context.set_ctx("pm_criteria_review", "")
-        return {"phase": "review_criteria_fail", "judge_result": "pmwrite_criteria"}
-
-    @classmethod
-    def register(cls, graph, runtime):
-        cls._runtime = runtime
-        register_nodes(graph, runtime, {
-            "review_pm_criteria": cls.review,
-            "review_to_pm_doc": cls.to_pm_doc,
-            "review_pm_criteria_feedback": cls.write_feedback,
-        })
-        graph.add_conditional_edges("review_pm_criteria", lambda s: s.get("judge_result", ""), {
-            "pm_write_doc": "review_to_pm_doc",
-            "pmwrite_criteria": "review_pm_criteria_feedback",
-        })
+PM_CRITERIA_CONFIG = CriteriaDefinitionConfig(
+    domain="pm",
+    criteria_title="Master 制定 PM 审核标准",
+    criteria_prompt=PM_CRITERIA_PROMPT,
+    criteria_filename="criteria-pm.md",
+    context_key="pm_criteria",
+    review_conv="review-pm-criteria",
+    pass_judge_result="pm_write_doc",
+)
 
 
 class PMWriteDoc:
