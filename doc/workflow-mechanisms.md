@@ -508,18 +508,22 @@ MasterReplyPM → JudgeMasterReply ──A──→ PMWriteCriteria
 
 ### 现状
 
-PM、Dev、QA 三个阶段共享同一审核骨架：写标准 → 审查 → 反馈循环 → 通过与继续。但三段的具体实现尚未完全抽象，每段各有定制逻辑。
+PM、Dev、QA 三个阶段共享同一审核骨架：写标准 → 审查 → 反馈循环 → 通过与继续。已抽取为两个通用子图：
 
-### 通用骨架
+- **CriteriaDefinitionSubgraph** — Master 写审核标准 → Reviewer 审查 → PASS/FAIL，出现 3 次
+- **ArtifactReviewSubgraph** — agent 产出 → Reviewer 审查 → PASS/FAIL，出现 5 次
+
+两者均通过 `subgraphs/` 下的配置驱动工厂创建，详见 `doc/subgraph-extraction.md`。
+
+### CriteriaDefinitionSubgraph — 标准审核循环
 
 ```
-Write{Target}Criteria → Review{Target}Criteria ──A──→ {Next}（通过）
-                                           └──B──→ Write{Target}Criteria（重写）
+write_criteria → review_criteria ──PASS──→ pass_through（出口）
+                                        │
+                                   FAIL ──┘ → write_feedback → loop back
 ```
 
-A 路由条件：Reviewer 判定标准合格，无需修改。
-
-### 各阶段差异
+由 CriteriaDefinitionConfig 驱动，各阶段差异通过配置项表达：
 
 | 阶段 | 标准 | 审查对象 | 通过后去向 |
 |:-----|:------|:---------|:-----------|
@@ -527,9 +531,31 @@ A 路由条件：Reviewer 判定标准合格，无需修改。
 | Dev | DevWriteCriteria | 标准是否清晰 | DevWriteDesign → DevWritePlan |
 | QA | QAWriteCriteria | 测试范围是否完备 | QAWriteTestPlan |
 
-### 后续规划
+### ArtifactReviewSubgraph — 产出审查
 
-等到完整工作流跑通无问题后，将 `write_criteria` / `judge_reply` / 审查循环抽成框架级工具函数，让新阶段加三五行配置即可接入审核循环。
+```
+review ──PASS──→ pass_through（出口）
+     │
+FAIL ──┘ → write_feedback（loop back）
+```
+
+出现位置：PM 方案审查、Dev design/plan 审查、QA plan/code 审查。
+
+### 配置驱动
+
+```python
+# phase1.py — 定义配置 + 创建子图
+PM_CRITERIA_CONFIG = CriteriaDefinitionConfig(
+    domain="pm",
+    criteria_title="PM 审核标准",
+    ...
+)
+PM_CRITERIA_DEF = CriteriaDefinitionSubgraph.define(PM_CRITERIA_CONFIG)
+
+# graph.py — 注册到 LangGraph
+pm_criteria = PM_CRITERIA_DEF.register(graph, runtime)
+graph.add_edge(pm_criteria.exits["pass"], PMWriteDoc.entries["write_prd_letter"])
+```
 
 ---
 

@@ -6,28 +6,33 @@
 
 ```
 test/
-├── conftest.py              # MockClient + sys.path（全局 fixture）
+├── conftest.py              # MockClient + test_config（全局 fixture）
 ├── static/                  # 第 1 层：静态校验 — 图结构、node_name 存在性
 │   ├── __init__.py
 │   └── test_graph_edges.py
 ├── unit/                    # 第 2 层：逐 node — 每个节点函数的 state/prompt 验证
 │   ├── __init__.py
 │   ├── test_conversation_client.py   # ConversationClient 接口 + MockClient 测试
+│   ├── test_phase0.py
 │   ├── test_phase1.py
 │   ├── test_phase2.py
 │   ├── test_phase3.py
 │   ├── test_phase4.py
-│   └── test_flush.py
+│   ├── test_flush.py
+│   └── test_checkpoint.py
 ├── integration/             # 第 3 层：逐 phase 线性段 — 串联 3-5 个 node 的调用序列
 │   ├── __init__.py
 │   ├── conftest.py
 │   ├── test_phase0_flow.py
 │   ├── test_phase1_flow.py
-│   └── test_phase2_flow.py
+│   ├── test_phase2_flow.py
+│   ├── test_phase3_flow.py
+│   └── test_phase4_flow.py
 └── e2e/                     # 第 4 层：全流程 — 完整图结构下的路径验证
     ├── __init__.py
     ├── conftest.py
-    └── test_full_workflow.py
+    ├── test_full_workflow.py
+    └── test_flush_boundaries.py
 ```
 
 ## 测试配置隔离

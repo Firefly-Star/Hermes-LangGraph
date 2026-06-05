@@ -145,10 +145,16 @@ graph.add_edge(pm_criteria.exits["pass"], PMWriteDoc.entries["write_prd_letter"]
 
 | 子图 | 工厂 | Def | 节点数 | 图拓扑 |
 |:-----|:-----|:----|:-------|:-------|
-| Handoff | `HandoffSubgraph` | `HandoffDef` | 1 | 单节点 |
+| Handoff | `HandoffSubgraph` | `HandoffDef` | 1 | 单节点（Master 写信） |
 | CriteriaDefinition | `CriteriaDefinitionSubgraph` | `CriteriaDefinitionDef` | 4 | write → review → pass/feedback → write（循环） |
+| ArtifactReview | `ArtifactReviewSubgraph` | `ArtifactReviewDef` | 3 | review → pass_through / write_feedback |
+| MasterFlush | `MasterFlushSubgraph` | `MasterFlushDef` | 2 | write_summary → flush_conv |
 
-## 待抽取模式
+### 各子图注册拓扑
 
-- **ArtifactReview** — agent 产出 → 审查 → PASS/FAIL（PM 文档审查、Dev design/plan 审查、QA plan/code 审查），出现 5 次
-- **Flush** — 阶段总结 → 重建对话 → checkpoint（4 次）
+| 子图 | 条件边 | 内部循环 | 出口 |
+|:-----|:-------|:---------|:-----|
+| Handoff | 无 | 无 | entries: `run`, exits: `run` |
+| CriteriaDefinition | review → (PASS / FAIL) | FAIL → write | entries: `run`, exits: `pass` |
+| ArtifactReview | review → (PASS / FAIL) | FAIL → write_feedback | entries: `run`, exits: `pass` / `fail` |
+| MasterFlush | 无 | 无 | entries: `write_summary`, exits: `flush_conv` |

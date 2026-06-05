@@ -49,8 +49,10 @@ src/workflow/
 ├── subgraphs/        # 可复用子图（工厂 + Def + Config）
 │   ├── __init__.py   # 暴露工厂类
 │   ├── base.py       # SubgraphDef(ABC) + SubgraphResult
-│   ├── handoff.py    # HandoffSubgraph + HandoffDef + HandoffConfig
-│   └── criteria_definition.py  # CriteriaDefinitionSubgraph + CriteriaDefinitionDef + Config
+│   ├── handoff.py              # HandoffSubgraph + HandoffDef + HandoffConfig
+│   ├── criteria_definition.py  # CriteriaDefinitionSubgraph + CriteriaDefinitionDef + Config
+│   ├── artifact_review.py      # ArtifactReviewSubgraph + ArtifactReviewDef + Config
+│   └── master_flush.py         # MasterFlushSubgraph + MasterFlushDef + Config
 ```
 
 `graph.py` 中的 `NODES` 列表已清空（所有节点均为 class + register 模式）。
