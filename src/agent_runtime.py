@@ -4,8 +4,9 @@ AgentRuntime — AI Coding 工作流框架
 
 
 模块：
-  AgentManager         — Agent 注册、Gateway 生命周期
-  ConversationManager  — 对话调用、初始化、关闭
+  AgentManager          — Agent 注册、Gateway 生命周期
+  ConversationClient    — 对话调用接口（ABC）
+  HermesClient          — Hermes Gateway 对话实现
   Logger               — 调用日志、事件日志
   ContextManager       — 状态、分层计划、上下文组装
   Config               — 配置读写
@@ -14,6 +15,7 @@ AgentRuntime — AI Coding 工作流框架
 """
 
 import json, os, sys, time, subprocess, requests, threading
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, asdict
 from typing import Optional, Any
 
@@ -257,7 +259,7 @@ class GatewayManager:
 
 
 # ============================================================
-# 2. ConversationManager
+# 2. ConversationClient (HermesClient)
 # ============================================================
 
 def _resolve_file_refs(text: str) -> str:
@@ -275,7 +277,21 @@ def _resolve_file_refs(text: str) -> str:
     return re.sub(r'\{([^}]+)\}', _replacer, text)
 
 
-class ConversationManager:
+class ConversationClient(ABC):
+    """对话客户端抽象接口。HermesClient 是生产实现，MockClient 用于测试。"""
+
+    @abstractmethod
+    def call(self, agent: str, conversation: str, input_text: str,
+             timeout: int = None, stream_callback: callable = None,
+             tool_callback: callable = None,
+             poll_callback: callable = None) -> "CallResult": ...
+
+    @abstractmethod
+    def close(self, agent: str, conversation: str): ...
+
+
+class HermesClient(ConversationClient):
+    """Hermes Gateway 对话实现。走 HTTP/SSE 和 Gateway 通信。"""
     """对话调用、初始化、关闭。"""
 
     def __init__(self, agent_mgr: AgentManager, logger: "Logger", config: "Config", runtime_dir: str):
@@ -779,7 +795,11 @@ class ConsoleSink:
         self._out = sys.__stdout__
 
     def write(self, s: str):
-        self._out.write(s)
+        try:
+            self._out.write(s)
+        except UnicodeEncodeError:
+            enc = self._out.encoding or "utf-8"
+            self._out.buffer.write(s.encode(enc, errors="replace"))
 
     def flush(self):
         self._out.flush()
@@ -862,7 +882,7 @@ class OutputConfig:
 class AgentRuntime:
     """聚合全部模块，提供统一入口。可通过 config_path 加载配置。"""
 
-    def __init__(self, config_path: str = None):
+    def __init__(self, config_path: str = None, conversation_client: ConversationClient = None):
         cfg = self._load_config(config_path) if config_path else {}
         paths_cfg = cfg.get("paths", {})
         runtime_dir = paths_cfg.get("runtime_dir") or cfg.get("runtime_dir") or cfg.get("pool_dir", ".agent_runtime")
@@ -902,7 +922,7 @@ class AgentRuntime:
         self.agents = AgentManager(self.paths.runtime_dir, hermes_home)
         self._gateway = GatewayManager(hermes_home)
         self.context = ContextManager(self.paths.runtime_dir)
-        self.conversations = ConversationManager(self.agents, self.logger, self.config, self.paths.runtime_dir)
+        self.conversations = conversation_client or HermesClient(self.agents, self.logger, self.config, self.paths.runtime_dir)
         self.checkpoint = Checkpoint()
 
         # ── OutputLayer — 替换 sys.stdout ──
