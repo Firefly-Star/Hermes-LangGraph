@@ -42,10 +42,15 @@ src/workflow/
 ├── phase0.py         # PreFlightClarify — 需求澄清
 ├── phase1.py         # PMHandoff ~ HumanReview — PM 出方案
 ├── phase2.py         # DevHandoff ~ DevEscalate — Dev 设计 + 编码
-├── phase3.py         # QAHandoff + QAAlign + QA 测试全流程（计划→代码→运行→修 bug）
+├── phase3.py         # QA 测试全流程（计划→代码→运行→修 bug）
 ├── phase4.py         # ConsistencyAudit + WriteMaintenanceDocs + DeliverySummary — 交付
 ├── flush.py          # MasterFlushClarify/PM/Dev/QA — phase 边界 flush
 ├── checkpoint.py     # ResumeRouter + save/load/clear_checkpoint
+├── subgraphs/        # 可复用子图（工厂 + Def + Config）
+│   ├── __init__.py   # 暴露工厂类
+│   ├── base.py       # SubgraphDef(ABC) + SubgraphResult
+│   ├── handoff.py    # HandoffSubgraph + HandoffDef + HandoffConfig
+│   └── criteria_definition.py  # CriteriaDefinitionSubgraph + CriteriaDefinitionDef + Config
 ```
 
 `graph.py` 中的 `NODES` 列表已清空（所有节点均为 class + register 模式）。
@@ -87,6 +92,8 @@ class WorkflowState(TypedDict):
 
 ## 节点组织约定
 
+### 普通节点组
+
 每个逻辑分组是一个类，遵循统一模式：
 
 ```python
@@ -110,11 +117,41 @@ class SomeNode:
         # 组内边（条件边、连接边）
 ```
 
-- entries/exits 键名为方法名，值为注册时的图节点名
+- entries/exits 为类属性，键名为方法名，值为注册时的图节点名
 - graph.py 通过 `ClassName.entries["xx"]` / `ClassName.exits["xx"]` 引用
 - 每个 `@staticmethod` 只包含一次 `call_agent`（或等价调用）
 - `judge_reply`（stream=False）可与前一个 call_agent 共存于同一节点
 - 组内条件路由在 `register()` 内定义，graph.py 只做跨组简单边
+
+### 可复用子图（subgraphs/）
+
+当同一图结构在多个 phase 重复出现时，抽取为子图。子图采用三层架构：
+
+1. **Config（`@dataclass`）** — 差异点配置
+2. **Def 类（继承 `SubgraphDef` ABC）** — 掌握图拓扑，`register()` 做组内接线
+3. **工厂类** — 只提供 `define(config)`，不知晓图结构
+
+调用方式：
+
+```python
+# phase 文件：创建配置 → define
+PM_HANDOFF_DEF = HandoffSubgraph.define(PM_HANDOFF_CONFIG)
+
+# graph.py：注入 runtime + 注册节点 + 接线
+pm_handoff = PM_HANDOFF_DEF.register(graph, runtime)
+# → SubgraphResult(entries={"run": ...}, exits={"run": ...})
+
+# graph.py：连跨组边
+graph.add_edge(pm_handoff.entries["run"], PMAlign.entries["read"])
+```
+
+关键区别 vs 普通节点组：
+
+| | 普通节点组 | 子图 |
+|:---|:-----------|:-----|
+| entries/exits | 类属性，硬编码 | 对象属性，register 时设置 |
+| 实例化 | 无实例 | Def 实例由工厂 `define()` 创建 |
+| 复用 | 不适用 | config 驱动，多 phase 共享 |
 
 ## Judge 路由
 

@@ -6,7 +6,7 @@ from .utils import (WorkflowState, conv_name, call_agent, letter_path,
                     read_and_write_letter, judge_reply, clarify_loop,
                     register_nodes)
 from .prompt import PLAYWRIGHT_TEST_TIPS
-from .subgraphs import HandoffConfig, CriteriaDefinitionConfig
+from .subgraphs import HandoffConfig, HandoffSubgraph, CriteriaDefinitionConfig, CriteriaDefinitionSubgraph
 from langgraph.graph import END
 
 
@@ -26,6 +26,7 @@ PM_HANDOFF_CONFIG = HandoffConfig(
     receiver="pm", letter_title="Master 给 PM 的信",
     letter_prompt=PM_HANDOFF_LETTER, context_letter_key="pmletter_path",
 )
+PM_HANDOFF_DEF = HandoffSubgraph.define(PM_HANDOFF_CONFIG)
 
 
 class PMAlign:
@@ -282,6 +283,7 @@ PM_CRITERIA_CONFIG = CriteriaDefinitionConfig(
     review_conv="review-pm-criteria",
     pass_judge_result="pm_write_doc",
 )
+PM_CRITERIA_DEF = CriteriaDefinitionSubgraph.define(PM_CRITERIA_CONFIG)
 
 
 class PMWriteDoc:

@@ -8,7 +8,7 @@ from .utils import (WorkflowState, conv_name, call_agent, letter_path,
                     count_steps, WorkflowInterrupted)
 from .prompt import DEV_SYSTEM_PROMPT, FLUSH_CONTINUATION_NOTE, PLAYWRIGHT_TEST_TIPS
 from .checkpoint import save_checkpoint
-from .subgraphs import HandoffConfig, CriteriaDefinitionConfig
+from .subgraphs import HandoffConfig, HandoffSubgraph, CriteriaDefinitionConfig, CriteriaDefinitionSubgraph
 from langgraph.graph import END
 
 
@@ -33,7 +33,7 @@ DEV_HANDOFF_CONFIG = HandoffConfig(
     letter_prompt=DEV_HANDOFF_LETTER,
     context_letter_key="devletter_path",
 )
-
+DEV_HANDOFF_DEF = HandoffSubgraph.define(DEV_HANDOFF_CONFIG)
 
 
 class DevAlign:
@@ -289,6 +289,7 @@ DEV_CRITERIA_CONFIG = CriteriaDefinitionConfig(
     review_conv="review-dev-criteria",
     pass_judge_result="dev_write_design",
 )
+DEV_CRITERIA_DEF = CriteriaDefinitionSubgraph.define(DEV_CRITERIA_CONFIG)
 
 
 class DevWriteDesign:

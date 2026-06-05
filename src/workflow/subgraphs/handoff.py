@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from ..utils import register_nodes, letter_path, write_letter
-from .base import SubgraphResult
+from .base import SubgraphResult, SubgraphDef
 
 
 @dataclass
@@ -27,15 +27,31 @@ class HandoffConfig:
             self.domain = self.receiver
 
 
+class HandoffDef(SubgraphDef):
+    """Handoff 子图 — 1 个写信节点。"""
+
+    def __init__(self, node_name: str, run):
+        self.nodes = {node_name: run}
+
+    def register(self, graph, runtime) -> SubgraphResult:
+        for fn in self.nodes.values():
+            fn._runtime = runtime
+        register_nodes(graph, runtime, self.nodes)
+        name = next(iter(self.nodes))
+        self.entries = {"run": name}
+        self.exits = {"run": name}
+        return SubgraphResult(entries=self.entries, exits=self.exits)
+
+
 class HandoffSubgraph:
     """Master 写信给下游 agent 的通用子图工厂。"""
 
     @staticmethod
-    def register(graph, runtime, config: HandoffConfig):
+    def define(config: HandoffConfig) -> HandoffDef:
         node_name = f"{config.domain}_handoff"
 
         def run(state):
-            rt = runtime
+            rt = run._runtime
             conv = rt.context.get_ctx(config.conversation_key)
             if not conv:
                 raise RuntimeError(f"{config.conversation_key} 对话不存在")
@@ -54,8 +70,4 @@ class HandoffSubgraph:
             rt.context.set_ctx(config.context_letter_key, lpath)
             return {"phase": config.next_phase}
 
-        register_nodes(graph, runtime, {node_name: run})
-        return SubgraphResult(
-            entries={"run": node_name},
-            exits={"run": node_name},
-        )
+        return HandoffDef(node_name=node_name, run=run)

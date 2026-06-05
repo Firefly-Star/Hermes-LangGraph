@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from ..utils import (register_nodes, letter_path, write_letter, write_criteria,
                      conv_name, call_agent, judge_reply)
-from .base import SubgraphResult
+from .base import SubgraphResult, SubgraphDef
 
 
 @dataclass
@@ -35,21 +35,36 @@ class CriteriaDefinitionConfig:
             self.judge_tag = f"judge-{self.domain}-criteria"
 
 
+class CriteriaDefinitionDef(SubgraphDef):
+    """审核标准子图 — 写/审/反馈循环 4 节点 + 3 条组内边。"""
+
+    def __init__(self, nodes, pass_judge_result, fail_judge_result):
+        self.nodes = nodes
+        self._pass = pass_judge_result
+        self._fail = fail_judge_result
+
+    def register(self, graph, runtime) -> SubgraphResult:
+        for fn in self.nodes.values():
+            fn._runtime = runtime
+        register_nodes(graph, runtime, self.nodes)
+        # nodes 插入顺序固定：write, review, pass, feedback
+        w, r, p, f = self.nodes
+        graph.add_edge(w, r)
+        graph.add_conditional_edges(r, lambda s: s.get("judge_result", ""), {
+            self._pass: p,
+            self._fail: f,
+        })
+        graph.add_edge(f, w)
+        self.entries = {"run": w}
+        self.exits = {"pass": p}
+        return SubgraphResult(entries=self.entries, exits=self.exits)
+
+
 class CriteriaDefinitionSubgraph:
-    """审核标准审查通用子图工厂。
-
-    内部结构（4 节点 + 3 内部边）：
-      {domain}write_criteria → review_{domain}_criteria
-          → conditional → review_to_{domain}_artifact (PASS)
-                       → review_{domain}_criteria_feedback → (loop back to write)
-
-    外部接口：
-      entries = {{"run": "{domain}write_criteria"}}
-      exits   = {{"pass": "review_to_{domain}_artifact"}}
-    """
+    """审核标准审查通用子图工厂，只提供 define()。"""
 
     @staticmethod
-    def register(graph, runtime, config: CriteriaDefinitionConfig) -> SubgraphResult:
+    def define(config: CriteriaDefinitionConfig) -> CriteriaDefinitionDef:
         domain = config.domain
         write_node = f"{domain}write_criteria"
         review_node = f"review_{domain}_criteria"
@@ -59,7 +74,7 @@ class CriteriaDefinitionSubgraph:
         review_text_key = f"{domain}_criteria_review"
 
         def write(state):
-            rt = runtime
+            rt = write._runtime
             master_conv = rt.context.get_ctx("master_conv")
             ws = rt.paths.workspace
             project_context = rt.context.get_bg("project_context_path") or "（无项目决策记录）"
@@ -99,7 +114,7 @@ class CriteriaDefinitionSubgraph:
                     "judge_result": f"review_{domain}_criteria"}
 
         def review(state):
-            rt = runtime
+            rt = review._runtime
             criteria_path = rt.context.get_ctx(f"{config.context_key}_path") or ""
             print(f"\n{'='*60}\n  ==> Reviewer 审查 {config.criteria_title}\n{'='*60}")
 
@@ -146,7 +161,7 @@ class CriteriaDefinitionSubgraph:
             return state
 
         def write_feedback(state):
-            rt = runtime
+            rt = write_feedback._runtime
             review = rt.context.get_ctx(review_text_key) or ""
             if not review:
                 raise RuntimeError("审查意见为空")
@@ -162,23 +177,13 @@ class CriteriaDefinitionSubgraph:
             return {"phase": f"review_{domain}_criteria_failed",
                     "judge_result": config.fail_judge_result}
 
-        register_nodes(graph, runtime, {
-            write_node: write,
-            review_node: review,
-            pass_node: pass_through,
-            feedback_node: write_feedback,
-        })
-
-        # 组内边
-        graph.add_edge(write_node, review_node)
-        graph.add_conditional_edges(review_node,
-            lambda s: s.get("judge_result", ""), {
-                config.pass_judge_result: pass_node,
-                config.fail_judge_result: feedback_node,
-            })
-        graph.add_edge(feedback_node, write_node)
-
-        return SubgraphResult(
-            entries={"run": write_node},
-            exits={"pass": pass_node},
+        return CriteriaDefinitionDef(
+            nodes={
+                write_node: write,
+                review_node: review,
+                pass_node: pass_through,
+                feedback_node: write_feedback,
+            },
+            pass_judge_result=config.pass_judge_result,
+            fail_judge_result=config.fail_judge_result,
         )

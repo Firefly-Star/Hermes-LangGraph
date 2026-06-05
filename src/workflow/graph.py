@@ -5,15 +5,14 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
 from .utils import WorkflowState, setup_runtime, interruptible
-from .subgraphs import HandoffSubgraph, CriteriaDefinitionSubgraph
 from .phase0 import PreFlightClarify
-from .phase1 import (PM_HANDOFF_CONFIG, PM_CRITERIA_CONFIG, PMAlign, MasterReplyPM, JudgeMasterReply, ClarifyInject,
+from .phase1 import (PM_HANDOFF_DEF, PM_CRITERIA_DEF, PMAlign, MasterReplyPM, JudgeMasterReply, ClarifyInject,
                      PMWriteDoc, ReviewPMOutput, HumanReview)
-from .phase2 import (DEV_HANDOFF_CONFIG, DEV_CRITERIA_CONFIG, DevAlign,
+from .phase2 import (DEV_HANDOFF_DEF, DEV_CRITERIA_DEF, DevAlign,
                      DevWriteDesign, DevReviewDesign,
                      DevWritePlan, DevReviewPlan, DevGitInit, DevExecStep,
                      DevReviewStep, DevCommit, DevRollback, DevEscalate)
-from .phase3 import (QA_HANDOFF_CONFIG, QA_CRITERIA_CONFIG, QAAlign,
+from .phase3 import (QA_HANDOFF_DEF, QA_CRITERIA_DEF, QAAlign,
                      QAWriteTestPlan, MasterReviewPlan, QAWriteTestCase,
                      ReviewerReviewCode, QARunTests, JudgeTestResult, DevFix)
 from .flush import (MasterFlushClarify, MasterFlushPM, MasterFlushDev, MasterFlushQA)
@@ -39,18 +38,18 @@ def build_graph(runtime) -> StateGraph:
         graph.add_node(f.__name__, f)
     ResumeRouter.register(graph, runtime)
     PreFlightClarify.register(graph, runtime)
-    pm_handoff = HandoffSubgraph.register(graph, runtime, PM_HANDOFF_CONFIG)
+    pm_handoff = PM_HANDOFF_DEF.register(graph, runtime)
     PMAlign.register(graph, runtime)
     MasterReplyPM.register(graph, runtime)
     JudgeMasterReply.register(graph, runtime)
     ClarifyInject.register(graph, runtime)
-    pm_criteria = CriteriaDefinitionSubgraph.register(graph, runtime, PM_CRITERIA_CONFIG)
+    pm_criteria = PM_CRITERIA_DEF.register(graph, runtime)
     PMWriteDoc.register(graph, runtime)
     ReviewPMOutput.register(graph, runtime)
     HumanReview.register(graph, runtime)
-    dev_handoff = HandoffSubgraph.register(graph, runtime, DEV_HANDOFF_CONFIG)
+    dev_handoff = DEV_HANDOFF_DEF.register(graph, runtime)
     DevAlign.register(graph, runtime)
-    dev_criteria = CriteriaDefinitionSubgraph.register(graph, runtime, DEV_CRITERIA_CONFIG)
+    dev_criteria = DEV_CRITERIA_DEF.register(graph, runtime)
     DevWriteDesign.register(graph, runtime)
     DevReviewDesign.register(graph, runtime)
     DevWritePlan.register(graph, runtime)
@@ -64,9 +63,9 @@ def build_graph(runtime) -> StateGraph:
     MasterFlushClarify.register(graph, runtime)
     MasterFlushPM.register(graph, runtime)
     MasterFlushDev.register(graph, runtime)
-    qa_handoff = HandoffSubgraph.register(graph, runtime, QA_HANDOFF_CONFIG)
+    qa_handoff = QA_HANDOFF_DEF.register(graph, runtime)
     QAAlign.register(graph, runtime)
-    qa_criteria = CriteriaDefinitionSubgraph.register(graph, runtime, QA_CRITERIA_CONFIG)
+    qa_criteria = QA_CRITERIA_DEF.register(graph, runtime)
     QAWriteTestPlan.register(graph, runtime)
     MasterReviewPlan.register(graph, runtime)
     QAWriteTestCase.register(graph, runtime)

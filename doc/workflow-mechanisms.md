@@ -297,6 +297,75 @@ def register(cls, graph, runtime):
 2. 通过 entries / exits 引用对外接线
 3. 维护全局的路由拓扑（跨组边、条件边）
 
+### 子图架构（subgraphs/）
+
+当同一图结构在多个 phase 重复出现时，抽取为配置驱动的子图。子图采用三层分离架构：
+
+```
+┌─ 工厂类（Factory）─────┐
+│  define(config) → Def  │  ← 只创建闭包
+└──────────┬─────────────┘
+           ▼
+┌─ Def 类 ───────────────┐
+│  SubgraphDef(ABC)      │  ← 掌握图拓扑
+│  register(graph, rt)   │  ← 做所有接线
+│  → SubgraphResult      │
+└──────────┬─────────────┘
+           ▼
+┌─ ABC 基类 ─────────────┐
+│  nodes / entries/exits │  ← 定义契约
+│  abstract register()   │
+└────────────────────────┘
+```
+
+#### SubgraphDef（ABC 基类）
+
+```python
+class SubgraphDef(ABC):
+    nodes: dict[str, Callable] = {}       # define 时填充
+    entries: dict | None = None           # register 前为 None
+    exits: dict | None = None             # register 前为 None
+
+    @abstractmethod
+    def register(self, graph, runtime) -> SubgraphResult:
+        ...
+```
+
+entries/exits 在 register 调用前为 None，因为节点函数尚未注入 runtime。register 时才确定图节点名。
+
+#### 工厂类只 define，不 register
+
+```python
+class HandoffSubgraph:
+    @staticmethod
+    def define(config: HandoffConfig) -> HandoffDef:
+        # 创建闭包，返回 Def 实例
+        ...
+        return HandoffDef(node_name=node_name, run=run)
+```
+
+工厂对图结构零了解，只负责创建节点闭包。
+
+#### graph.py 中的调用链
+
+```python
+# phase1.py — 定义配置 + define
+PM_HANDOFF_DEF = HandoffSubgraph.define(PM_HANDOFF_CONFIG)
+
+# graph.py — register
+pm_handoff = PM_HANDOFF_DEF.register(graph, runtime)
+graph.add_edge(pm_handoff.exits["run"], PMAlign.entries["read"])
+```
+
+#### 已实现的子图
+
+| 子图 | 工厂 | Def | 配置 | 节点数 |
+|:-----|:-----|:----|:-----|:-------|
+| Handoff | `HandoffSubgraph` | `HandoffDef` | `HandoffConfig` | 1 |
+| CriteriaDefinition | `CriteriaDefinitionSubgraph` | `CriteriaDefinitionDef` | `CriteriaDefinitionConfig` | 4 |
+
+详细设计见 `doc/subgraph-extraction.md`。
+
 ---
 
 ## 4. 文件引用注入

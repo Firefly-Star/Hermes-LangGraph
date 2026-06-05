@@ -7,7 +7,7 @@ from .utils import (WorkflowState, conv_name, call_agent, letter_path,
                     register_nodes)
 from .checkpoint import clear_checkpoint
 from .prompt import PLAYWRIGHT_TEST_TIPS
-from .subgraphs import HandoffConfig, CriteriaDefinitionConfig
+from .subgraphs import HandoffConfig, HandoffSubgraph, CriteriaDefinitionConfig, CriteriaDefinitionSubgraph
 
 
 QA_HANDOFF_LETTER = (
@@ -31,8 +31,7 @@ QA_HANDOFF_CONFIG = HandoffConfig(
     context_letter_key="qaletter_path",
     create_dirs=("QA",),
 )
-
-
+QA_HANDOFF_DEF = HandoffSubgraph.define(QA_HANDOFF_CONFIG)
 
 
 class QAAlign:
@@ -347,6 +346,7 @@ QA_CRITERIA_CONFIG = CriteriaDefinitionConfig(
     review_conv="review-qa-criteria",
     pass_judge_result="qa_write_plan",
 )
+QA_CRITERIA_DEF = CriteriaDefinitionSubgraph.define(QA_CRITERIA_CONFIG)
 
 
 class QAWriteTestPlan:
