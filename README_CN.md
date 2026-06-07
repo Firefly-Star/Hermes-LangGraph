@@ -17,10 +17,15 @@ src/workflow/
 ├── phase3.py         # QA 全流程：标准 → 计划 → 代码 → 运行 → 修 bug 循环
 ├── phase4.py         # ConsistencyAudit → WriteMaintenanceDocs → DeliverySummary
 ├── flush.py          # MasterFlushClarify/PM/Dev/QA：阶段边界上下文刷新
-└── checkpoint.py     # ResumeRouter：检查点保存/加载与恢复路由
+├── checkpoint.py     # ResumeRouter：检查点保存/加载与恢复路由
+└── subgraphs/
+    ├── artifact_review.py      # 产物审查子图（Phase 1）
+    ├── criteria_definition.py  # QA 审核标准定义子图（Phase 3）
+    ├── handoff.py              # 信件通信子图
+    └── master_flush.py         # Master 上下文刷新子图
 ```
 
-每个逻辑节点组采用 class + register 模式，通过 `entries`/`exits` 声明对外连接，每个节点只包含一次 `call_agent` 调用，确保精确中断恢复。
+每个逻辑节点组采用 class + register 模式，通过 `entries`/`exits` 声明对外连接，每个节点只包含一次 `call_agent` 调用，确保精确中断恢复。可复用的子图模式抽取到 `subgraphs/` 中跨阶段共享。
 
 ## Agent 列表
 
@@ -53,7 +58,28 @@ ResumeRouter → [Phase 0: 澄清] → Flush → [Phase 1: PM] → Flush → [Ph
 - **Ctrl+U 中断**：流式输出中按热键中断，进入对话后继续工作流
 - **信件通信**：Agent 间通过 `handoffs/` 目录下的 markdown 信件交换信息
 - **输出路由**：支持控制台和文件双输出，通过 OutputLayer 替换 sys.stdout
+- **四层测试框架**：静态校验 → 逐节点单元测试 → 逐阶段集成测试 → 全流程端到端测试，MockClient 替换 LLM 调用
 - **节点组织规范**：class + register 模式，entries/exits 声明拓扑连接
+- **子图复用**：产物审查、审核标准定义、信件通信、上下文刷新等跨阶段模式抽取为可复用子图
+
+## 测试
+
+四层测试框架，使用 `MockClient` 替换 LLM 调用（无需连接 Hermes Gateway）。
+
+```bash
+pytest test/              # 全部测试
+pytest test/unit/         # 逐节点单元测试
+pytest test/integration/  # 逐阶段集成测试
+pytest test/e2e/          # 全流程端到端测试
+pytest test/static/       # 图边存在性检查
+```
+
+详见 [test-framework.md](doc/test-framework.md)。
+
+## 工具脚本
+
+- **`diagram.py`** — 从编译后的 StateGraph 生成工作流可视化图
+- **`scripts/check_context.py`** — 估算各 Agent 对话的上下文窗口用量
 
 ## 环境要求
 
@@ -69,6 +95,9 @@ pip install -r requirements.txt
 # 配置 runtime（编辑 runtime_config.json）
 # 运行工作流
 python -m src.workflow
+
+# 使用自定义配置文件
+python -m src.workflow --config /path/to/custom_config.json
 ```
 
-配置文件为 `runtime_config.json`，详见 [config-reference.md](doc/config-reference.md)。
+配置文件默认为 `runtime_config.json`，可通过 `--config` 参数指定其他路径。详见 [config-reference.md](doc/config-reference.md)。

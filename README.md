@@ -17,10 +17,15 @@ src/workflow/
 ├── phase3.py         # QA full pipeline: criteria → plan → code → run → fix loop
 ├── phase4.py         # ConsistencyAudit → WriteMaintenanceDocs → DeliverySummary
 ├── flush.py          # MasterFlushClarify/PM/Dev/QA: phase boundary context flush
-└── checkpoint.py     # ResumeRouter: checkpoint save/load and resume routing
+├── checkpoint.py     # ResumeRouter: checkpoint save/load and resume routing
+└── subgraphs/
+    ├── artifact_review.py      # Artifact review subgraph (Phase 1)
+    ├── criteria_definition.py  # QA criteria definition subgraph (Phase 3)
+    ├── handoff.py              # Handoff letter communication
+    └── master_flush.py         # Master context flush subgraph
 ```
 
-Each logical node group follows a class-based pattern with `entries`/`exits` dicts, one `call_agent` per node for precise interrupt recovery.
+Each logical node group follows a class-based pattern with `entries`/`exits` dicts, one `call_agent` per node for precise interrupt recovery. Reusable subgraph patterns are extracted into `subgraphs/` and shared across phases.
 
 ## Agents
 
@@ -53,7 +58,28 @@ ResumeRouter → [Phase 0: Clarify] → Flush → [Phase 1: PM] → Flush → [P
 - **Ctrl+U interrupt**: Interrupt agent response mid-stream, enter dialog, then continue
 - **Letter communication**: Agents communicate via markdown letter files in `handoffs/`
 - **Output routing**: Console and/or file output via `sys.stdout` replacement (OutputLayer)
+- **Four-layer test framework**: Static (graph edges) → Unit (per-node) → Integration (per-phase) → E2E (full workflow), with MockClient replacing LLM calls
 - **Node organization**: Class-based pattern with `entries`/`exits`/`register` for clean topology
+- **Subgraph reuse**: Cross-phase patterns (artifact review, criteria definition, handoff, flush) extracted as reusable subgraph definitions
+
+## Testing
+
+Four-layer test framework with `MockClient` replacing LLM calls (no Hermes Gateway required).
+
+```bash
+pytest test/              # Run all tests
+pytest test/unit/         # Per-node unit tests
+pytest test/integration/  # Per-phase linear chain tests
+pytest test/e2e/          # Full workflow end-to-end tests
+pytest test/static/       # Graph edge existence checks
+```
+
+See [test-framework.md](doc/test-framework.md) for details.
+
+## Utilities
+
+- **`diagram.py`** — Generate workflow graph visualization from the compiled StateGraph
+- **`scripts/check_context.py`** — Estimate context window usage per agent conversation
 
 ## Requirements
 
@@ -69,6 +95,9 @@ pip install -r requirements.txt
 # Configure runtime (edit runtime_config.json)
 # Run the workflow
 python -m src.workflow
+
+# Use a custom config file
+python -m src.workflow --config /path/to/custom_config.json
 ```
 
-Configuration is managed in `runtime_config.json`. See [config-reference.md](doc/config-reference.md) for details.
+Configuration is managed in `runtime_config.json` (default). Use `--config` to specify an alternative path. See [config-reference.md](doc/config-reference.md) for details.
