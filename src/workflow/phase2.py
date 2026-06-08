@@ -820,6 +820,9 @@ class DevExecStep:
                      + "\n".join("   " + l for l in PLAYWRIGHT_TEST_TIPS.strip().split("\n"))
                      + "\n"
                      f"完成实现后自行运行验收方法确认通过。"
+                     "## 注意"
+                     "你是 Master，你只需要在信中告知 Dev 需要做什么，在做的时候注意什么就行了，"
+                     "不需要直接给出详细具体的实现方法。"
                      + feedback)
         runtime.context.set_ctx("exec_letter_path", lpath)
         return {"phase": "dev_exec_letter_done", "judge_result": ""}
