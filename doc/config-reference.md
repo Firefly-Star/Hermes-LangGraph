@@ -62,7 +62,10 @@
 | Key | 默认值 | 用途 | 代码引用 |
 |:----|:--------|:-----|:---------|
 | `input_end_word` | `"EOF"` | `runtime.checkpoint.wait()` 的结束词，用户输入此词视为空输入/结束 | `utils.py:98` — `interrupt_dialog`；`utils.py:341` — `clarify_loop`；`phase1.py:523` — `HumanReview`；`phase2.py:1141` — escalate 对话 |
-| `interrupt_hotkey` | `"ctrl+u"` | 中断 agent 调用的热键 | `graph.py:195` — 传入 `start_interrupt_listener(hotkey)`；`utils.py:14` — `HOTKEY_MAP` 定义 |
+| `interrupt_hotkey` | `"ctrl+u"` | 中断 agent 调用的热键（弹出介入对话框） | `graph.py:195` — 传入 `start_interrupt_listener(hotkey, skip_hotkey)`；`utils.py:14` — `HOTKEY_MAP` 定义 |
+| `skip_hotkey` | `""` | 跳过 agent 回复的热键（停止 agent 输出，改由用户手动输入回复） | `agent_runtime.py:980` — `InteractionConfig`；`utils.py:248` — `call_agent` 中处理 `_skip_requested` |
+
+**中断 vs 跳过**：中断（Ctrl+U）弹出介入对话框，用户可与 agent 对话修改方向，然后回到原节点重新执行。跳过（Ctrl+K）停止 agent 回复，用户直接输入自己的回复作为 `call_agent` 的返回值——当前节点认为 agent 已正常回复，继续走下游流程。跳过不弹出对话框，不影响 node 执行路径。
 
 ---
 

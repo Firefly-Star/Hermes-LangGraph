@@ -27,7 +27,8 @@
   },
   "interaction": {
     "input_end_word": "EOF",
-    "interrupt_hotkey": "ctrl+u"
+    "interrupt_hotkey": "ctrl+u",
+    "skip_hotkey": "ctrl+k"
   },
   "output": {
     "targets": [

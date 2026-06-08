@@ -4,36 +4,7 @@
 
 ---
 
-## 1. 工具执行环境一致性
-
-**问题**：Reviewer（以及其他 agent）的 `hermes_tools.terminal()` 跑在 Linux 容器内，但项目文件在 Windows 宿主机上。agent 尝试定位文件时路径拼不对（如 `langraph_test` 少个 `g`、`sandbox/tmp2` 不存在），直接卡死无法推进。
-
-**背景**：这不是简单的路径字符串问题——agent 没有能力自行"发现"正确路径，它在容器里 `ls` 看到的文件系统跟 Windows 完全是两套。
-
-**方向**：
-- 统一文件访问方式，不让 agent 直接碰文件系统路径
-- 通过 HTTP server 暴露工作目录，agent 只通过 URL 访问文件
-- 或者在 runtime_config 中显式声明各 agent 的执行环境（host / container），由框架层做路径映射
-
----
-
-## 2. 中断后的智能恢复
-
-**问题**：Ctrl+U 中断只是打断当前 call_agent，返回节点重头跑。但中断发生时 agent 可能已经：
-- 写了一半文件（部分写入、内容不完整）
-- 创建了中间产物（如测试目录、临时文件）
-- 修改了 state（如 dev_step_index 已经被更新）
-
-重跑时会因为"已存在的文件"或"已递增的索引"导致状态不一致。
-
-**方向**：
-- 节点级幂等保护：重跑前清理当前节点可能产生的中间产物
-- 事务性文件写入：写文件先写 `.tmp`，确认完成再 rename
-- 取消当前的文件写操作（当前做不到）
-
----
-
-## 3. 节点执行日志可视化
+## 1. 节点执行日志可视化
 
 **问题**：工作流跑起来只有 stdout 输出。跑长流程时想查某个节点当时的产出/报错，只能翻终端日志，没有结构化存储。
 
@@ -44,18 +15,7 @@
 
 ---
 
-## 4. 集成测试
-
-**问题**：框架没有自测流程。每次修改 graph 后只能靠真实跑一遍来验证，成本高、反馈慢。一次完整测试跑下来可能几十分钟，修改→验证的循环太长。
-
-**方向**：
-- 写一套 mock agent 的集成测试，不调真实 LLM
-- 各节点的 `call_agent` 用预设回复替代，验证边连接正确性和数据流
-- 覆盖：正常流程全通路、中断恢复（各 resume 节点）、判断路由（PASS/FAIL 分支）
-
----
-
-## 5. 非阻塞超时通知（替代阻塞式超时保护）
+## 2. 非阻塞超时通知（替代阻塞式超时保护）
 
 > 与用户确认的方向：不阻塞 agent 执行，只通知用户。
 
@@ -68,27 +28,26 @@
 
 ---
 
-## 6. Dev 步骤失败处理机制改造
+## 3. Dev 步骤失败处理机制改造
 
 **现状**：DevExecStep 有 fail_rollback_threshold（默认 3 次触发 git reset）和 fail_escalation_threshold（默认 5 次触发人工对话）。这些阈值写死在代码里，且自动执行破坏性操作（git reset --hard）。
 
 **问题**：
 - 自动 reset 可能丢失修改
-- 阈值是硬编码，不够灵活
-- 用户可能希望先被通知再决定操作
+- 到达阈值后自动执行回滚/升级，用户没有被通知和决定的机会
 
 **方向**：
 - 失败处理改为可配置策略（通知 → 等待指令 / 自动回滚 / 跳过）
 - 默认策略改为：达到阈值后暂停并通知用户，由用户决定下一步
-- 与第 5 项的通知机制统一
+- 与第 2 项的通知机制统一
 
 ---
 
-## 7. 通用子图抽取
+## 4. 通用子图抽取
 
 > 目标：将当前工作流中重复出现的子图模式抽取为可配置的通用组件，使本项目从一个 Web 全栈专用工作流变为可复用的框架。
 
-### 7.1 重复模式分析
+### 4.1 重复模式分析
 
 当前工作流（PM → Dev → QA）中存在 7 类重复子图模式，其中 4 类结构完全一致可直接抽取，3 类结构相似但当前仅有单一实现：
 
@@ -102,9 +61,9 @@
 | ExecReviewLoopSubgraph | 1 次（仅 Dev） | 模式通用但单一实现 | 低 |
 | TestJudgeFixLoopSubgraph | 1 次（仅 QA） | 模式通用但单一实现 | 低 |
 
-### 7.2 子图接口定义
+### 4.2 子图接口定义
 
-#### 7.2.1 HandoffSubgraph
+#### 4.2.1 HandoffSubgraph
 
 **职责**：Master 给下游 agent 写 handoff 信。
 
@@ -159,7 +118,7 @@ qa_handoff = HandoffConfig(
 
 ---
 
-#### 7.2.2 CriteriaReviewSubgraph
+#### 4.2.2 CriteriaReviewSubgraph
 
 **职责**：Master 写审核标准 → Reviewer 审查 → PASS/FAIL。
 
@@ -205,7 +164,7 @@ criteria_{domain}_write ↔ criteria_{domain}_review
 
 ---
 
-#### 7.2.3 ArtifactReviewSubgraph
+#### 4.2.3 ArtifactReviewSubgraph
 
 **职责**：agent 产出文档/代码 → reviewer 审查 → PASS/FAIL。
 
@@ -260,7 +219,7 @@ class ArtifactReviewConfig:
 
 ---
 
-#### 7.2.4 FlushSubgraph
+#### 4.2.4 FlushSubgraph
 
 **职责**：phase 边界写总结 + 重建 Master 对话 + 保存 checkpoint。
 
@@ -292,7 +251,7 @@ entries, exits = FlushSubgraph.register(graph, runtime, config)
 
 ---
 
-#### 7.2.5 AlignLoopSubgraph（中期候选）
+#### 4.2.5 AlignLoopSubgraph（中期候选）
 
 **职责**：agent 读 handoff → 理解对齐 → 判读是否完成。
 
@@ -306,7 +265,7 @@ entries, exits = FlushSubgraph.register(graph, runtime, config)
 
 ---
 
-#### 7.2.6 ExecReviewLoopSubgraph（远期候选）
+#### 4.2.6 ExecReviewLoopSubgraph（远期候选）
 
 **职责**：分步执行 → 审查 → 提交/重试/回滚/升级。
 
@@ -326,7 +285,7 @@ class ExecReviewConfig:
 
 ---
 
-#### 7.2.7 TestJudgeFixLoopSubgraph（远期候选）
+#### 4.2.7 TestJudgeFixLoopSubgraph（远期候选）
 
 **职责**：运行测试 → 判读结果 → 修 bug → 重跑。
 
@@ -344,7 +303,7 @@ class TestJudgeFixConfig:
 
 ---
 
-### 7.3 组合后的效果
+### 4.3 组合后的效果
 
 #### graph.py 对比
 
@@ -403,7 +362,7 @@ graph = build_framework(workflow_phases)
 
 ---
 
-### 7.4 迁移路径
+### 4.4 迁移路径
 
 为避免大爆炸式重构，建议分三步走：
 

@@ -1,5 +1,6 @@
 """工作流工具函数。"""
 import os, sys, time, threading, functools
+from types import SimpleNamespace
 from typing import TypedDict
 
 import agent_runtime as ap
@@ -9,12 +10,14 @@ from .prompt import (MASTER_SYSTEM_PROMPT, DEV_SYSTEM_PROMPT,
 # ── Agent 中断机制 ──
 
 _interrupt_requested = False
+_skip_requested = False
 _interrupt_listener = None
 
 HOTKEY_MAP = {
     "ctrl+u": 21,   # NAK
     "ctrl+c": 3,    # ETX
     "ctrl+x": 24,   # CAN
+    "ctrl+k": 11,   # VT
 }
 
 
@@ -23,30 +26,56 @@ class WorkflowInterrupted(Exception):
     pass
 
 
-def _keyboard_listener(hotkey_code: int):
-    """后台线程：监听键盘，检测到热键时设置中断标志。"""
+def _keyboard_listener(hotkeys: dict[str, int]):
+    """后台线程：监听键盘，检测到热键时设置对应全局标志。"""
     import msvcrt
     while True:
         if msvcrt.kbhit():
             ch = msvcrt.getch()
-            if isinstance(ch, bytes) and len(ch) == 1 and ch[0] == hotkey_code:
-                global _interrupt_requested
-                _interrupt_requested = True
+            if isinstance(ch, bytes) and len(ch) == 1:
+                for action, code in hotkeys.items():
+                    if ch[0] == code:
+                        if action == "interrupt":
+                            global _interrupt_requested
+                            _interrupt_requested = True
+                        elif action == "skip":
+                            global _skip_requested
+                            _skip_requested = True
         time.sleep(0.05)
 
 
-def start_interrupt_listener(hotkey: str):
-    """启动键盘监听线程。hotkey 如 'ctrl+u'。"""
-    global _interrupt_listener, _interrupt_requested
+def start_interrupt_listener(interrupt_hotkey: str, skip_hotkey: str = ""):
+    """启动键盘监听线程，支持中断和跳过两个热键。"""
+    global _interrupt_listener, _interrupt_requested, _skip_requested
     _interrupt_requested = False
-    code = HOTKEY_MAP.get(hotkey.lower())
-    if code is None:
-        print(f"  [中断] 未知热键 '{hotkey}'，中断功能禁用")
+    _skip_requested = False
+
+    actions = {}
+    code = HOTKEY_MAP.get(interrupt_hotkey.lower())
+    if code is not None:
+        actions["interrupt"] = code
+    elif interrupt_hotkey:
+        print(f"  [热键] 未知中断热键 '{interrupt_hotkey}'，中断功能禁用")
+
+    code = HOTKEY_MAP.get(skip_hotkey.lower())
+    if code is not None:
+        actions["skip"] = code
+    elif skip_hotkey:
+        print(f"  [热键] 未知跳过热键 '{skip_hotkey}'，跳过功能禁用")
+
+    if not actions:
         return
+
     _interrupt_listener = threading.Thread(
-        target=_keyboard_listener, args=(code,), daemon=True)
+        target=_keyboard_listener, args=(actions,), daemon=True)
     _interrupt_listener.start()
-    print(f"  [中断] 按 {hotkey} 中断当前 agent 调用")
+
+    parts = []
+    if "interrupt" in actions:
+        parts.append(f"按 {interrupt_hotkey} 中断")
+    if "skip" in actions:
+        parts.append(f"按 {skip_hotkey} 跳过")
+    print(f"  [热键] {'，'.join(parts)}当前 agent 调用")
 
 
 def stop_interrupt_listener():
@@ -59,6 +88,12 @@ def request_interrupt():
     """手动触发中断（供外部使用）。"""
     global _interrupt_requested
     _interrupt_requested = True
+
+
+def request_skip():
+    """手动触发跳过（供外部使用）。"""
+    global _skip_requested
+    _skip_requested = True
 
 
 def entry_banner(func):
@@ -79,14 +114,14 @@ def interruptible(func):
     def wrapper(state):
         if hasattr(wrapper, '_runtime'):
             func._runtime = wrapper._runtime
-        try:
-            return func(state)
-        except WorkflowInterrupted:
-            rt = wrapper._runtime
-            rt.context.set_ctx("interrupted_node", func.__name__)
-            interrupt_dialog._runtime = rt
-            interrupt_dialog(state)
-            return func(state)
+        while True:
+            try:
+                return func(state)
+            except WorkflowInterrupted:
+                rt = wrapper._runtime
+                rt.context.set_ctx("interrupted_node", func.__name__)
+                interrupt_dialog._runtime = rt
+                interrupt_dialog(state)
     wrapper.__name__ = func.__name__
     return wrapper
 
@@ -165,7 +200,7 @@ def conv_name(base: str) -> str:
 def call_agent(runtime, agent: str, conversation: str, prompt: str,
                timeout: int = 180, stream: bool = True) -> str:
     """调用 agent 并返回文本。stream=True 时逐块打印输出。失败抛异常。"""
-    global _interrupt_requested
+    global _interrupt_requested, _skip_requested
     runtime.msg.call(agent, conversation)
     runtime.logger.log_event("call_started", agent=agent, detail=conversation)
     t0 = time.time()
@@ -198,8 +233,8 @@ def call_agent(runtime, agent: str, conversation: str, prompt: str,
             text_parts.append(chunk)
 
         def poll_callback():
-            global _interrupt_requested
-            return not _interrupt_requested   # False = 停止读取
+            global _interrupt_requested, _skip_requested
+            return not (_interrupt_requested or _skip_requested)
 
         try:
             result = runtime.conversations.call(
@@ -211,7 +246,36 @@ def call_agent(runtime, agent: str, conversation: str, prompt: str,
             runtime.context.set_ctx("interrupted_conv", conversation)
             raise
 
-        # poll_callback 中断的路径：_call_stream 正常返回，但标志已设
+        # poll_callback 返回 False 的路径：_skip_requested 或 _interrupt_requested
+        if _skip_requested:
+            _skip_requested = False
+            _interrupt_requested = False  # skip 优先于 interrupt
+            print()
+
+            runtime.msg.divider("Skip")
+            print("  跳过 agent 回复。请输入你的回复作为 agent 的回复。EOF 结束：")
+            print(flush=True)
+
+            user_lines = []
+            end_word = runtime.interaction.input_end_word or None
+            while True:
+                try:
+                    line = input()
+                    if end_word and line.strip() == end_word:
+                        break
+                    user_lines.append(line)
+                except EOFError:
+                    break
+            user_text = "\n".join(user_lines)
+            print(f"\n  [跳过] 你的回复已提交 ({len(user_text)} 字符)")
+            print(flush=True)
+
+            result = SimpleNamespace(
+                text=user_text, success=True, error=None,
+                raw_data={"output": []},
+                input_tokens=0, output_tokens=0,
+            )
+
         if _interrupt_requested:
             _interrupt_requested = False
             runtime.context.set_ctx("interrupted_agent", agent)

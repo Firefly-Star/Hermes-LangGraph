@@ -224,9 +224,10 @@ def main():
     stream_config = {"configurable": {"thread_id": "workflow-1"}}
 
     hotkey = runtime.interaction.interrupt_hotkey or ""
-    if hotkey:
+    skip_hotkey = runtime.interaction.skip_hotkey or ""
+    if hotkey or skip_hotkey:
         from .utils import start_interrupt_listener, stop_interrupt_listener
-        start_interrupt_listener(hotkey)
+        start_interrupt_listener(hotkey, skip_hotkey)
 
     try:
         for event in app.stream(state, stream_config):

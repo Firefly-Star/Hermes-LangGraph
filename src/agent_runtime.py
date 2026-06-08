@@ -790,6 +790,7 @@ class InteractionConfig:
     """对应 config interaction 节。"""
     input_end_word: str = "EOF"
     interrupt_hotkey: str = "ctrl+u"
+    skip_hotkey: str = ""
 
 
 # ============================================================
@@ -977,6 +978,7 @@ class AgentRuntime:
         self.interaction = InteractionConfig(
             input_end_word=self.config.get("input_end_word") or "EOF",
             interrupt_hotkey=self.config.get("interrupt_hotkey") or "ctrl+u",
+            skip_hotkey=self.config.get("skip_hotkey") or "",
         )
 
         self.logger = Logger(self.paths.runtime_dir)

@@ -19,9 +19,13 @@ flush（关闭当前 conversation，开启新 conversation 并重新注入上下
 
 #### Dev — 每 step PASS 后 flush + 执行前 flush
 
-**触发时机 1**：计划审查通过、开始执行前（DevGitInit），关闭 align/design/plan 阶段的旧对话，开新对话准备 exec。
+**触发时机**：
 
-**触发时机 2**：每个 step 审查 PASS → git commit 后（DevCommit），关闭旧 conversation，下次 exec 开新对话。
+1. **DevGitInit.flush_context** — 计划审查通过、开始执行前，关闭 align/design/plan 阶段的旧对话，开新对话准备 exec
+2. **DevCommit.flush_context** — 每步审查 PASS → git commit 后，关闭旧 conversation，下次 exec 开新对话
+3. **_restore_dev_conv（checkpoint.py）** — 断线恢复时重建 Dev 对话
+
+**优化背景**：design.md 约 70KB、plan.md 约 88KB，全文注入每次消耗大量 token。改为推摘要 + 索引 + 当前步骤全文，从 ~158KB 降至 ~11KB。
 
 **新对话注入内容：**
 
@@ -29,17 +33,27 @@ flush（关闭当前 conversation，开启新 conversation 并重新注入上下
 [system prompt — Hermes 自动注入]
 [system prompt - workflow 定义的规范]
 
-## 项目设计文档
-{design.md}           ← 文件内容注入
+## 项目设计概要
+{design-summary.md}   ← ~3KB，全局架构、技术选型、核心设计决策
 
-## 执行计划
-{plan.md}             ← 文件内容注入
+## 设计文件索引
+{design-index.md}     ← ~2KB，模块路径 → 一句话说明
+
+## 计划进度
+{plan-index}          ← 自动提取，全部步骤标题，标记已完成和当前步骤
+
+## 当前步骤详细内容
+{current_step_plan}   ← 当前步骤的完整 plan 段落全文
 
 ## 已完成的工作
 {compact_summary}     ← Dev 在 commit 前写的进度摘要
+
+注意：设计文件和计划文件体积较大，需要了解具体模块时请根据索引找到对应位置后用 read_file 定向读取，不要通读全文。
 ```
 
-**为什么是文件内容而不是路径**：注入文件内容才能命中 DeepSeek prefix cache。system prompt + design.md + plan.md 构成稳定前缀，从第二步起全部命中 cache read。如果只传路径让 agent 自读，每次 prompt 都不同，无 cache 收益。
+design-summary.md 和 design-index.md 由 Dev 在 DevWriteDesign.read_design_letter 写完 design.md 后一并生成。plan-index 由 `extract_plan_index()` 用正则自动提取，不需要 agent 参与。
+
+**为什么是文件内容而不是路径**：注入文件内容才能命中 DeepSeek prefix cache。system prompt + design-summary + design-index + plan-index 构成稳定前缀，从第二步起全部命中 cache read。如果只传路径让 agent 自读，每次 prompt 都不同，无 cache 收益。
 
 **终端整洁**：通过 `_resolve_file_refs` 的 `{路径}` 语法，终端显示路径字符串（简短），实际发给 LLM 的是文件内容。
 
@@ -299,23 +313,38 @@ def register(cls, graph, runtime):
 
 ### 子图架构（subgraphs/）
 
+#### 动机
+
+原始工作流（`phase1.py` / `phase2.py` / `phase3.py`）中，多个节点组有相同的图结构，唯一的区别是角色名、prompt 内容和文件路径：
+
+- **Handoff** — Master 写信给下游 agent（PM/Dev/QA），3 次
+- **CriteriaReview** — 写审核标准 → 审查 → PASS/FAIL，3 次
+- **ArtifactReview** — agent 产出 → 审查 → PASS/FAIL，5 次
+- **Flush** — 阶段总结 → 重建对话 → checkpoint，4 次
+
 当同一图结构在多个 phase 重复出现时，抽取为配置驱动的子图。子图采用三层分离架构：
 
 ```
-┌─ 工厂类（Factory）─────┐
-│  define(config) → Def  │  ← 只创建闭包
-└──────────┬─────────────┘
+┌─ 工厂类（Factory）──────────────┐
+│  HandoffSubgraph.define(config)  │  ← 只创建闭包，不知晓图结构
+│  CriteriaDefinitionSubgraph      │
+└──────────┬───────────────────────┘
+           │ 返回 Def 实例
            ▼
-┌─ Def 类 ───────────────┐
-│  SubgraphDef(ABC)      │  ← 掌握图拓扑
-│  register(graph, rt)   │  ← 做所有接线
-│  → SubgraphResult      │
-└──────────┬─────────────┘
+┌─ Def 类（具体子图）──────────────┐
+│  HandoffDef(SubgraphDef)         │  ← 知晓自己的图拓扑
+│  CriteriaDefinitionDef           │  ← register() 做所有接线
+│  .register(graph, runtime)       │
+└──────────┬───────────────────────┘
+           │ 返回 SubgraphResult
            ▼
-┌─ ABC 基类 ─────────────┐
-│  nodes / entries/exits │  ← 定义契约
-│  abstract register()   │
-└────────────────────────┘
+┌─ ABC 基类 ───────────────────────┐
+│  SubgraphDef                     │  ← 定义契约
+│  - nodes: dict[str, Callable]    │
+│  - entries: dict | None          │
+│  - exits: dict | None            │
+│  + register(graph, runtime)      │
+└──────────────────────────────────┘
 ```
 
 #### SubgraphDef（ABC 基类）
@@ -328,43 +357,111 @@ class SubgraphDef(ABC):
 
     @abstractmethod
     def register(self, graph, runtime) -> SubgraphResult:
-        ...
+        """注入 runtime、注册节点、加组内边，设置 entries/exits。"""
 ```
 
-entries/exits 在 register 调用前为 None，因为节点函数尚未注入 runtime。register 时才确定图节点名。
+entries/exits 在 register 调用前为 None，因为节点函数尚未注入 runtime，不能注册到图，也就不知道最终图节点名。register 调用后才确定。
 
-#### 工厂类只 define，不 register
+#### 具体 Def 类 — 掌握图拓扑
+
+每个具体子图在自己的 `register()` 中定义组内边：
+
+```python
+class CriteriaDefinitionDef(SubgraphDef):
+    def __init__(self, nodes, pass_judge_result, fail_judge_result):
+        self.nodes = nodes           # dict 保持插入顺序
+        self._pass = pass_judge_result
+        self._fail = fail_judge_result
+
+    def register(self, graph, runtime) -> SubgraphResult:
+        for fn in self.nodes.values():
+            fn._runtime = runtime    # 注入 runtime
+        register_nodes(graph, runtime, self.nodes)
+        w, r, p, f = self.nodes     # 依赖 dict 插入顺序
+        graph.add_edge(w, r)
+        graph.add_conditional_edges(r, lambda s: s.get("judge_result", ""), {
+            self._pass: p,
+            self._fail: f,
+        })
+        graph.add_edge(f, w)
+        self.entries = {"run": w}
+        self.exits = {"pass": p}
+        return SubgraphResult(entries=self.entries, exits=self.exits)
+```
+
+#### 工厂类 — 只 define，不 register
+
+工厂类只提供静态 `define(config)` 方法，创建节点闭包，返回 Def 实例：
 
 ```python
 class HandoffSubgraph:
     @staticmethod
     def define(config: HandoffConfig) -> HandoffDef:
-        # 创建闭包，返回 Def 实例
-        ...
+        node_name = f"{config.domain}_handoff"
+
+        def run(state):
+            rt = run._runtime
+            # ... 业务逻辑 ...
+
         return HandoffDef(node_name=node_name, run=run)
 ```
 
-工厂对图结构零了解，只负责创建节点闭包。
+工厂对 register 的具体方式（有什么边、有什么条件路由）零了解，只负责创建节点闭包。
+
+#### SubgraphResult
+
+```python
+class SubgraphResult:
+    __slots__ = ("entries", "exits")
+
+    def __init__(self, entries: dict, exits: dict):
+        self.entries = entries
+        self.exits = exits
+```
+
+让 graph.py 以一致的 `obj.entries["run"]` / `obj.exits["pass"]` 方式引用入口/出口，不关心具体子图类型。
 
 #### graph.py 中的调用链
 
 ```python
 # phase1.py — 定义配置 + define
-PM_HANDOFF_DEF = HandoffSubgraph.define(PM_HANDOFF_CONFIG)
+PM_CRITERIA_CONFIG = CriteriaDefinitionConfig(
+    domain="pm",
+    criteria_title="PM 审核标准",
+    criteria_prompt=...,
+    criteria_filename="criteria-pm.md",
+    context_key="pm_criteria",
+    review_conv="review-pm-criteria",
+    pass_judge_result="pmwrite_prd_letter",
+)
+PM_CRITERIA_DEF = CriteriaDefinitionSubgraph.define(PM_CRITERIA_CONFIG)
 
 # graph.py — register
-pm_handoff = PM_HANDOFF_DEF.register(graph, runtime)
-graph.add_edge(pm_handoff.exits["run"], PMAlign.entries["read"])
+pm_criteria = PM_CRITERIA_DEF.register(graph, runtime)
+
+# graph.py — 连跨组边
+graph.add_edge(pm_criteria.exits["pass"], PMWriteDoc.entries["write_prd_letter"])
 ```
+
+配置在 phase 模块中定义（语义合理），注册在 graph.py 中执行（只有那里有 runtime）。
 
 #### 已实现的子图
 
-| 子图 | 工厂 | Def | 配置 | 节点数 |
-|:-----|:-----|:----|:-----|:-------|
-| Handoff | `HandoffSubgraph` | `HandoffDef` | `HandoffConfig` | 1 |
-| CriteriaDefinition | `CriteriaDefinitionSubgraph` | `CriteriaDefinitionDef` | `CriteriaDefinitionConfig` | 4 |
+| 子图 | 工厂 | Def | 节点数 | 图拓扑 |
+|:-----|:-----|:----|:-------|:-------|
+| Handoff | `HandoffSubgraph` | `HandoffDef` | 1 | 单节点（Master 写信） |
+| CriteriaDefinition | `CriteriaDefinitionSubgraph` | `CriteriaDefinitionDef` | 4 | write → review → pass/feedback → write（循环） |
+| ArtifactReview | `ArtifactReviewSubgraph` | `ArtifactReviewDef` | 3 | review → pass_through / write_feedback |
+| MasterFlush | `MasterFlushSubgraph` | `MasterFlushDef` | 2 | write_summary → flush_conv |
 
-详细设计见 `doc/subgraph-extraction.md`。
+#### 各子图注册拓扑对比
+
+| 子图 | 条件边 | 内部循环 | 出口 |
+|:-----|:-------|:---------|:-----|
+| Handoff | 无 | 无 | entries: `run`, exits: `run` |
+| CriteriaDefinition | review → (PASS / FAIL) | FAIL → write | entries: `run`, exits: `pass` |
+| ArtifactReview | review → (PASS / FAIL) | FAIL → write_feedback | entries: `run`, exits: `pass` / `fail` |
+| MasterFlush | 无 | 无 | entries: `write_summary`, exits: `flush_conv` |
 
 ---
 
