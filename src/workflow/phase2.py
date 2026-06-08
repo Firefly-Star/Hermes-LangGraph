@@ -5,7 +5,8 @@ from .utils import (WorkflowState, conv_name, call_agent, letter_path,
                     ensure_write_file, write_letter, read_letter,
                     read_and_write_letter, judge_reply, clarify_loop,
                     register_nodes, get_step_from_plan,
-                    count_steps, WorkflowInterrupted)
+                    count_steps, extract_plan_index,
+                    extract_current_step, WorkflowInterrupted)
 from .prompt import DEV_SYSTEM_PROMPT, FLUSH_CONTINUATION_NOTE, PLAYWRIGHT_TEST_TIPS
 from .checkpoint import save_checkpoint
 from .subgraphs import (HandoffConfig, HandoffSubgraph,
@@ -421,6 +422,54 @@ DEV_DESIGN_REVIEW_CONFIG = ArtifactReviewConfig(
 DEV_DESIGN_REVIEW_DEF = ArtifactReviewSubgraph.define(DEV_DESIGN_REVIEW_CONFIG)
 
 
+class WriteDesignSummary:
+    """Design 审核通过后生成 design-summary.md + design-index.md，1 节点。"""
+
+    entries = {"run": "write_design_summary"}
+    exits = {"run": "write_design_summary"}
+
+    _runtime = None
+
+    @staticmethod
+    def run(state) -> dict:
+        """Dev 根据 design.md 生成概要 + 索引 (2 call_agent via ensure_write_file)."""
+        runtime = WriteDesignSummary._runtime
+        dev_conv = runtime.context.get_ctx("dev_conv")
+        dev_dir = os.path.join(runtime.paths.workspace, "Dev")
+        design_path = os.path.join(dev_dir, "design.md")
+        summary_path = os.path.join(dev_dir, "design-summary.md")
+        index_path = os.path.join(dev_dir, "design-index.md")
+
+        print(f"\n  ── 生成设计概要及索引 ──")
+
+        # 清理旧的 summary/index（如果存在），让 agent 重写
+        for p in (summary_path, index_path):
+            if os.path.exists(p):
+                os.remove(p)
+
+        call_agent(runtime, "dev", dev_conv,
+            f"请先阅读详细设计文档 {design_path}，然后生成以下两个文件：\n\n"
+            f"1. 概要文件 {summary_path}\n"
+            "   控制在 3KB 以内。描述整体架构、技术选型、核心约定。\n"
+            "   不要出现模板式的套话，要比 design.md 更精炼。\n\n"
+            f"2. 索引文件 {index_path}\n"
+            "   每行「路径/模块名: 一句话说明（不超过 20 字）」。\n"
+            "   要求简洁、准确、完整，覆盖 design.md 中的所有主要模块。\n\n"
+            "用 write_file 工具分别写入这两个文件。")
+
+        ensure_write_file(runtime, "dev", dev_conv, summary_path)
+        ensure_write_file(runtime, "dev", dev_conv, index_path)
+
+        runtime.logger.log_event("design_summary_created",
+            detail=f"概要 → {summary_path}，索引 → {index_path}")
+        return {"phase": "design_summary_done", "judge_result": "pass"}
+
+    @classmethod
+    def register(cls, graph, runtime):
+        cls._runtime = runtime
+        register_nodes(graph, runtime, {"write_design_summary": cls.run})
+
+
 class DevWritePlan:
     """Dev 出实现计划：Master 写信 + Dev 读信写 plan.md，2 节点。"""
 
@@ -497,6 +546,9 @@ class DevWritePlan:
             + "\n".join("   " + l for l in PLAYWRIGHT_TEST_TIPS.strip().split("\n")) + "\n"
             "6. 这个阶段只要求产出计划文档，"
             "代码实现需要等进一步指令后再进行。\n"
+            "7. 计划的Step后面的编号只能是数字，不能出现3a或3.1等变体"
+            "8. 不论审查意见（如果有的话）中写了什么，哪怕Reviewer说“修改完后即可开始编码”等，"
+            "也不能直接审批Dev进行实际的编码，Dev的编码会由workflow来控制，你只能批准Dev写计划"
             f"Plan需要约束未来所有代码的产出至{dev_dir}\n"
             f"审核标准文件参考：{criteria_path}"
         )
@@ -542,7 +594,9 @@ DEV_PLAN_REVIEW_PROMPT = (
     "## 审查标准\n"
     "逐条检查以下维度，每一条回复 ✓ 或 ✗：\n\n"
     "1. **步骤完整性** — 计划是否覆盖了设计文档中的所有功能点？\n"
-    "   设计文档在：{workspace}/Dev/design.md\n"
+    "   设计概要：{workspace}/Dev/design-summary.md\n"
+    "   设计索引：{workspace}/Dev/design-index.md\n"
+    "   需要查阅具体模块时按索引用 read_file 定向读取设计文档。\n"
     "2. **验收可执行性** — 每个 Step 的验收方法是否为可运行的命令、\n"
     "   Playwright 脚本、或测试代码？不允许'确认代码正确'、'检查逻辑'这类主观描述。\n"
     "3. **步骤粒度** — 每个 Step 的改动是否不超过 3-5 个文件？\n"
@@ -554,7 +608,8 @@ DEV_PLAN_REVIEW_PROMPT = (
     + "\n".join("   " + l for l in PLAYWRIGHT_TEST_TIPS.strip().split("\n"))
     + "\n\n"
     "## Dev 的实现计划\n"
-    "计划文件在：{workspace}/Dev/plan.md\n\n"
+    "计划文件在：{workspace}/Dev/plan.md\n"
+    "文件较大，非必要不要通读全文，先阅读设计概要了解整体后再审查计划。\n\n"
     "## 输出格式\n"
     "逐条给出评价，最后一行输出 == PASS == 或 == FAIL ==。\n"
     "如果 FAIL，写明需要修正的具体问题。"
@@ -666,16 +721,25 @@ class DevGitInit:
         if os.path.exists(cp):
             with open(cp, "r", encoding="utf-8") as f:
                 summary_text = f.read()
-        design_text = _read("design.md")
+        design_summary = _read("design-summary.md")
+        design_index = _read("design-index.md")
         plan_text = _read("plan.md")
+        plan_index = extract_plan_index(plan_text, 0)
+        current_step = extract_current_step(plan_text, 0)
 
         runtime.conversations.close("dev", dev_conv)
         new_conv = conv_name("dev-exec")
-        injected = (f"{dev_principles}{FLUSH_CONTINUATION_NOTE}"
-                    f"{PLAYWRIGHT_TEST_TIPS}\n"
-                    f"## 已完成的工作\n{summary_text}\n\n"
-                    f"## 项目设计文档\n{design_text}\n\n"
-                    f"## 执行计划\n{plan_text}")
+        injected = (
+            f"{dev_principles}{FLUSH_CONTINUATION_NOTE}"
+            f"{PLAYWRIGHT_TEST_TIPS}\n"
+            f"## 已完成的工作\n{summary_text}\n\n"
+            f"## 项目设计概要\n{design_summary}\n\n"
+            f"## 设计文件索引\n{design_index}\n\n"
+            f"## 计划进度\n{plan_index}\n\n"
+            f"## 当前步骤详细内容\n{current_step}\n\n"
+            "注意：实际的设计文件和计划文件体积较大，需要了解具体模块时"
+            "请根据索引找到对应位置后用 read_file 定向读取，当前只需要了解项目概貌，不需要通读全文。"
+        )
         call_agent(runtime, "dev", new_conv, injected)
         runtime.context.set_ctx("dev_conv", new_conv)
 
@@ -772,6 +836,14 @@ class DevExecStep:
                     "不要将文件生成到项目根目录或其他地方。"
                     "完成实现后，运行该步骤的验收方法确认通过。"
                     "如果验收涉及前端 UI，使用 Playwright 编写 E2E 测试并遵守 Playwright 测试规范。\n\n"
+                    "## 参考文件\n"
+                    f"设计概要（整体认知）：{runtime.paths.workspace}/Dev/design-summary.md\n"
+                    f"设计索引（查阅指引）：{runtime.paths.workspace}/Dev/design-index.md\n"
+                    f"完整设计文档（需要时按索引查阅）：{runtime.paths.workspace}/Dev/design.md\n"
+                    f"完整执行计划（含各步骤验收方法）：{runtime.paths.workspace}/Dev/plan.md\n"
+                    "在有决策问题或缺乏信息时，先查阅索引文件定位，"
+                    "再按需读取完整设计文档或完整执行计划的对应章节。\n"
+                    "完整设计文档和完整执行计划的体积较大，非必要不要通读全文。仅在必要时才可通读全文。\n\n"
                     "## Git 操作限制\n"
                     "没有允许不要做任何 git 操作（包括 git add、git commit、git push 等），"
                     "代码只需要写在文件中即可。")
@@ -804,7 +876,6 @@ class DevReviewStep:
         step_idx = int(runtime.context.get_ctx("dev_step_index") or "0")
         total = int(runtime.context.get_ctx("dev_total_steps") or "0")
         plan_path = os.path.join(runtime.paths.workspace, "Dev", "plan.md")
-        design_path = os.path.join(runtime.paths.workspace, "Dev", "design.md")
 
         step_content = get_step_from_plan(plan_path, step_idx)
         if not step_content:
@@ -814,7 +885,12 @@ class DevReviewStep:
             "请审查 Dev 的最新实现。\n\n"
             "## 验收标准\n"
             f"来自计划的当前步骤：\n{step_content}\n\n"
-            f"## 参考设计文档\n{design_path}\n\n"
+            "## 参考设计文档\n"
+            f"设计概要：{runtime.paths.workspace}/Dev/design-summary.md\n"
+            f"设计索引：{runtime.paths.workspace}/Dev/design-index.md\n"
+            f"完整设计（按索引查阅）：{runtime.paths.workspace}/Dev/design.md\n"
+            "先阅读概要了解整体，再用索引定位到相关章节后 read_file 定向读取。\n"
+            "文件较大，非必要不要通读全文。\n\n"
             "## 审查流程\n"
             "### 第一步：检查测试代码\n"
             "先找出 Dev 为当前步骤编写的测试代码，检查：\n"
@@ -974,26 +1050,46 @@ class DevCommit:
 
     @staticmethod
     def flush_context(state) -> dict:
-        """关旧对话 + 开新对话 + 注入上下文 + 检查点 (1 call_agent)."""
+        """关旧对话 + 开新对话 + 注入压缩上下文 + 检查点 (1 call_agent)."""
         runtime = DevCommit._runtime
         dev_conv = runtime.context.get_ctx("dev_conv")
         step_idx = int(runtime.context.get_ctx("commit_step_idx") or "0")
         summary_path = runtime.context.get_ctx("commit_summary_path")
-        design_path = runtime.context.get_ctx("commit_design_path")
-        plan_path = runtime.context.get_ctx("commit_plan_path")
+        dev_dir = os.path.join(runtime.paths.workspace, "Dev")
+
+        def _read(p):
+            fp = os.path.join(dev_dir, p)
+            if os.path.exists(fp):
+                with open(fp, "r", encoding="utf-8") as f:
+                    return f.read()
+            return ""
+
+        summary_text = ""
+        if summary_path and os.path.exists(summary_path):
+            with open(summary_path, "r", encoding="utf-8") as f:
+                summary_text = f.read()
+
+        design_summary = _read("design-summary.md")
+        design_index = _read("design-index.md")
+        plan_text = _read("plan.md")
+        plan_index = extract_plan_index(plan_text, step_idx)
+        current_step = extract_current_step(plan_text, step_idx)
 
         dev_principles = runtime.context.get_bg("dev_principles")
 
         runtime.conversations.close("dev", dev_conv)
         new_conv = conv_name("dev-exec")
-        injected = (f"{dev_principles}{FLUSH_CONTINUATION_NOTE}"
-                    f"{PLAYWRIGHT_TEST_TIPS}\n"
-                    f"## 已完成的工作\n"
-                    f"{{{summary_path}}}\n\n"
-                    f"## 项目设计文档\n"
-                    f"{{{design_path}}}\n\n"
-                    f"## 执行计划\n"
-                    f"{{{plan_path}}}")
+        injected = (
+            f"{dev_principles}{FLUSH_CONTINUATION_NOTE}"
+            f"{PLAYWRIGHT_TEST_TIPS}\n"
+            f"## 已完成的工作\n{summary_text}\n\n"
+            f"## 项目设计概要\n{design_summary}\n\n"
+            f"## 设计文件索引\n{design_index}\n\n"
+            f"## 计划进度\n{plan_index}\n\n"
+            f"## 当前步骤详细内容\n{current_step}\n\n"
+            "注意：设计文件和计划文件体积较大，需要了解具体模块时"
+            "请根据索引找到对应位置后用 read_file 定向读取，当前只需要了解项目概貌，不需要通读全文。"
+        )
         call_agent(runtime, "dev", new_conv, injected)
         runtime.context.set_ctx("dev_conv", new_conv)
 

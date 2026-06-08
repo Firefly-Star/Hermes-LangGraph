@@ -133,6 +133,9 @@ def interrupt_dialog(state) -> dict:
     runtime.context.set_ctx("interrupted_agent", "")
     runtime.context.set_ctx("interrupted_conv", "")
     runtime.context.set_ctx("interrupted_node", "")
+    # 用户手动介入后，reset Dev 步骤的失败计数器，避免自动阈值干扰
+    runtime.context.set_ctx("dev_step_fail_count", "0")
+    runtime.context.set_ctx("dev_step_has_failed", "false")
     return {"phase": return_node}
 
 
@@ -243,7 +246,7 @@ def ensure_write_file(runtime, receiver, conv, file_path, max_retry=None):
     """检查文件是否存在，不存在则提醒 agent 写入。max_retry 默认从 config 读。"""
     max_retry = int(runtime.config.get("write_retry") or "2") if max_retry is None else max_retry
     for attempt in range(max_retry):
-        if os.path.exists(file_path):
+        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
             return True
         call_agent(runtime, receiver, conv,
                    f"（提醒）文件尚未被创建：{file_path}\n\n"
@@ -424,6 +427,32 @@ def count_steps(plan_path: str) -> int:
     with open(plan_path, "r", encoding="utf-8") as f:
         text = f.read()
     return text.count("## Step ")
+
+
+def extract_plan_index(plan_text: str, completed_steps: int) -> str:
+    """从 plan.md 文本提取计划索引，已完成标记 [x]，当前标记 [>]，待办标记 [ ]。"""
+    import re
+    lines = []
+    for match in re.finditer(r'^## Step (\d+):\s*(.*)', plan_text, re.MULTILINE):
+        num = int(match.group(1))
+        title = match.group(2).strip()
+        idx = num - 1  # 转 0-indexed
+        if idx < completed_steps:
+            marker = "[x]"
+        elif idx == completed_steps:
+            marker = "[>]"
+        else:
+            marker = "[ ]"
+        lines.append(f"{marker} Step {num}: {title}")
+    return "\n".join(lines)
+
+
+def extract_current_step(plan_text: str, step_idx: int) -> str:
+    """从 plan.md 文本提取第 step_idx 步的完整内容（0-indexed）。"""
+    sections = plan_text.split("## Step ")
+    if step_idx + 1 >= len(sections):
+        return ""
+    return "## Step " + sections[step_idx + 1].strip()
 
 
 def open_master_conv(runtime, summary_path=""):

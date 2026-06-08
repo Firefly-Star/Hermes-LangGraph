@@ -3,7 +3,9 @@ import os, json, time, shutil
 from typing import Optional
 
 from .prompt import FLUSH_CONTINUATION_NOTE
-from .utils import conv_name, call_agent, open_master_conv, register_nodes
+from .utils import (conv_name, call_agent, open_master_conv,
+                    register_nodes, extract_plan_index,
+                    extract_current_step)
 
 
 def _cp_path(runtime) -> str:
@@ -79,21 +81,43 @@ def _restore_dev_conv(runtime, step_idx):
     dev_principles = runtime.context.get_bg("dev_principles")
     dev_dir = os.path.join(runtime.paths.workspace, "Dev")
 
-    summary_path = os.path.join(runtime.paths.phases, "compact-summary.md")
-    design_path = os.path.join(dev_dir, "design.md")
-    plan_path = os.path.join(dev_dir, "plan.md")
+    def _read(p):
+        fp = os.path.join(dev_dir, p)
+        if os.path.exists(fp):
+            with open(fp, "r", encoding="utf-8") as f:
+                return f.read()
+        return ""
 
-    injected = (f"{dev_principles}{FLUSH_CONTINUATION_NOTE}"
-                f"你的工作目录：{dev_dir}\n\n"
-                f"请先按顺序执行以下操作，**不要询问确认，直接执行命令**:\n"
-                f"1. 运行 git reset --hard HEAD 清理工作区（回滚所有未提交的改动至上一个commit节点）\n"
-                f"2. 阅读以下文件了解已完成的工作和计划：\n"
-                f"   - 已完成的工作：{{{summary_path}}}\n"
-                f"   - 项目设计文档：{{{design_path}}}\n"
-                f"   - 执行计划：{{{plan_path}}}\n\n"
-                "在Master给你下达命令之前，你只能阅读上下文，不能进行任何产"
-                "出，包括修改、创建任何文件，后续Master会给你下达任务。"
-                "不要询问你是否要执行这些操作，直接去做。")
+    summary_text = ""
+    summary_path = os.path.join(runtime.paths.phases, "compact-summary.md")
+    if os.path.exists(summary_path):
+        with open(summary_path, "r", encoding="utf-8") as f:
+            summary_text = f.read()
+
+    design_summary = _read("design-summary.md")
+    design_index = _read("design-index.md")
+    plan_text = _read("plan.md")
+    plan_index = extract_plan_index(plan_text, step_idx)
+    current_step = extract_current_step(plan_text, step_idx)
+
+    injected = (
+        f"{dev_principles}{FLUSH_CONTINUATION_NOTE}"
+        f"你的工作目录：{dev_dir}\n\n"
+        "请先按顺序执行以下操作，**不要询问确认，直接执行命令**:\n"
+        "1. 运行 git reset --hard HEAD 清理工作区"
+        "（回滚所有未提交的改动至上一个commit节点）\n"
+        "2. 阅读以下内容了解已完成的工作和计划：\n\n"
+        f"## 已完成的工作\n{summary_text}\n\n"
+        f"## 项目设计概要\n{design_summary}\n\n"
+        f"## 设计文件索引\n{design_index}\n\n"
+        f"## 计划进度\n{plan_index}\n\n"
+        f"## 当前步骤详细内容\n{current_step}\n\n"
+        "注意：设计文件和计划文件体积较大，需要了解具体模块时"
+        "请根据索引找到对应位置后用 read_file 定向读取，不要通读全文。\n\n"
+        "在Master给你下达命令之前，你只能阅读上下文，不能进行任何产"
+        "出，包括修改、创建任何文件，后续Master会给你下达任务。"
+        "不要询问你是否要执行这些操作，直接去做。"
+    )
     new_conv = conv_name("dev-exec")
     call_agent(runtime, "dev", new_conv, injected)
     runtime.context.set_ctx("dev_conv", new_conv)

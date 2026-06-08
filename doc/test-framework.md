@@ -108,7 +108,16 @@ assert result.text == "模拟回复"
 | 静态校验 | static | graph edge → node_name 存在性 | 1-2 |
 | 逐 node | unit | state 转换、prompt 构造、agent/conv 选择 | 每个 node 2-3 |
 | 逐 phase | integration | context 传递、线性段调用序列 | 每个 phase 1-2 |
-| 全流程 | e2e | 跨 phase 状态累积、中断恢复 | 2-3 |
+| 全流程/边界 | e2e | 跨 phase 状态累积、flush 边界、中断恢复 | 2-3 |
+
+## 新增模块指引
+
+以下模块是最近新增、尚未编写单元测试的，按优先级排列：
+
+| 模块 | 类型 | 说明 | 优先级 |
+|------|------|------|--------|
+| `WriteDesignSummary` | A 纯 call | design 审核通过后让 Dev 生成 design-summary.md + design-index.md，2 次 `call_agent` + 2 次 `ensure_write_file` | 高 |
+| `extract_plan_index()`、`extract_current_step()` | 纯函数 | `utils.py` 中的 plan 文本处理函数，无 agent 调用，直接传字符串测试 | 中 |
 
 ### static — 静态校验
 

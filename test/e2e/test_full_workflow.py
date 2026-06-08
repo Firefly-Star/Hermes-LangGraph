@@ -9,7 +9,8 @@ from workflow.phase0 import PreFlightClarify
 from workflow.phase1 import (PM_HANDOFF_DEF, PM_CRITERIA_DEF, PMAlign,
     MasterReplyPM, JudgeMasterReply, PMWriteDoc, ReviewPMOutput, HumanReview)
 from workflow.phase2 import (DEV_HANDOFF_DEF, DEV_CRITERIA_DEF, DevAlign,
-    DevWriteDesign, DEV_DESIGN_REVIEW_DEF, DevWritePlan, DEV_PLAN_REVIEW_DEF,
+    DevWriteDesign, DEV_DESIGN_REVIEW_DEF, WriteDesignSummary,
+    DevWritePlan, DEV_PLAN_REVIEW_DEF,
     DevGitInit, DevExecStep, DevReviewStep, DevCommit)
 from workflow.phase3 import (QA_HANDOFF_DEF, QA_CRITERIA_DEF, QAAlign,
     QAWriteTestPlan, MASTER_PLAN_REVIEW_DEF, QAWriteTestCase,
@@ -49,6 +50,7 @@ class TestE2EFullWorkflow:
         DevWriteDesign._runtime = self.rt
         for n in ("dev_design_review", "dev_design_review_pass"):
             DEV_DESIGN_REVIEW_DEF.nodes[n]._runtime = self.rt
+        WriteDesignSummary._runtime = self.rt
         DevWritePlan._runtime = self.rt
         for n in ("dev_plan_review", "dev_plan_review_pass"):
             DEV_PLAN_REVIEW_DEF.nodes[n]._runtime = self.rt
@@ -111,10 +113,11 @@ class TestE2EFullWorkflow:
     @patch("workflow.phase0.clarify_loop", return_value="用户确认完成")
     @patch("workflow.utils.ensure_write_file", return_value=True)
     @patch("workflow.subgraphs.master_flush.ensure_write_file", return_value=True)
+    @patch("workflow.phase2.ensure_write_file", return_value=True)
     @patch("workflow.phase3.ensure_write_file", return_value=True)
     @patch("workflow.phase4.ensure_write_file", return_value=True)
     def test_full_workflow(
-        self, mock_p4, mock_p3, mock_flush, mock_utils, mock_clarify
+        self, mock_p4, mock_p3, mock_p2, mock_flush, mock_utils, mock_clarify
     ):
         """全链路：Phase 0 → 1 → 2 → 3 → 4，验证串联正确性。"""
         ws = self.rt.paths.workspace
@@ -311,6 +314,10 @@ class TestE2EFullWorkflow:
 
         # ── design review pass-through ──
         state = DEV_DESIGN_REVIEW_DEF.nodes["dev_design_review_pass"](state)
+
+        # ── WriteDesignSummary ──
+        state = WriteDesignSummary.run(state)
+        assert state["phase"] == "design_summary_done"
 
         # ── DevWritePlan ──
         state = DevWritePlan.write_plan_letter(state)

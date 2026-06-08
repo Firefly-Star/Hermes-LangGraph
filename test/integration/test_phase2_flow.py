@@ -8,7 +8,8 @@ from langgraph.graph import END
 from workflow.phase2 import (DevExecStep, DevReviewStep, DevCommit,
                              DEV_HANDOFF_DEF, DevAlign,
                              DEV_CRITERIA_DEF, DevWriteDesign,
-                             DEV_DESIGN_REVIEW_DEF, DevWritePlan,
+                             DEV_DESIGN_REVIEW_DEF, WriteDesignSummary,
+                             DevWritePlan,
                              DEV_PLAN_REVIEW_DEF, DevGitInit,
                              DevRollback, DevEscalate)
 
@@ -51,6 +52,7 @@ class TestPhase2FullHappyPath:
         DevWriteDesign._runtime = self.rt
         for node_name in ("dev_design_review", "dev_design_review_pass"):
             DEV_DESIGN_REVIEW_DEF.nodes[node_name]._runtime = self.rt
+        WriteDesignSummary._runtime = self.rt
         DevWritePlan._runtime = self.rt
         for node_name in ("dev_plan_review", "dev_plan_review_pass"):
             DEV_PLAN_REVIEW_DEF.nodes[node_name]._runtime = self.rt
@@ -69,9 +71,10 @@ class TestPhase2FullHappyPath:
         with open(os.path.join(dev_dir, "design.md"), "w", encoding="utf-8") as f:
             f.write("# Design\n系统架构设计\n")
 
+    @patch("workflow.phase2.ensure_write_file", return_value=True)
     @patch("workflow.utils.ensure_write_file", return_value=True)
-    def test_handoff_to_commit(self, mock_ensure):
-        """全线串联：dev_handoff → DevAlign(A) → dev_criteria(P) → design → design_review(P) → plan → plan_review(P) → exec → review(P) → commit。"""
+    def test_handoff_to_commit(self, mock_utils, mock_p2):
+        """全线串联：dev_handoff → DevAlign(A) → dev_criteria(P) → design → design_review(P) → summary → plan → plan_review(P) → exec → review(P) → commit。"""
         ws = self.rt.paths.workspace
 
         # ── Node 1: dev_handoff ──
@@ -142,48 +145,52 @@ class TestPhase2FullHappyPath:
         # ── Node 12: dev_design_review pass-through ──
         state = DEV_DESIGN_REVIEW_DEF.nodes["dev_design_review_pass"](state)
 
-        # ── Node 13: DevWritePlan.write_plan_letter ──
+        # ── Node 13: WriteDesignSummary.run ──
+        state = WriteDesignSummary.run(state)
+        assert state["phase"] == "design_summary_done"
+
+        # ── Node 14: DevWritePlan.write_plan_letter ──
         state = DevWritePlan.write_plan_letter(state)
         assert state["phase"] == "dev_plan_letter_done"
         planletter_path = self.rt.context.get_ctx("planletter_path")
         assert planletter_path is not None
 
-        # ── Node 14: DevWritePlan.read_plan_letter ──
+        # ── Node 15: DevWritePlan.read_plan_letter ──
         os.makedirs(os.path.dirname(planletter_path), exist_ok=True)
         with open(planletter_path, "w", encoding="utf-8") as f:
             f.write("Master 给 Dev：请写实现计划")
         state = DevWritePlan.read_plan_letter(state)
         assert state["phase"] == "dev_plan_done"
 
-        # ── Node 15: dev_plan_review → P（含 on_pass 设 step 计数器）──
+        # ── Node 16: dev_plan_review → P（含 on_pass 设 step 计数器）──
         self.mock.set_response("你是一个流程裁判。以下是 reviewer 的回复。", "P")
         state = DEV_PLAN_REVIEW_DEF.nodes["dev_plan_review"](state)
         assert state["judge_result"] == "dev_exec"
         assert self.rt.context.get_ctx("dev_step_index") == "0"
         assert int(self.rt.context.get_ctx("dev_total_steps") or "0") >= 1
 
-        # ── Node 16: dev_plan_review pass-through ──
+        # ── Node 17: dev_plan_review pass-through ──
         state = DEV_PLAN_REVIEW_DEF.nodes["dev_plan_review_pass"](state)
 
-        # ── Node 17: DevExecStep.write_step_letter ──
+        # ── Node 18: DevExecStep.write_step_letter ──
         state = DevExecStep.write_step_letter(state)
         assert state["phase"] == "dev_exec_letter_done"
         exec_letter_path = self.rt.context.get_ctx("exec_letter_path")
         assert exec_letter_path is not None
 
-        # ── Node 18: DevExecStep.read_step_letter ──
+        # ── Node 19: DevExecStep.read_step_letter ──
         os.makedirs(os.path.dirname(exec_letter_path), exist_ok=True)
         with open(exec_letter_path, "w", encoding="utf-8") as f:
             f.write("Master 给 Dev：请实现 Step 1")
         state = DevExecStep.read_step_letter(state)
         assert state["phase"] == "dev_exec"
 
-        # ── Node 19: DevReviewStep.run → P ──
+        # ── Node 20: DevReviewStep.run → P ──
         self.mock.set_response("你是一个流程裁判。以下是 Reviewer 的回复。", "P")
         state = DevReviewStep.run(state)
         assert state["judge_result"] == "dev_commit"
 
-        # ── Node 20: DevCommit.git_commit → done ──
+        # ── Node 21: DevCommit.git_commit → done ──
         state = DevCommit.git_commit(state)
         assert state["judge_result"] == "done"
         assert state["phase"] == "dev_commit_done"

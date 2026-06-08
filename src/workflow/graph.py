@@ -10,6 +10,7 @@ from .phase1 import (PM_HANDOFF_DEF, PM_CRITERIA_DEF, PMAlign, MasterReplyPM, Ju
                      PMWriteDoc, ReviewPMOutput, HumanReview)
 from .phase2 import (DEV_HANDOFF_DEF, DEV_CRITERIA_DEF, DevAlign,
                      DevWriteDesign, DEV_DESIGN_REVIEW_DEF,
+                     WriteDesignSummary,
                      DevWritePlan, DEV_PLAN_REVIEW_DEF, DevGitInit, DevExecStep,
                      DevReviewStep, DevCommit, DevRollback, DevEscalate)
 from .phase3 import (QA_HANDOFF_DEF, QA_CRITERIA_DEF, QAAlign,
@@ -53,6 +54,7 @@ def build_graph(runtime) -> StateGraph:
     dev_criteria = DEV_CRITERIA_DEF.register(graph, runtime)
     DevWriteDesign.register(graph, runtime)
     dev_design_review = DEV_DESIGN_REVIEW_DEF.register(graph, runtime)
+    WriteDesignSummary.register(graph, runtime)
     DevWritePlan.register(graph, runtime)
     dev_plan_review = DEV_PLAN_REVIEW_DEF.register(graph, runtime)
     DevGitInit.register(graph, runtime)
@@ -119,7 +121,8 @@ def build_graph(runtime) -> StateGraph:
     graph.add_edge(DevAlign.exits["judge_exit"], dev_criteria.entries["run"])
     graph.add_edge(dev_criteria.exits["pass"], DevWriteDesign.entries["run"])
     graph.add_edge(DevWriteDesign.exits["run"], dev_design_review.entries["run"])
-    graph.add_edge(dev_design_review.exits["pass"], DevWritePlan.entries["run"])
+    graph.add_edge(dev_design_review.exits["pass"], WriteDesignSummary.entries["run"])
+    graph.add_edge(WriteDesignSummary.exits["run"], DevWritePlan.entries["run"])
     graph.add_edge(dev_design_review.exits["fail"], DevWriteDesign.entries["run"])
     graph.add_edge(DevWritePlan.exits["run"], dev_plan_review.entries["run"])
     graph.add_edge(dev_plan_review.exits["pass"], DevGitInit.entries["run"])

@@ -6,7 +6,8 @@ import pytest
 from agent_runtime import AgentRuntime
 from workflow.phase2 import (DEV_HANDOFF_DEF, DevAlign, DEV_CRITERIA_DEF,
                              DevWriteDesign,
-                             DEV_DESIGN_REVIEW_DEF, DevWritePlan,
+                             DEV_DESIGN_REVIEW_DEF, WriteDesignSummary,
+                             DevWritePlan,
                              DEV_PLAN_REVIEW_DEF, DevGitInit,
                              DevExecStep, DevReviewStep,
                              DevCommit, DevRollback, DevEscalate)
@@ -659,6 +660,51 @@ class TestDevDesignReviewFeedback:
         self.rt.context.set_ctx("review_text", "")
         with pytest.raises(RuntimeError, match="审查意见为空"):
             self.fn({})
+
+
+# ── WriteDesignSummary ──
+
+class TestWriteDesignSummary:
+    """write_design_summary — Dev 生成 design-summary + design-index（Type A）。"""
+
+    @pytest.fixture(autouse=True)
+    def _rt(self, mock_client, test_config, tmp_path):
+        self.mock = mock_client
+        self.rt = AgentRuntime(config_path=test_config, conversation_client=mock_client)
+        WriteDesignSummary._runtime = self.rt
+        self.rt.context.set_ctx("dev_conv", "dev-test")
+        # 创建设计文档，让 agent "读"
+        dev_dir = os.path.join(self.rt.paths.workspace, "Dev")
+        os.makedirs(dev_dir, exist_ok=True)
+        design_path = os.path.join(dev_dir, "design.md")
+        open(design_path, "w", encoding="utf-8").write("# 设计文档")
+
+    @patch("workflow.phase2.ensure_write_file", return_value=True)
+    def test_calls_dev_agent(self, mock_ensure):
+        """调 Dev agent 读 design.md 生成概要+索引。"""
+        WriteDesignSummary.run({})
+        assert self.mock.call_history[0][0] == "dev"
+
+    @patch("workflow.phase2.ensure_write_file", return_value=True)
+    def test_prompt_contains_keywords(self, mock_ensure):
+        """prompt 包含 design-summary 和 design-index 路径及要求。"""
+        WriteDesignSummary.run({})
+        prompt = self.mock.call_history[0][2]
+        assert "design-summary.md" in prompt
+        assert "design-index.md" in prompt
+
+    @patch("workflow.phase2.ensure_write_file", return_value=True)
+    def test_calls_ensure_write_file_twice(self, mock_ensure):
+        """概要文件和索引文件都需要 ensure_write_file。"""
+        WriteDesignSummary.run({})
+        assert mock_ensure.call_count == 2
+
+    @patch("workflow.phase2.ensure_write_file", return_value=True)
+    def test_returns_design_summary_done(self, mock_ensure):
+        """phase 应为 design_summary_done。"""
+        result = WriteDesignSummary.run({})
+        assert result["phase"] == "design_summary_done"
+        assert result["judge_result"] == "pass"
 
 
 # ── DevWritePlan ──
