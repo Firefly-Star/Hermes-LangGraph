@@ -1099,10 +1099,6 @@ class DevCommit:
         call_agent(runtime, "dev", new_conv, injected)
         runtime.context.set_ctx("dev_conv", new_conv)
 
-        save_checkpoint(runtime, "dev_exec_step",
-                        f"Dev 实现 Step {step_idx + 1}",
-                        step_idx=step_idx, summary_path=summary_path)
-
         return {"phase": "dev_commit_done", "judge_result": "dev_exec_step"}
 
     @staticmethod

@@ -12,6 +12,7 @@ from workflow.phase2 import (DevExecStep, DevReviewStep, DevCommit,
                              DevWritePlan,
                              DEV_PLAN_REVIEW_DEF, DevGitInit,
                              DevRollback, DevEscalate)
+from workflow.flush import MASTER_FLUSH_DEV_STEP_DEF
 
 
 class TestPhase2DevExecSegment:
@@ -24,6 +25,8 @@ class TestPhase2DevExecSegment:
         DevExecStep._runtime = self.rt
         DevReviewStep._runtime = self.rt
         DevCommit._runtime = self.rt
+        for n in ("master_flush_dev_step_summary", "master_flush_dev_step_conv"):
+            MASTER_FLUSH_DEV_STEP_DEF.nodes[n]._runtime = self.rt
 
         self.rt.context.set_ctx("master_conv", "master-test")
         self.rt.context.set_ctx("dev_step_index", "0")
@@ -38,7 +41,81 @@ class TestPhase2DevExecSegment:
             f.write("# Design\n")
 
 
-class TestPhase2FullHappyPath:
+class TestPhase2MultiStepFlush:
+    """多步 Dev + 步骤间 master flush 循环。"""
+
+    @pytest.fixture(autouse=True)
+    def _rt(self, mock_client, test_config):
+        self.mock = mock_client
+        self.rt = AgentRuntime(config_path=test_config, conversation_client=mock_client)
+        DevExecStep._runtime = self.rt
+        DevReviewStep._runtime = self.rt
+        DevCommit._runtime = self.rt
+        for n in ("master_flush_dev_step_summary", "master_flush_dev_step_conv"):
+            MASTER_FLUSH_DEV_STEP_DEF.nodes[n]._runtime = self.rt
+
+        self.rt.context.set_ctx("master_conv", "master-test")
+        self.rt.context.set_ctx("dev_conv", "dev-exec-test")
+        self.rt.context.set_ctx("dev_step_index", "0")
+        self.rt.context.set_ctx("dev_total_steps", "2")
+
+        dev_dir = os.path.join(self.rt.paths.workspace, "Dev")
+        os.makedirs(dev_dir, exist_ok=True)
+        with open(os.path.join(dev_dir, "plan.md"), "w", encoding="utf-8") as f:
+            f.write("## Step 1\n### 验收方法\necho step1\n\n## Step 2\n### 验收方法\necho step2\n")
+        with open(os.path.join(dev_dir, "design.md"), "w", encoding="utf-8") as f:
+            f.write("# Design\n")
+
+    @patch("workflow.utils.ensure_write_file", return_value=True)
+    @patch("workflow.phase2.ensure_write_file", return_value=True)
+    def test_multi_step_with_dev_step_flush(self, mock_p2, mock_utils):
+        """2 步 Dev：step1 commit(continue) → flush → step2 commit(done)，验证 checkpoint step_idx。"""
+        self.rt.context.set_ctx("dev_total_steps", "2")
+
+        # ════════════════════════════════════════════
+        # Step 1: DevCommit.git_commit → continue
+        # ════════════════════════════════════════════
+        self.rt.context.set_ctx("dev_step_index", "1")  # 模拟 step 1 已通过 review
+        state = DevCommit.git_commit({})
+        assert state["judge_result"] == "continue"
+        assert self.rt.context.get_ctx("commit_step_idx") == "1"
+
+        # DevCommit subgraph: write_summary → flush_context
+        state = DevCommit.write_summary(state)
+        assert state["phase"] == "dev_commit_summary_done"
+
+        state = DevCommit.flush_context(state)
+        assert state["judge_result"] == "dev_exec_step"
+
+        # master_flush_dev_step_summary
+        old_master_conv = self.rt.context.get_ctx("master_conv")
+        state = MASTER_FLUSH_DEV_STEP_DEF.nodes["master_flush_dev_step_summary"](state)
+        assert "flushed" in state["phase"]
+
+        # master_flush_dev_step_conv → save_checkpoint with step_idx=1
+        state = MASTER_FLUSH_DEV_STEP_DEF.nodes["master_flush_dev_step_conv"](state)
+        assert "conv_flushed" in state["phase"]
+
+        # Verify checkpoint
+        cp_path = self.rt.paths.checkpoint
+        assert os.path.exists(cp_path)
+        import json
+        with open(cp_path, "r", encoding="utf-8") as f:
+            cp = json.load(f)
+        assert cp["resume_node"] == "dev_exec_step"
+        assert cp["step_idx"] == 1          # commit_step_idx=1 传入 checkpoint
+
+        # Master conv 已切换
+        assert self.rt.context.get_ctx("master_conv") != old_master_conv
+
+        # ════════════════════════════════════════════
+        # Step 2: DevCommit.git_commit → done
+        # ════════════════════════════════════════════
+        self.rt.context.set_ctx("dev_step_index", "2")  # 模拟 step 2 已通过 review
+        state = DevCommit.git_commit(state)
+        assert state["judge_result"] == "done"
+        assert state["phase"] == "dev_commit_done"
+class TestPhase2FullPath:
     """Phase 2 完整 happy path：handoff → align → criteria → design → design_review → plan → plan_review → exec → review → commit。"""
 
     @pytest.fixture(autouse=True)

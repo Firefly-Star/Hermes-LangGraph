@@ -118,6 +118,7 @@ assert result.text == "模拟回复"
 |------|------|------|--------|
 | `WriteDesignSummary` | A 纯 call | design 审核通过后让 Dev 生成 design-summary.md + design-index.md，2 次 `call_agent` + 2 次 `ensure_write_file` | 高 |
 | `extract_plan_index()`、`extract_current_step()` | 纯函数 | `utils.py` 中的 plan 文本处理函数，无 agent 调用，直接传字符串测试 | 中 |
+| `MASTER_FLUSH_DEV_STEP_DEF` | D flush | 每步 Dev 完成后刷新 Master 对话。`flush_conv` 新增对 `dev_step` domain 的判断：从 context 读 `commit_step_idx` 传入 `save_checkpoint` | 高 |
 
 ### static — 静态校验
 
@@ -152,7 +153,7 @@ def test_node_returns_correct_state(self, mock_client):
 | A 纯 call | 调 agent → 设 context → 返 state | 2-3 | agent/conv 选择、关键路径关键词 |
 | B judge/路由 | judge_reply 返回值决定分支 | 3-4 | 每条分支至少 1 个用例 |
 | C letter 读写 | 跨节点文件传递 | 3-4 | 路径字符串、删信时机 |
-| D flush/checkpoint | 关/开对话、存恢复点 | 3-4 | conv 生命周期、checkpoint 写入 |
+| D flush/checkpoint | 关/开对话、存恢复点 | 3-4 | conv 生命周期、checkpoint 写入、`step_idx` 是否从 context 正确传入 |
 
 类型 A 的额外覆盖（prompt 中不同关键词的组合）留给集成测试。
 
@@ -163,6 +164,8 @@ def test_node_returns_correct_state(self, mock_client):
 ### e2e — 全流程
 
 构建完整 graph，设置完整的 mock 回复表，按预设的 judge 返回值走通指定路径。
+
+**Dev 步骤间 Master flush 路由：** `DevCommit → master_flush_dev_step.write_summary → flush_conv → DevExecStep`。每步完成后 Master 先刷新对话再执行下一步。flush_conv 会从 context 读取 `commit_step_idx` 写入 checkpoint，e2e 测试需验证恢复时 step_idx 不丢失。
 
 ## 运行
 

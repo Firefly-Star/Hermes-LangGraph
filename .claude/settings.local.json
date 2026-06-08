@@ -38,7 +38,16 @@
       "Read(//c/Users/温学周/Desktop/langgraph_test/sandbox/**)",
       "Read(//c/Users/温学周/Desktop/**)",
       "Bash(xxd)",
-      "Bash(git tag *)"
+      "Bash(git tag *)",
+      "Bash(PYTHONIOENCODING=utf-8 python *)",
+      "Bash(PYTHONPATH=src pytest test/ -v --tb=short)",
+      "Read(//d/tmp/**)",
+      "Read(//tmp/**)",
+      "Read(//c/Users/温学周/**)",
+      "Read(//c//**)",
+      "Bash(PYTHONPATH=src PYTHONIOENCODING=utf-8 python scripts/inspect_stream.py)",
+      "Bash(PYTHONIOENCODING=utf-8 PYTHONPATH=src python *)",
+      "WebSearch"
     ]
   }
 }

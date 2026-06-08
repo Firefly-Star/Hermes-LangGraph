@@ -113,8 +113,10 @@ class MasterFlushSubgraph:
 
             rt.conversations.close("master", master_conv)
             new_conv = open_master_conv(rt, summary_path)
+            step_idx = int(rt.context.get_ctx("commit_step_idx") or "0") \
+                if config.domain == "dev_step" else 0
             save_checkpoint(rt, config.resume_node, config.phase_name,
-                            summary_path=summary_path)
+                            step_idx=step_idx, summary_path=summary_path)
             rt.msg.ok(f"Master flush: {config.phase_name} → {config.next_step}"
                       f" (新对话: {new_conv})")
             return {"phase": f"{domain}_conv_flushed", "judge_result": ""}

@@ -17,7 +17,8 @@ from workflow.phase3 import (QA_HANDOFF_DEF, QA_CRITERIA_DEF, QAAlign,
     REVIEWER_CODE_REVIEW_DEF, QARunTests, JudgeTestResult)
 from workflow.phase4 import ConsistencyAudit, WriteMaintenanceDocs, DeliverySummary
 from workflow.flush import (MASTER_FLUSH_CLARIFY_DEF, MASTER_FLUSH_PM_DEF,
-                             MASTER_FLUSH_DEV_DEF, MASTER_FLUSH_QA_DEF)
+                             MASTER_FLUSH_DEV_DEF, MASTER_FLUSH_QA_DEF,
+                             MASTER_FLUSH_DEV_STEP_DEF)
 
 
 class TestE2EFullWorkflow:
@@ -80,6 +81,8 @@ class TestE2EFullWorkflow:
                               ("qa", MASTER_FLUSH_QA_DEF)]:
             for n in (f"master_flush_{domain}_summary", f"master_flush_{domain}_conv"):
                 defn.nodes[n]._runtime = self.rt
+        for n in ("master_flush_dev_step_summary", "master_flush_dev_step_conv"):
+            MASTER_FLUSH_DEV_STEP_DEF.nodes[n]._runtime = self.rt
 
         # ── Phase 4 ──
         ConsistencyAudit._runtime = self.rt
@@ -502,3 +505,62 @@ class TestE2EFullWorkflow:
         # ── DeliverySummary.run → END ──
         state = DeliverySummary.run(state)
         assert state["phase"] == "delivery_done"
+
+    # ── 补丁同 test_full_workflow ──────────────────────────
+    @patch("workflow.phase0.clarify_loop", return_value="用户确认完成")
+    @patch("workflow.utils.ensure_write_file", return_value=True)
+    @patch("workflow.subgraphs.master_flush.ensure_write_file", return_value=True)
+    @patch("workflow.phase2.ensure_write_file", return_value=True)
+    @patch("workflow.phase4.ensure_write_file", return_value=True)
+    def test_multi_step_dev_with_step_flush(
+        self, mock_p4, mock_p2, mock_flush, mock_utils, mock_clarify
+    ):
+        """多步 Dev：2 step 串联 + 中间 dev_step flush，验证 checkpoint step_idx。"""
+        ws = self.rt.paths.workspace
+        dev_dir = os.path.join(ws, "Dev")
+        os.makedirs(dev_dir, exist_ok=True)
+        with open(os.path.join(dev_dir, "plan.md"), "w", encoding="utf-8") as f:
+            f.write("## Step 1\n### 验收方法\necho step1\n\n## Step 2\n### 验收方法\necho step2\n")
+        with open(os.path.join(dev_dir, "design.md"), "w", encoding="utf-8") as f:
+            f.write("# Design\n系统架构\n")
+
+        self.rt.context.set_ctx("dev_step_index", "0")
+        self.rt.context.set_ctx("dev_total_steps", "2")
+        self.rt.context.set_ctx("dev_conv", "dev-exec-test")
+        self.rt.context.set_ctx("master_conv", "master-test")
+        self.rt.context.set_bg("project_context_path", "/tmp/project_context.md")
+
+        # ═══════════════════════════════════════════════
+        # Step 1: DevCommit.git_commit → continue
+        # ═══════════════════════════════════════════════
+        self.rt.context.set_ctx("dev_step_index", "1")  # 模拟 step 1 通过 review
+        state = DevCommit.git_commit({})
+        assert state["judge_result"] == "continue"
+
+        state = DevCommit.write_summary(state)
+        state = DevCommit.flush_context(state)
+
+        # dev_step flush
+        old_conv = self.rt.context.get_ctx("master_conv")
+        state = MASTER_FLUSH_DEV_STEP_DEF.nodes["master_flush_dev_step_summary"](state)
+        assert "flushed" in state["phase"]
+        state = MASTER_FLUSH_DEV_STEP_DEF.nodes["master_flush_dev_step_conv"](state)
+        assert "conv_flushed" in state["phase"]
+
+        # Verify checkpoint
+        cp_path = self.rt.paths.checkpoint
+        assert os.path.exists(cp_path)
+        import json
+        with open(cp_path, "r", encoding="utf-8") as f:
+            cp = json.load(f)
+        assert cp["resume_node"] == "dev_exec_step"
+        assert cp["step_idx"] == 1
+        assert self.rt.context.get_ctx("master_conv") != old_conv
+
+        # ═══════════════════════════════════════════════
+        # Step 2: DevCommit.git_commit → done
+        # ═══════════════════════════════════════════════
+        self.rt.context.set_ctx("dev_step_index", "2")  # 模拟 step 2 通过 review
+        state = DevCommit.git_commit(state)
+        assert state["judge_result"] == "done"
+        assert state["phase"] == "dev_commit_done"

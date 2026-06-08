@@ -45,9 +45,21 @@ MASTER_FLUSH_QA_CONFIG = MasterFlushConfig(
 )
 MASTER_FLUSH_QA_DEF = MasterFlushSubgraph.define(MASTER_FLUSH_QA_CONFIG)
 
+# ── Dev 步骤间 flush：每步完成后刷新 Master 对话 ──
+
+MASTER_FLUSH_DEV_STEP_CONFIG = MasterFlushConfig(
+    domain="dev_step",
+    phase_name="Dev 编码步骤",
+    next_step="下一编码步",
+    artifacts=(),
+    resume_node="dev_exec_step",
+)
+MASTER_FLUSH_DEV_STEP_DEF = MasterFlushSubgraph.define(MASTER_FLUSH_DEV_STEP_CONFIG)
+
 __all__ = [
     "MASTER_FLUSH_CLARIFY_DEF",
     "MASTER_FLUSH_PM_DEF",
     "MASTER_FLUSH_DEV_DEF",
     "MASTER_FLUSH_QA_DEF",
+    "MASTER_FLUSH_DEV_STEP_DEF",
 ]

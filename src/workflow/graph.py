@@ -17,7 +17,8 @@ from .phase3 import (QA_HANDOFF_DEF, QA_CRITERIA_DEF, QAAlign,
                      QAWriteTestPlan, MASTER_PLAN_REVIEW_DEF, QAWriteTestCase,
                      REVIEWER_CODE_REVIEW_DEF, QARunTests, JudgeTestResult, DevFix)
 from .flush import (MASTER_FLUSH_CLARIFY_DEF, MASTER_FLUSH_PM_DEF,
-                     MASTER_FLUSH_DEV_DEF, MASTER_FLUSH_QA_DEF)
+                     MASTER_FLUSH_DEV_DEF, MASTER_FLUSH_QA_DEF,
+                     MASTER_FLUSH_DEV_STEP_DEF)
 from .checkpoint import ResumeRouter
 from .phase4 import ConsistencyAudit, WriteMaintenanceDocs, DeliverySummary
 
@@ -77,6 +78,7 @@ def build_graph(runtime) -> StateGraph:
     JudgeTestResult.register(graph, runtime)
     DevFix.register(graph, runtime)
     master_flush_qa = MASTER_FLUSH_QA_DEF.register(graph, runtime)
+    master_flush_dev_step = MASTER_FLUSH_DEV_STEP_DEF.register(graph, runtime)
     ConsistencyAudit.register(graph, runtime)
     WriteMaintenanceDocs.register(graph, runtime)
     DeliverySummary.register(graph, runtime)
@@ -136,9 +138,10 @@ def build_graph(runtime) -> StateGraph:
         "dev_escalate": DevEscalate.entries["run"],
     })
     graph.add_conditional_edges(DevCommit.exits["run"], lambda s: s.get("judge_result", ""), {
-        "dev_exec_step": DevExecStep.entries["run"],
+        "dev_exec_step": master_flush_dev_step.entries["write_summary"],
         "done": master_flush_dev.entries["write_summary"],
     })
+    graph.add_edge(master_flush_dev_step.exits["flush_conv"], DevExecStep.entries["run"])
     graph.add_edge(DevRollback.exits["run"], DevExecStep.entries["run"])
     graph.add_edge(DevEscalate.exits["run"], DevExecStep.entries["run"])
 

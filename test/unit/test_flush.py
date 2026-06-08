@@ -9,6 +9,7 @@ from workflow.flush import (
     MASTER_FLUSH_PM_DEF,
     MASTER_FLUSH_DEV_DEF,
     MASTER_FLUSH_QA_DEF,
+    MASTER_FLUSH_DEV_STEP_DEF,
 )
 
 
@@ -110,7 +111,7 @@ class TestMasterFlushQAConv:
         self.fn({})
         mock_save.assert_called_once_with(
             self.rt, "consistency_audit", "QA 测试",
-            summary_path="/tmp/summary.md")
+            step_idx=0, summary_path="/tmp/summary.md")
 
     @patch("workflow.subgraphs.master_flush.open_master_conv", return_value="new-master-conv")
     @patch("workflow.subgraphs.master_flush.save_checkpoint")
@@ -184,7 +185,7 @@ class TestMasterFlushClarifyConv:
         self.fn({})
         mock_save.assert_called_once_with(
             self.rt, "pm_handoff", "需求澄清",
-            summary_path="/tmp/summary.md")
+            step_idx=0, summary_path="/tmp/summary.md")
 
     @patch("workflow.subgraphs.master_flush.open_master_conv", return_value="new-master-conv")
     @patch("workflow.subgraphs.master_flush.save_checkpoint")
@@ -247,7 +248,7 @@ class TestMasterFlushPMConv:
         self.fn({})
         mock_save.assert_called_once_with(
             self.rt, "dev_handoff", "PM 出方案",
-            summary_path="/tmp/summary.md")
+            step_idx=0, summary_path="/tmp/summary.md")
 
     @patch("workflow.subgraphs.master_flush.open_master_conv", return_value="new-master-conv")
     @patch("workflow.subgraphs.master_flush.save_checkpoint")
@@ -309,7 +310,7 @@ class TestMasterFlushDevConv:
         self.fn({})
         mock_save.assert_called_once_with(
             self.rt, "qa_handoff", "Dev 实现",
-            summary_path="/tmp/summary.md")
+            step_idx=0, summary_path="/tmp/summary.md")
 
     @patch("workflow.subgraphs.master_flush.open_master_conv", return_value="new-master-conv")
     @patch("workflow.subgraphs.master_flush.save_checkpoint")
@@ -317,3 +318,122 @@ class TestMasterFlushDevConv:
         """关闭旧 master 对话。"""
         self.fn({})
         assert ("close:master", "master-test", "") in self.mock.call_history
+
+
+class TestMasterFlushDevStepSummary:
+    """master_flush_dev_step_summary — Dev 步骤间 flush 总结（Type A）。"""
+
+    @pytest.fixture(autouse=True)
+    def _rt(self, mock_client, test_config):
+        self.mock = mock_client
+        self.rt = AgentRuntime(config_path=test_config, conversation_client=mock_client)
+        self.fn = MASTER_FLUSH_DEV_STEP_DEF.nodes["master_flush_dev_step_summary"]
+        self.fn._runtime = self.rt
+        self.rt.context.set_ctx("master_conv", "master-test")
+
+    @patch("workflow.subgraphs.master_flush.ensure_write_file", return_value=True)
+    def test_calls_master_agent(self, mock_ensure):
+        """写总结调 Master agent。"""
+        self.fn({})
+        assert self.mock.call_history[0][0] == "master"
+
+    @patch("workflow.subgraphs.master_flush.ensure_write_file", return_value=True)
+    def test_uses_master_conv(self, mock_ensure):
+        """使用 master_conv 对话。"""
+        self.fn({})
+        assert self.mock.call_history[0][1] == "master-test"
+
+    @patch("workflow.subgraphs.master_flush.ensure_write_file", return_value=True)
+    def test_prompt_contains_phase_name(self, mock_ensure):
+        """prompt 包含阶段名「Dev 编码步骤」。"""
+        self.fn({})
+        prompt = self.mock.call_history[0][2]
+        assert "Dev 编码步骤" in prompt
+
+    @patch("workflow.subgraphs.master_flush.ensure_write_file", return_value=True)
+    def test_prompt_contains_next_step(self, mock_ensure):
+        """prompt 标示下一步「下一编码步」。"""
+        self.fn({})
+        prompt = self.mock.call_history[0][2]
+        assert "下一编码步" in prompt
+
+    @patch("workflow.subgraphs.master_flush.ensure_write_file", return_value=True)
+    def test_returns_phase(self, mock_ensure):
+        """phase 应为 dev_step_flushed。"""
+        result = self.fn({})
+        assert result["phase"] == "dev_step_flushed"
+
+    @patch("workflow.subgraphs.master_flush.ensure_write_file", return_value=True)
+    def test_stores_summary_path(self, mock_ensure):
+        """phase_summary_path 应存入 context。"""
+        self.fn({})
+        assert self.rt.context.get_ctx("phase_summary_path") is not None
+
+    @patch("workflow.subgraphs.master_flush.ensure_write_file", return_value=True)
+    def test_creates_phases_directory(self, mock_ensure):
+        """phases 目录被创建。"""
+        phases_dir = self.rt.paths.phases
+        assert not os.path.exists(phases_dir)
+        self.fn({})
+        assert os.path.isdir(phases_dir)
+
+
+class TestMasterFlushDevStepConv:
+    """master_flush_dev_step_conv — Dev 步骤间 flush 对话 + checkpoint step_idx（Type D）。"""
+
+    @pytest.fixture(autouse=True)
+    def _rt(self, mock_client, test_config):
+        self.mock = mock_client
+        self.rt = AgentRuntime(config_path=test_config, conversation_client=mock_client)
+        self.fn = MASTER_FLUSH_DEV_STEP_DEF.nodes["master_flush_dev_step_conv"]
+        self.fn._runtime = self.rt
+        self.rt.context.set_ctx("master_conv", "master-test")
+        self.rt.context.set_ctx("phase_summary_path", "/tmp/summary.md")
+
+    @patch("workflow.subgraphs.master_flush.open_master_conv", return_value="new-master-conv")
+    @patch("workflow.subgraphs.master_flush.save_checkpoint")
+    def test_closes_master_conv(self, mock_save, mock_open):
+        """关闭旧 master 对话。"""
+        self.fn({})
+        assert ("close:master", "master-test", "") in self.mock.call_history
+
+    @patch("workflow.subgraphs.master_flush.open_master_conv", return_value="new-master-conv")
+    @patch("workflow.subgraphs.master_flush.save_checkpoint")
+    def test_opens_new_conv(self, mock_save, mock_open):
+        """通过 open_master_conv 创建新对话。"""
+        self.fn({})
+        mock_open.assert_called_once_with(self.rt, "/tmp/summary.md")
+
+    @patch("workflow.subgraphs.master_flush.open_master_conv", return_value="new-master-conv")
+    @patch("workflow.subgraphs.master_flush.save_checkpoint")
+    def test_checkpoint_step_idx_defaults_to_zero(self, mock_save, mock_open):
+        """context 无 commit_step_idx 时 step_idx=0。"""
+        self.fn({})
+        mock_save.assert_called_once_with(
+            self.rt, "dev_exec_step", "Dev 编码步骤",
+            step_idx=0, summary_path="/tmp/summary.md")
+
+    @patch("workflow.subgraphs.master_flush.open_master_conv", return_value="new-master-conv")
+    @patch("workflow.subgraphs.master_flush.save_checkpoint")
+    def test_checkpoint_uses_commit_step_idx_from_context(self, mock_save, mock_open):
+        """context 中 commit_step_idx=5 时 step_idx=5 传入 save_checkpoint。"""
+        self.rt.context.set_ctx("commit_step_idx", "5")
+        self.fn({})
+        mock_save.assert_called_once_with(
+            self.rt, "dev_exec_step", "Dev 编码步骤",
+            step_idx=5, summary_path="/tmp/summary.md")
+
+    @patch("workflow.subgraphs.master_flush.open_master_conv", return_value="new-master-conv")
+    @patch("workflow.subgraphs.master_flush.save_checkpoint")
+    def test_returns_phase(self, mock_save, mock_open):
+        """phase 应为 dev_step_conv_flushed。"""
+        result = self.fn({})
+        assert result["phase"] == "dev_step_conv_flushed"
+
+    @patch("workflow.subgraphs.master_flush.open_master_conv", return_value="new-master-conv")
+    @patch("workflow.subgraphs.master_flush.save_checkpoint")
+    def test_uses_phase_summary_from_context(self, mock_save, mock_open):
+        """从 context 读取 phase_summary_path。"""
+        self.rt.context.set_ctx("phase_summary_path", "/custom/summary.md")
+        self.fn({})
+        mock_open.assert_called_once_with(self.rt, "/custom/summary.md")
