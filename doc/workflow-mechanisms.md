@@ -705,3 +705,39 @@ _restore_dev_conv(runtime, step_idx)
 - 残留的旧轮次信件或部分产出会让 agent 困惑（"这个文件已经有了，我是不是该跳过？"）
 - 重建对话注入的 phase_summary 足够让 agent 理解已完成的工作
 - exec step 级别恢复会回到具体 step_idx，不丢进度
+
+---
+
+## 9. 已知隐患：Hermes redact_secrets 误杀代码变量
+
+### 问题
+
+Hermes Gateway 默认开启 `security.redact_secrets: true`，在 `read_file` 等 tool 的输出中扫描变量赋值模式。当变量名包含 `TOKEN`、`SECRET`、`API_KEY`、`PASSWORD` 等关键字时，值被替换为 `***`。
+
+触发模式（`agent/redact.py:_ENV_ASSIGN_RE`）：
+
+```
+[A-Z0-9_]{0,50}(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)[A-Z0-9_]{0,50}\s*=\s*(['"]?)(\S+)\1
+```
+
+### 后果
+
+Dev/QA agent 用 `read_file` 读源码时看到 `const TOKEN_KEY='***';`，反复认为这是未填写的占位符，和 reviewer 来回争论多轮，浪费大量 token。实际上磁盘上值是正确的，只是被 gateway 层蒙掉了。
+
+### 排查
+
+agent 反复报告某变量值为 `***` 时，直接 hex 确认磁盘文件内容：
+
+```bash
+grep "TOKEN_KEY" AuthContext.jsx | xxd
+```
+
+如果实际值正确，就是 redact 误杀。
+
+### 修法
+
+改变量名，避开 `_SECRET_ENV_NAMES` 中的关键字（`TOKEN`、`SECRET`、`PASSWORD`、`API_KEY`、`AUTH`、`CREDENTIAL`）。例如 `TOKEN_KEY` → `STORAGE_KEY`。
+
+### 原理
+
+`redact.py` 的 `_ENV_ASSIGN_RE` 意图是捕获环境变量赋值（如 `export OPENAI_API_KEY=sk-...`），但正则范围过宽，`const TOKEN_KEY='xxx'` 这类源码常量也匹配了。`redact_sensitive_text(code_file=True)` 本应跳过源码文件的 env/json 模式检查，但 `read_file` 调用时未传入 `code_file=True`。
