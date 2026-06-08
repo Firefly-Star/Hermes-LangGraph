@@ -529,12 +529,13 @@ class Logger:
         }
         _append_jsonl(self._calls_path, record)
 
-    def log_event(self, event_type: str, agent: str = None, detail: str = None):
+    def log_event(self, event_type: str, agent: str = None, detail: str = None, **extra):
         record = {
             "timestamp": _iso_now(),
             "event_type": event_type,
             "agent": agent,
             "detail": detail,
+            **extra,
         }
         _append_jsonl(self._events_path, record)
 
@@ -901,7 +902,8 @@ class Message:
         print(f"    ⚠ {msg}")
 
     def call(self, agent: str, conversation: str):
-        print(f"    → {agent}/{conversation}")
+        ts = time.strftime("%H:%M:%S")
+        print(f"    [{ts}] → {agent}/{conversation}")
 
     def tool(self, name: str, args: dict):
         print(f"\n      ◇ {name}")
@@ -922,7 +924,8 @@ class Message:
         print(f"    ✗ ({elapsed:.0f}s)")
 
     def divider(self, title: str):
-        print(f"\n    {'═'*20} {title} {'═'*20}")
+        ts = time.strftime("%H:%M:%S")
+        print(f"\n    [{ts}] {'═'*20} {title} {'═'*20}")
 
     def sep(self):
         print()

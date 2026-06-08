@@ -167,6 +167,7 @@ def call_agent(runtime, agent: str, conversation: str, prompt: str,
     """调用 agent 并返回文本。stream=True 时逐块打印输出。失败抛异常。"""
     global _interrupt_requested
     runtime.msg.call(agent, conversation)
+    runtime.logger.log_event("call_started", agent=agent, detail=conversation)
     t0 = time.time()
 
     def on_tool(name, args):
@@ -241,8 +242,14 @@ def call_agent(runtime, agent: str, conversation: str, prompt: str,
             if item.get("type") == "function_call":
                 tool_names.append(item.get("name", ""))
 
-    runtime.msg.call_ok(elapsed, result.input_tokens + result.output_tokens, tool_names)
+    total_tokens = result.input_tokens + result.output_tokens
+    runtime.msg.call_ok(elapsed, total_tokens, tool_names)
     runtime.msg.divider("/Result")
+    runtime.logger.log_event("call_completed",
+        agent=agent, detail=conversation,
+        tokens=total_tokens, input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens, tools=tool_names,
+        elapsed_s=round(elapsed, 1))
     return result.text
 
 

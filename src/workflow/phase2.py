@@ -7,7 +7,8 @@ from .utils import (WorkflowState, conv_name, call_agent, letter_path,
                     register_nodes, get_step_from_plan,
                     count_steps, extract_plan_index,
                     extract_current_step, WorkflowInterrupted)
-from .prompt import DEV_SYSTEM_PROMPT, FLUSH_CONTINUATION_NOTE, PLAYWRIGHT_TEST_TIPS
+from .prompt import (DEV_SYSTEM_PROMPT, FLUSH_CONTINUATION_NOTE, PLAYWRIGHT_TEST_TIPS,
+                     FILE_READING_RULES)
 from .checkpoint import save_checkpoint
 from .subgraphs import (HandoffConfig, HandoffSubgraph,
                          CriteriaDefinitionConfig, CriteriaDefinitionSubgraph,
@@ -609,7 +610,7 @@ DEV_PLAN_REVIEW_PROMPT = (
     + "\n\n"
     "## Dev 的实现计划\n"
     "计划文件在：{workspace}/Dev/plan.md\n"
-    "文件较大，非必要不要通读全文，先阅读设计概要了解整体后再审查计划。\n\n"
+    f"{FILE_READING_RULES}\n\n"
     "## 输出格式\n"
     "逐条给出评价，最后一行输出 == PASS == 或 == FAIL ==。\n"
     "如果 FAIL，写明需要修正的具体问题。"
@@ -737,8 +738,10 @@ class DevGitInit:
             f"## 设计文件索引\n{design_index}\n\n"
             f"## 计划进度\n{plan_index}\n\n"
             f"## 当前步骤详细内容\n{current_step}\n\n"
-            "注意：实际的设计文件和计划文件体积较大，需要了解具体模块时"
-            "请根据索引找到对应位置后用 read_file 定向读取，当前只需要了解项目概貌，不需要通读全文。"
+            f"{FILE_READING_RULES}"
+            "在Master给你下达命令之前，你只能阅读上下文，不能进行任何产"
+            "出，包括修改、创建任何文件，后续Master会给你下达任务。"
+            "不要询问你是否要执行这些操作，直接去做。"
         )
         call_agent(runtime, "dev", new_conv, injected)
         runtime.context.set_ctx("dev_conv", new_conv)
@@ -844,9 +847,7 @@ class DevExecStep:
                     f"设计索引（查阅指引）：{runtime.paths.workspace}/Dev/design-index.md\n"
                     f"完整设计文档（需要时按索引查阅）：{runtime.paths.workspace}/Dev/design.md\n"
                     f"完整执行计划（含各步骤验收方法）：{runtime.paths.workspace}/Dev/plan.md\n"
-                    "在有决策问题或缺乏信息时，先查阅索引文件定位，"
-                    "再按需读取完整设计文档或完整执行计划的对应章节。\n"
-                    "完整设计文档和完整执行计划的体积较大，非必要不要通读全文。仅在必要时才可通读全文。\n\n"
+                    f"{FILE_READING_RULES}\n\n"
                     "## Git 操作限制\n"
                     "没有允许不要做任何 git 操作（包括 git add、git commit、git push 等），"
                     "代码只需要写在文件中即可。")
@@ -886,14 +887,15 @@ class DevReviewStep:
 
         review = call_agent(runtime, "reviewer", conv_name(f"review-step-{step_idx + 1}"),
             "请审查 Dev 的最新实现。\n\n"
+            "## 产出位置\n"
+            f"Dev 的所有产出（代码、测试、设计文档等）都在 {runtime.paths.workspace}/Dev/ 目录下。\n\n"
             "## 验收标准\n"
             f"来自计划的当前步骤：\n{step_content}\n\n"
             "## 参考设计文档\n"
             f"设计概要：{runtime.paths.workspace}/Dev/design-summary.md\n"
             f"设计索引：{runtime.paths.workspace}/Dev/design-index.md\n"
             f"完整设计（按索引查阅）：{runtime.paths.workspace}/Dev/design.md\n"
-            "先阅读概要了解整体，再用索引定位到相关章节后 read_file 定向读取。\n"
-            "文件较大，非必要不要通读全文。\n\n"
+            f"{FILE_READING_RULES}\n"
             "## 审查流程\n"
             "### 第一步：检查测试代码\n"
             "先找出 Dev 为当前步骤编写的测试代码，检查：\n"
@@ -912,7 +914,8 @@ class DevReviewStep:
             "1. 代码是否与详细设计方案一致\n"
             "2. 代码质量和错误处理是否合理\n"
             "3. 不能出现「间接证明」「应该可行」「等后续检查」等想法，"
-            "如果是环境缺失导致无法运行测试，报 FAIL 并反馈给 DEV\n"
+            "如果是开发环境缺失导致无法运行测试，报 FAIL 并反馈给 DEV，"
+            "如果是你的 Bash 环境出问题导致任何指令都运行不了，你自己想办法尽量解决。\n"
             "注意，在此过程中你不需要写任何的代码、配置任何的环境、做任何的修复，这些都是 DEV 的责任，"
             "出现任何问题都只需要反馈给 DEV 即可\n\n"
             "最后一行输出 == PASS == 或 == FAIL ==。\n"
@@ -1088,8 +1091,10 @@ class DevCommit:
             f"## 设计文件索引\n{design_index}\n\n"
             f"## 计划进度\n{plan_index}\n\n"
             f"## 当前步骤详细内容\n{current_step}\n\n"
-            "注意：设计文件和计划文件体积较大，需要了解具体模块时"
-            "请根据索引找到对应位置后用 read_file 定向读取，当前只需要了解项目概貌，不需要通读全文。"
+            f"{FILE_READING_RULES}"
+            "在Master给你下达命令之前，你只能阅读上下文，不能进行任何产"
+            "出，包括修改、创建任何文件，后续Master会给你下达任务。"
+            "不要询问你是否要执行这些操作，直接去做。"
         )
         call_agent(runtime, "dev", new_conv, injected)
         runtime.context.set_ctx("dev_conv", new_conv)
@@ -1099,6 +1104,52 @@ class DevCommit:
                         step_idx=step_idx, summary_path=summary_path)
 
         return {"phase": "dev_commit_done", "judge_result": "dev_exec_step"}
+
+    @staticmethod
+    def write_docs(state) -> dict:
+        """最后一步：Dev 写 API 参考 + 维护者笔记并提交 (1 call_agent)."""
+        runtime = DevCommit._runtime
+        dev_conv = runtime.context.get_ctx("dev_conv")
+        ws = runtime.paths.workspace
+        dev_dir = os.path.join(ws, "Dev")
+        api_path = os.path.join(dev_dir, "API.md")
+        notes_path = os.path.join(dev_dir, "maintainer-notes.md")
+
+        runtime.msg.step("Dev 编写 API 参考及维护者笔记")
+
+        call_agent(runtime, "dev", dev_conv,
+            "所有 Step 已实现完毕，请编写以下两份文档：\n\n"
+            "### 1. API.md（API 参考文档）\n"
+            f"写入 {api_path}\n"
+            f"读取 {dev_dir} 下的全部源码文件，了解所有 API 端点、数据模型和请求/响应格式，"
+            "然后按模块整理输出后端 API 列表，格式示例：\n"
+            "```\n"
+            "## 认证\n"
+            "### POST /api/auth/register\n"
+            "- 请求体: { username, password }\n"
+            "- 响应 201: { token, user }\n"
+            "- 错误 409: 用户名已存在\n"
+            "```\n"
+            "覆盖所有模块和数据模型。\n\n"
+            "### 2. maintainer-notes.md（维护者笔记）\n"
+            f"写入 {notes_path}\n"
+            "内容：\n"
+            "1. **未完成/待办项** — 已知的 stub、未实现的特性、TODO 注释\n"
+            "2. **Tech Debt** — 代码中知道有问题的设计、后续需要重构的部分\n"
+            "3. **踩坑记录** — 开发过程中遇到的非预期行为和解决方案\n"
+            "4. **代码约定** — 整个项目遵循的命名、分层、错误处理等约定\n"
+            "5. **测试说明** — 测试目录结构、运行方式、特殊测试依赖\n\n"
+            "两份文档写完后，cd 到 Dev/ 目录，"
+            "执行 git add API.md maintainer-notes.md && "
+            "git commit -m \"docs: 添加 API 参考文档及维护者笔记\"。\n"
+            "完成后回复确认。")
+
+        ensure_write_file(runtime, "dev", dev_conv, api_path)
+        ensure_write_file(runtime, "dev", dev_conv, notes_path)
+
+        runtime.logger.log_event("docs_created",
+            detail=f"API→{api_path}, notes→{notes_path}")
+        return {"phase": "docs_written", "judge_result": "done"}
 
     @staticmethod
     def exit_pass(state) -> dict:
@@ -1111,13 +1162,15 @@ class DevCommit:
             "dev_commit_git": cls.git_commit,
             "dev_commit_summary": cls.write_summary,
             "dev_commit_flush": cls.flush_context,
+            "dev_commit_docs": cls.write_docs,
             "dev_commit_exit": cls.exit_pass,
         })
 
         graph.add_edge("dev_commit_summary", "dev_commit_flush")
         graph.add_edge("dev_commit_flush", "dev_commit_exit")
+        graph.add_edge("dev_commit_docs", "dev_commit_exit")
         graph.add_conditional_edges("dev_commit_git", lambda s: s.get("judge_result", ""), {
-            "done": "dev_commit_exit",
+            "done": "dev_commit_docs",
             "continue": "dev_commit_summary",
         })
 

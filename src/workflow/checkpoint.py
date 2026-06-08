@@ -1,8 +1,8 @@
 """断线重连 — checkpoint 保存/加载 + resume 节点。"""
-import os, json, time, shutil
+import os, json, time, shutil, subprocess
 from typing import Optional
 
-from .prompt import FLUSH_CONTINUATION_NOTE
+from .prompt import FLUSH_CONTINUATION_NOTE, FILE_READING_RULES
 from .utils import (conv_name, call_agent, open_master_conv,
                     register_nodes, extract_plan_index,
                     extract_current_step)
@@ -81,6 +81,12 @@ def _restore_dev_conv(runtime, step_idx):
     dev_principles = runtime.context.get_bg("dev_principles")
     dev_dir = os.path.join(runtime.paths.workspace, "Dev")
 
+    # 编排层直接执行 git reset，避免 agent 触达红线操作
+    git_dir = os.path.join(dev_dir, ".git")
+    if os.path.exists(git_dir):
+        subprocess.run(["git", "-C", dev_dir, "reset", "--hard", "HEAD"],
+                       capture_output=True, timeout=30)
+
     def _read(p):
         fp = os.path.join(dev_dir, p)
         if os.path.exists(fp):
@@ -104,16 +110,13 @@ def _restore_dev_conv(runtime, step_idx):
         f"{dev_principles}{FLUSH_CONTINUATION_NOTE}"
         f"你的工作目录：{dev_dir}\n\n"
         "请先按顺序执行以下操作，**不要询问确认，直接执行命令**:\n"
-        "1. 运行 git reset --hard HEAD 清理工作区"
-        "（回滚所有未提交的改动至上一个commit节点）\n"
-        "2. 阅读以下内容了解已完成的工作和计划：\n\n"
+        "1. 阅读以下内容了解已完成的工作和计划：\n\n"
         f"## 已完成的工作\n{summary_text}\n\n"
         f"## 项目设计概要\n{design_summary}\n\n"
         f"## 设计文件索引\n{design_index}\n\n"
         f"## 计划进度\n{plan_index}\n\n"
         f"## 当前步骤详细内容\n{current_step}\n\n"
-        "注意：设计文件和计划文件体积较大，需要了解具体模块时"
-        "请根据索引找到对应位置后用 read_file 定向读取，不要通读全文。\n\n"
+        f"{FILE_READING_RULES}"
         "在Master给你下达命令之前，你只能阅读上下文，不能进行任何产"
         "出，包括修改、创建任何文件，后续Master会给你下达任务。"
         "不要询问你是否要执行这些操作，直接去做。"
