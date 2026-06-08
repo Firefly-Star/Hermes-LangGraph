@@ -27,7 +27,7 @@ def save_checkpoint(runtime, resume_node, phase_name, step_idx=0, summary_path="
     with open(path, "w", encoding="utf-8") as f:
         json.dump(cp, f, ensure_ascii=False, indent=2)
     step_info = f" Step {step_idx}" if step_idx else ""
-    print(f"  ── Checkpoint 已保存: {resume_node}（{phase_name}）{step_info}")
+    runtime.msg.ok(f"Checkpoint 已保存: {resume_node}（{phase_name}）{step_info}")
     runtime.logger.log_event("checkpoint_saved",
                              detail=f"resume_at={resume_node}, phase={phase_name}")
 
@@ -66,14 +66,14 @@ def _clean_targets(runtime, targets):
     for t in targets:
         if os.path.isdir(t):
             _rmtree_win(t)
-            print(f"  清理目录: {t}")
+            runtime.msg.ok(f"清理目录: {t}")
         elif os.path.isfile(t):
             try:
                 os.remove(t)
             except PermissionError:
                 os.chmod(t, 0o777)
                 os.remove(t)
-            print(f"  清理文件: {t}")
+            runtime.msg.ok(f"清理文件: {t}")
 
 
 def _restore_dev_conv(runtime, step_idx):
@@ -127,7 +127,7 @@ def _restore_dev_conv(runtime, step_idx):
     runtime.context.set_ctx("dev_step_has_failed", "false")
     runtime.context.set_ctx("dev_step_review_feedback", "")
     runtime.context.set_ctx("dev_escalation_decision", "")
-    print(f"  → 步进状态已重置（step_idx={step_idx}, fail_count=0）")
+    runtime.msg.ok(f"步进状态已重置（step_idx={step_idx}, fail_count=0）")
 
 
 # ── ResumeRouter 类 ──────────────────────────────────────
@@ -156,9 +156,7 @@ class ResumeRouter:
             return {"phase": "pre_flight"}
 
         step_info = f"（第 {cp['step_idx'] + 1} 步）" if "step_idx" in cp else ""
-        print(f"\n{'='*60}")
-        print(f"  检测到上次运行中断于「{cp['phase_name']}」{step_info}")
-        print(f"{'='*60}")
+        runtime.msg.phase(f"检测到上次运行中断于「{cp['phase_name']}」{step_info}")
 
         cp_obj = runtime.checkpoint.wait(
             "重连确认",
@@ -169,7 +167,7 @@ class ResumeRouter:
             return {"phase": f"resume_{cp['resume_node']}"}
 
         clear_checkpoint(runtime)
-        print(f"  → 从头开始")
+        runtime.msg.ok("从头开始")
         return {"phase": "pre_flight"}
 
     @staticmethod
@@ -194,7 +192,7 @@ class ResumeRouter:
             runtime.context.set_ctx(key, "")
         cp = load_checkpoint(runtime)
         open_master_conv(runtime, cp.get("summary_path", "") if cp else "")
-        print(f"  → 从 PM 阶段继续")
+        runtime.msg.ok("从 PM 阶段继续")
         return {"phase": "pm_handoff"}
 
     @staticmethod
@@ -221,7 +219,7 @@ class ResumeRouter:
             runtime.context.set_ctx(key, "")
         cp = load_checkpoint(runtime)
         open_master_conv(runtime, cp.get("summary_path", "") if cp else "")
-        print(f"  → 从 Dev 阶段继续")
+        runtime.msg.ok("从 Dev 阶段继续")
         return {"phase": "dev_handoff"}
 
     @staticmethod
@@ -244,7 +242,7 @@ class ResumeRouter:
             runtime.context.set_ctx(key, "")
         cp = load_checkpoint(runtime)
         open_master_conv(runtime, cp.get("summary_path", "") if cp else "")
-        print(f"  → 从 QA 阶段继续")
+        runtime.msg.ok("从 QA 阶段继续")
         return {"phase": "qa_handoff"}
 
     @staticmethod
@@ -256,7 +254,7 @@ class ResumeRouter:
         ])
         cp = load_checkpoint(runtime)
         _restore_dev_conv(runtime, cp.get("step_idx", 0) if cp else 0)
-        print(f"  → 从 Dev 执行继续")
+        runtime.msg.ok("从 Dev 执行继续")
         return {"phase": "dev_exec_step"}
 
     @staticmethod
@@ -269,7 +267,7 @@ class ResumeRouter:
         cp = load_checkpoint(runtime)
         open_master_conv(runtime, cp.get("summary_path", "") if cp else "")
         clear_checkpoint(runtime)
-        print(f"  → 从交付阶段继续")
+        runtime.msg.ok("从交付阶段继续")
         return {"phase": "consistency_audit"}
 
     @classmethod

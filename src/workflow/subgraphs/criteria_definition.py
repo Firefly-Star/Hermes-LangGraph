@@ -116,10 +116,10 @@ class CriteriaDefinitionSubgraph:
         def review(state):
             rt = review._runtime
             criteria_path = rt.context.get_ctx(f"{config.context_key}_path") or ""
-            print(f"\n{'='*60}\n  ==> Reviewer 审查 {config.criteria_title}\n{'='*60}")
+            rt.msg.phase(f"Reviewer 审查 {config.criteria_title}")
 
             if not criteria_path or not os.path.exists(criteria_path):
-                print(f"  ✗ 审核标准文件不存在：{criteria_path}")
+                rt.msg.fail(f"审核标准文件不存在：{criteria_path}")
                 return {"phase": f"review_{domain}_criteria_fail",
                         "judge_result": config.fail_judge_result}
 

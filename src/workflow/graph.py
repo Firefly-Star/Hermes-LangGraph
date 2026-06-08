@@ -229,10 +229,10 @@ def main():
         for event in app.stream(state, stream_config):
             for node_name, node_state in event.items():
                 if node_state is None:
-                    print(f"  [{node_name}] 完成")
+                    runtime.msg.ok(f"[{node_name}] 完成")
                     continue
-                print(f"  [{node_name}] phase={node_state.get('phase', '?')}, "
-                      f"judge={node_state.get('judge_result', '')[:20]}")
+                runtime.msg.step(f"[{node_name}] phase={node_state.get('phase', '?')}, "
+                                 f"judge={node_state.get('judge_result', '')[:20]}")
     except KeyboardInterrupt:
         print("\n  [中断] 用户按 Ctrl+C 终止工作流")
         sys.exit(1)

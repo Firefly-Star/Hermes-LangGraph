@@ -52,7 +52,7 @@ class QAAlign:
         runtime.context.set_ctx("qa_conv", qa_conv)
 
         runtime.logger.log_event("phase_started", detail="QA 对齐")
-        print(f"\n{'='*60}\n  ==> Phase 3b: QA 对齐（QA ↔ PM / Dev / Master）\n{'='*60}")
+        runtime.msg.phase("Phase 3b: QA 对齐")
 
         feedback_path = runtime.context.get_ctx("qa_feedback_path")
         is_first = not (feedback_path and os.path.exists(feedback_path))
@@ -203,7 +203,7 @@ class QAAlign:
         runtime.context.set_ctx("qa_understanding_path", understanding_path)
         runtime.logger.log_event("phase_completed", detail="QA 对齐完成")
         clear_checkpoint(runtime)
-        print(f"\n  ✓ QA 对齐完成，理解已写入 {understanding_path}")
+        runtime.msg.ok(f"QA 对齐完成，理解已写入 {understanding_path}")
         return {"phase": "qa_align_done", "judge_result": "exit"}
 
     @staticmethod
@@ -214,7 +214,7 @@ class QAAlign:
         pm_review_path = runtime.context.get_ctx("pm_review_path")
         dev_review_path = runtime.context.get_ctx("dev_review_path")
 
-        print("\n  ── 升级到 Master ──")
+        runtime.msg.step("升级到 Master")
         master_reply_path = letter_path(runtime, "master-reply-qa")
         read_and_write_letter(runtime, "master", master_conv,
                               [pm_review_path, dev_review_path], master_reply_path,
@@ -247,7 +247,7 @@ class QAAlign:
         """用户确认 (clarify_loop)."""
         runtime = QAAlign._runtime
         master_conv = runtime.context.get_ctx("master_conv")
-        print("\n  ── Master 需要向用户确认 ──")
+        runtime.msg.step("Master 需要向用户确认")
         clarify_loop(runtime, master_conv, "== 向用户确认（QA 对齐）==",
                      "Master 需要向用户确认 QA 对齐中的争议问题")
         return {"phase": "qa_align_confirmed", "judge_result": ""}
@@ -372,7 +372,7 @@ class QAWriteTestPlan:
         criteria_path = runtime.context.get_ctx("qa_criteria_path") or ""
         understanding_path = runtime.context.get_ctx("qa_understanding_path") or ""
 
-        print(f"\n{'='*60}\n  ==> Phase 3c: QA 写测试计划\n{'='*60}")
+        runtime.msg.phase("QA 写测试计划")
         runtime.logger.log_event("phase_started", detail="QA 写测试计划")
 
         feedback_path = runtime.context.get_ctx("qa_plan_feedback_path") or ""
@@ -419,7 +419,7 @@ class QAWriteTestPlan:
         if feedback_path and os.path.exists(feedback_path):
             os.remove(feedback_path)
 
-        print(f"  ✓ 测试计划已写入 {plan_path}")
+        runtime.msg.ok(f"测试计划已写入 {plan_path}")
         return {"phase": "qa_plan_written", "judge_result": ""}
 
     @classmethod
@@ -480,7 +480,7 @@ class QAWriteTestCase:
         os.makedirs(qa_test_dir, exist_ok=True)
         plan_path = runtime.context.get_ctx("qa_plan_path") or ""
 
-        print(f"\n{'='*60}\n  ==> Phase 3e: QA 编写测试代码\n{'='*60}")
+        runtime.msg.phase("QA 编写测试代码")
         runtime.logger.log_event("phase_started", detail="QA 编写测试代码")
 
         feedback_path = runtime.context.get_ctx("qa_code_feedback_path") or ""
@@ -520,7 +520,7 @@ class QAWriteTestCase:
         if feedback_path and os.path.exists(feedback_path):
             os.remove(feedback_path)
 
-        print(f"  ✓ 测试代码已写入 {qa_test_dir}")
+        runtime.msg.ok(f"测试代码已写入 {qa_test_dir}")
         return {"phase": "qa_code_written", "judge_result": ""}
 
     @classmethod
@@ -582,7 +582,7 @@ class QARunTests:
         qa_test_dir = runtime.context.get_ctx("qa_code_path") or os.path.join(ws, "QA", "tests")
         report_path = os.path.join(ws, "QA", "test-report.md")
 
-        print(f"\n{'='*60}\n  ==> Phase 3f: QA 运行测试\n{'='*60}")
+        runtime.msg.phase("QA 运行测试")
         runtime.logger.log_event("phase_started", detail="QA 运行测试")
 
         call_agent(runtime, "qa", qa_run_conv,
@@ -600,7 +600,7 @@ class QARunTests:
                        f"请将测试报告写入文件 {report_path}。")
 
         runtime.context.set_ctx("qa_test_report_path", report_path)
-        print(f"  ✓ 测试报告已写入 {report_path}")
+        runtime.msg.ok(f"测试报告已写入 {report_path}")
         return {"phase": "qa_tests_run", "judge_result": ""}
 
     @classmethod
@@ -624,7 +624,7 @@ class JudgeTestResult:
         runtime = JudgeTestResult._runtime
         report_path = runtime.context.get_ctx("qa_test_report_path") or ""
 
-        print(f"\n{'='*60}\n  ==> Judge 判读测试结果\n{'='*60}")
+        runtime.msg.phase("Judge 判读测试结果")
 
         if not report_path or not os.path.exists(report_path):
             raise RuntimeError(f"测试报告文件不存在：{report_path}")
@@ -647,7 +647,7 @@ class JudgeTestResult:
                 f.write(report_text)
             runtime.context.set_ctx("qa_bug_report_path", bug_report_path)
             runtime.logger.log_event("test_judged", detail="有 bug 需要修复")
-            print(f"\n  ✗ 测试未全部通过，Bug 报告已写入 {bug_report_path}")
+            runtime.msg.fail(f"测试未全部通过，Bug 报告已写入 {bug_report_path}")
             return {"phase": "qa_tests_fail", "judge_result": "dev_fix"}
 
     @staticmethod
@@ -689,7 +689,7 @@ class DevFix:
         bug_report_path = runtime.context.get_ctx("qa_bug_report_path") or ""
         dev_dir = os.path.join(runtime.paths.workspace, "Dev")
 
-        print(f"\n{'='*60}\n  ==> Phase 3g: Dev 修复 bug\n{'='*60}")
+        runtime.msg.phase("Dev 修复 bug")
         runtime.logger.log_event("phase_started", detail="Dev 修复 bug")
 
         if not bug_report_path or not os.path.exists(bug_report_path):
@@ -708,7 +708,7 @@ class DevFix:
             "4. 修复完成后不需要等待确认，直接输出结果\n\n"
             "请使用 read_file 工具读取 bug 报告，然后修改代码。")
 
-        print(f"  ✓ Dev 修复完成，准备重新运行测试")
+        runtime.msg.ok("Dev 修复完成，准备重新运行测试")
         return {"phase": "dev_fix_done", "judge_result": ""}
 
     @classmethod

@@ -115,8 +115,8 @@ class MasterFlushSubgraph:
             new_conv = open_master_conv(rt, summary_path)
             save_checkpoint(rt, config.resume_node, config.phase_name,
                             summary_path=summary_path)
-            print(f"\n  ── Master flush: {config.phase_name} → {config.next_step}"
-                  f" (新对话: {new_conv})")
+            rt.msg.ok(f"Master flush: {config.phase_name} → {config.next_step}"
+                      f" (新对话: {new_conv})")
             return {"phase": f"{domain}_conv_flushed", "judge_result": ""}
 
         return MasterFlushDef(nodes={

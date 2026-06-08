@@ -75,7 +75,7 @@ class ArtifactReviewSubgraph:
 
         def review(state):
             rt = review._runtime
-            print(f"\n{'='*60}\n  ==> {config.review_title}\n{'='*60}")
+            rt.msg.phase(config.review_title)
 
             # 格式化 prompt
             prompt = config.review_prompt.format(

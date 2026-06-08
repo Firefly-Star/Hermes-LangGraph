@@ -19,7 +19,7 @@ class PreFlightClarify:
         runtime = PreFlightClarify._runtime
         conv = conv_name("master")
 
-        print(f"\n{'='*50}\n  ==> Phase 0: 需求澄清\n{'='*50}")
+        runtime.msg.phase("Phase 0: 需求澄清")
 
         for key in ["master_reply", "pm_reply_text", "pm_reply_path", "pmletter_path",
                     "pm_criteria", "pm_criteria_self_check", "pm_criteria_path",

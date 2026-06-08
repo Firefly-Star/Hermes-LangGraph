@@ -61,6 +61,18 @@ def request_interrupt():
     _interrupt_requested = True
 
 
+def entry_banner(func):
+    """装饰器：进入节点时打印 banner。"""
+    @functools.wraps(func)
+    def wrapper(state):
+        rt = getattr(wrapper, '_runtime', None)
+        if rt:
+            rt.msg.node(func.__name__)
+        return func(state)
+    wrapper.__name__ = func.__name__
+    return wrapper
+
+
 def interruptible(func):
     """装饰器：节点函数中 call_agent 抛出 WorkflowInterrupted 时路由到 user_intervention。"""
     @functools.wraps(func)
@@ -72,10 +84,8 @@ def interruptible(func):
         except WorkflowInterrupted:
             rt = wrapper._runtime
             rt.context.set_ctx("interrupted_node", func.__name__)
-            # 内联调用用户介入，不走图路由（固定边无法路由到 interrupt_dialog）
             interrupt_dialog._runtime = rt
             interrupt_dialog(state)
-            # 用户结束后从头重入当前节点
             return func(state)
     wrapper.__name__ = func.__name__
     return wrapper
@@ -85,12 +95,13 @@ def register_nodes(graph, runtime, nodes: dict):
     """批量注册 interruptible 节点到 LangGraph graph。
 
     nodes = {node_name: function, ...}
-    每个函数的 __name__ 会被设为 node_name，自动用 interruptible 包装后注册。
+    每个函数的 __name__ 会被设为 node_name，自动用 interruptible + entry_banner 包装后注册。
     """
     for name, fn in nodes.items():
         fn.__name__ = name
-        wrapped = interruptible(fn)
-        wrapped.__wrapped__._runtime = runtime
+        bannered = entry_banner(fn)
+        bannered.__wrapped__._runtime = runtime
+        wrapped = interruptible(bannered)
         wrapped._runtime = runtime
         graph.add_node(name, wrapped)
 
@@ -155,7 +166,7 @@ def call_agent(runtime, agent: str, conversation: str, prompt: str,
                timeout: int = 180, stream: bool = True) -> str:
     """调用 agent 并返回文本。stream=True 时逐块打印输出。失败抛异常。"""
     global _interrupt_requested
-    print(f"  → 调 {agent}/{conversation}... ", end="", flush=True)
+    runtime.msg.call(agent, conversation)
     t0 = time.time()
 
     def on_tool(name, args):
@@ -163,13 +174,11 @@ def call_agent(runtime, agent: str, conversation: str, prompt: str,
         if _interrupt_requested:
             _interrupt_requested = False
             raise WorkflowInterrupted()
-        print(f"\n  ── TOOL {name} ──")
-        for k, v in args.items():
-            if isinstance(v, str) and len(v) > 200:
-                v = v[:200] + "..."
-            print(f"     {k}: {v}", flush=True)
+        runtime.msg.tool(name, args)
 
-    print(f"\n──── Request: {agent}/{conversation} ────\n{prompt}\n──── {agent}'s Response ────")
+    runtime.msg.divider("Request")
+    print(prompt)
+    runtime.msg.divider("Response")
 
     if stream:
         print(flush=True)
@@ -214,12 +223,16 @@ def call_agent(runtime, agent: str, conversation: str, prompt: str,
         if result.text:
             print(result.text)
         if _interrupt_requested:
-            print("\n  [中断] 非流式调用无法中断，请求已忽略")
+            runtime.msg.warn("非流式调用无法中断，请求已忽略")
             _interrupt_requested = False
+
+    runtime.msg.divider("/Response")
+    runtime.msg.divider("Result")
 
     elapsed = time.time() - t0
     if not result.success:
-        print(f"  [FAIL] ({elapsed:.0f}s)")
+        runtime.msg.call_fail(elapsed)
+        runtime.msg.divider("/Result")
         raise RuntimeError(f"[{agent}/{conversation}] 调用失败: {result.error}")
 
     tool_names = []
@@ -228,8 +241,8 @@ def call_agent(runtime, agent: str, conversation: str, prompt: str,
             if item.get("type") == "function_call":
                 tool_names.append(item.get("name", ""))
 
-    tool_info = f" tools:[{','.join(tool_names)}]" if tool_names else ""
-    print(f"  ✓ ({elapsed:.0f}s, {result.input_tokens + result.output_tokens} tokens{tool_info})")
+    runtime.msg.call_ok(elapsed, result.input_tokens + result.output_tokens, tool_names)
+    runtime.msg.divider("/Result")
     return result.text
 
 
@@ -392,7 +405,7 @@ def setup_runtime(config_path: str = None) -> ap.AgentRuntime:
 def write_criteria(runtime, master_conv, title: str, file_path: str,
                      prompt: str, context_key: str):
     """通用审核标准编写。告诉 Master 路径让 Master 自己写入文件。"""
-    print(f"\n  ── {title} ──")
+    runtime.msg.step(title)
 
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
     call_agent(runtime, "master", master_conv,
@@ -402,7 +415,7 @@ def write_criteria(runtime, master_conv, title: str, file_path: str,
         raise RuntimeError(f"Master 未生成审核标准文件：{file_path}")
 
     runtime.context.set_ctx(f"{context_key}_path", file_path)
-    print(f"  ✓ 审核标准已写入 {file_path}")
+    runtime.msg.ok(f"审核标准已写入 {file_path}")
 
     runtime.logger.log_event("criteria_defined",
         detail=f"{title}——已写入 {file_path}")

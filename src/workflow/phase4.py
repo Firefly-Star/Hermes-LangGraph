@@ -20,7 +20,7 @@ class ConsistencyAudit:
         ws = runtime.paths.workspace
         pc_path = runtime.context.get_bg("project_context_path") or ""
 
-        print(f"\n{'='*60}\n  ==> Phase 4a: 一致性审计\n{'='*60}")
+        runtime.msg.phase("一致性审计")
         runtime.logger.log_event("phase_started", detail="一致性审计")
 
         audit_path = os.path.join(ws, "audit-report.md")
@@ -63,7 +63,7 @@ class ConsistencyAudit:
 
         clear_checkpoint(runtime)
         runtime.context.set_ctx("audit_path", audit_path)
-        print(f"  ✓ 一致性审计报告已写入 {audit_path}")
+        runtime.msg.ok(f"一致性审计报告已写入 {audit_path}")
         return {"phase": "audit_done", "judge_result": ""}
 
     @classmethod
@@ -88,7 +88,7 @@ class WriteMaintenanceDocs:
         dev_dir = os.path.join(ws, "Dev")
         pc_path = runtime.context.get_bg("project_context_path") or ""
 
-        print(f"\n{'='*60}\n  ==> Phase 4b: 写维护文档\n{'='*60}")
+        runtime.msg.phase("写维护文档")
         runtime.logger.log_event("phase_started", detail="写维护文档")
 
         readme_path = os.path.join(ws, "README.md")
@@ -126,7 +126,7 @@ class WriteMaintenanceDocs:
 
         runtime.context.set_ctx("readme_path", readme_path)
         runtime.context.set_ctx("deploy_path", deploy_path)
-        print(f"  ✓ 维护文档已写入 {readme_path}, {deploy_path}")
+        runtime.msg.ok(f"维护文档已写入 {readme_path}, {deploy_path}")
         return {"phase": "docs_written", "judge_result": ""}
 
     @classmethod
@@ -149,7 +149,7 @@ class DeliverySummary:
         master_conv = runtime.context.get_ctx("master_conv")
         ws = runtime.paths.workspace
 
-        print(f"\n{'='*60}\n  ==> Phase 4c: 交付总结\n{'='*60}")
+        runtime.msg.phase("交付总结")
         runtime.logger.log_event("phase_started", detail="交付总结")
 
         summary_path = os.path.join(ws, "delivery-summary.md")
@@ -197,10 +197,9 @@ class DeliverySummary:
                        f"将交付总结写入文件 {summary_path}。")
 
         runtime.context.set_ctx("delivery_summary_path", summary_path)
-        print(f"\n{'='*60}")
-        print(f"  ✓ 交付总结已写入 {summary_path}")
-        print(f"  ✓ 项目交付完成")
-        print(f"{'='*60}")
+        runtime.msg.ok(f"交付总结已写入 {summary_path}")
+        runtime.msg.ok("项目交付完成")
+        runtime.msg.sep()
         return {"phase": "delivery_done", "judge_result": ""}
 
     @classmethod

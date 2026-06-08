@@ -57,7 +57,7 @@ class DevAlign:
             runtime.context.set_ctx("dev_conv", dev_conv)
 
         runtime.logger.log_event("phase_started", detail="Dev 对齐")
-        print(f"\n{'='*60}\n  ==> Phase 2b: Dev 对齐（Dev ↔ PM / Master）\n{'='*60}")
+        runtime.msg.phase("Phase 2b: Dev 对齐")
 
         feedback_path = runtime.context.get_ctx("dev_feedback_path")
         is_first = not (feedback_path and os.path.exists(feedback_path))
@@ -147,7 +147,7 @@ class DevAlign:
             return {"phase": "dev_align_feedback", "judge_result": "dev_align_dev"}
         else:
             runtime.logger.log_event("phase_completed", detail="Dev 对齐完成")
-            print("\n  ✓ Dev 对齐完成")
+            runtime.msg.ok("Dev 对齐完成")
             if pm_reply_path and os.path.exists(pm_reply_path):
                 os.remove(pm_reply_path)
             return {"phase": "dev_align_done", "judge_result": "exit"}
@@ -161,7 +161,7 @@ class DevAlign:
         if not pm_reply_path or not os.path.exists(pm_reply_path):
             raise RuntimeError("PM 回复信件不存在")
 
-        print("\n  ── 升级到 Master ──")
+        runtime.msg.step("升级到 Master")
         master_reply_path = letter_path(runtime, "master-reply-dev")
         read_and_write_letter(runtime, "master", master_conv,
                               pm_reply_path, master_reply_path,
@@ -195,7 +195,7 @@ class DevAlign:
         """用户确认 (clarify_loop, 内部处理中断)."""
         runtime = DevAlign._runtime
         master_conv = runtime.context.get_ctx("master_conv")
-        print("\n  ── Master 需要向用户确认 ──")
+        runtime.msg.step("Master 需要向用户确认")
         clarify_loop(runtime, master_conv, "== 向用户确认（Dev 对齐）==",
                      "Master 需要向用户确认 Dev 对齐中的争议问题")
         return {"phase": "dev_align_confirmed", "judge_result": ""}
@@ -313,7 +313,7 @@ class DevWriteDesign:
             runtime.context.set_ctx("dev_conv", dev_conv)
 
         runtime.logger.log_event("phase_started", detail="Dev 出详细设计")
-        print(f"\n  ── Dev 出详细设计 ──")
+        runtime.msg.step("Dev 出详细设计")
 
         master_conv = runtime.context.get_ctx("master_conv")
         if not master_conv:
@@ -376,7 +376,7 @@ class DevWriteDesign:
         read_letter(runtime, "dev", dev_conv, designletter_path,
                     f"按信中的要求编写详细设计方案，写入文件 {design_path}。")
 
-        print(f"  ✓ {design_path}")
+        runtime.msg.ok(design_path)
         runtime.context.set_phase_node(["Dev 出详细设计"], "done")
         runtime.logger.log_event("phase_completed", detail="Dev 详细设计完成")
         return {"phase": "dev_design_done", "judge_result": "pass"}
@@ -440,7 +440,7 @@ class WriteDesignSummary:
         summary_path = os.path.join(dev_dir, "design-summary.md")
         index_path = os.path.join(dev_dir, "design-index.md")
 
-        print(f"\n  ── 生成设计概要及索引 ──")
+        runtime.msg.step("生成设计概要及索引")
 
         # 清理旧的 summary/index（如果存在），让 agent 重写
         for p in (summary_path, index_path):
@@ -488,7 +488,7 @@ class DevWritePlan:
             runtime.context.set_ctx("dev_conv", dev_conv)
 
         runtime.logger.log_event("phase_started", detail="Dev 出实现计划")
-        print(f"\n  ── Dev 出实现计划 ──")
+        runtime.msg.step("Dev 出实现计划")
 
         master_conv = runtime.context.get_ctx("master_conv")
         if not master_conv:
@@ -574,7 +574,7 @@ class DevWritePlan:
         read_letter(runtime, "dev", dev_conv, planletter_path,
                     f"按信中的要求编写分步实现计划，写入文件 {plan_path}。")
 
-        print(f"  ✓ {plan_path}")
+        runtime.msg.ok(plan_path)
         runtime.context.set_phase_node(["Dev 出实现计划"], "done")
         runtime.logger.log_event("phase_completed", detail="Dev 实现计划完成")
         return {"phase": "dev_plan_done", "judge_result": "pass"}
@@ -662,7 +662,7 @@ class DevGitInit:
 
         dev_dir = os.path.join(runtime.paths.workspace, "Dev")
         runtime.context.set_ctx("dev_git_dir", dev_dir)
-        print(f"\n  ── Dev 初始化 Git 仓库 ──")
+        runtime.msg.step("Dev 初始化 Git 仓库")
 
         call_agent(runtime, "dev", dev_conv,
             f"请在 {dev_dir} 目录下初始化 Git 仓库：\n"
@@ -781,10 +781,10 @@ class DevExecStep:
 
         step_content = get_step_from_plan(plan_path, step_idx)
         if not step_content:
-            print(f"\n  ✗ 未找到 Step {step_idx + 1}，计划文件：{plan_path}")
+            runtime.msg.fail(f"未找到 Step {step_idx + 1}")
             return {"phase": "dev_exec_error", "judge_result": "dev_exec_step"}
 
-        print(f"\n{'='*60}\n  ==> Dev 执行 Step {step_idx + 1}\n{'='*60}")
+        runtime.msg.phase(f"Dev 执行 Step {step_idx + 1}")
         runtime.logger.log_event("phase_started", detail=f"Dev 执行 Step {step_idx + 1}")
 
         prev_review = runtime.context.get_ctx("dev_step_review_feedback")
@@ -874,7 +874,7 @@ class DevReviewStep:
     @staticmethod
     def run(state) -> dict:
         runtime = DevReviewStep._runtime
-        print(f"\n{'='*60}\n  ==> Reviewer 审查 Step\n{'='*60}")
+        runtime.msg.phase("Reviewer 审查 Step")
 
         step_idx = int(runtime.context.get_ctx("dev_step_index") or "0")
         total = int(runtime.context.get_ctx("dev_total_steps") or "0")
@@ -919,8 +919,6 @@ class DevReviewStep:
             "如果 FAIL，写明需要修正的具体问题和原因。",
             stream=True)
 
-        print(f"\n── Reviewer 审查结果 ──\n{review}\n")
-
         judge_result = judge_reply(runtime, "Reviewer", review, [
             "P. 实现满足所有验收标准。",
             "F. 实现存在问题，需要修正。",
@@ -938,10 +936,10 @@ class DevReviewStep:
                 detail=f"Step {step_idx + 1} 通过（{new_idx}/{total}）")
 
             if new_idx >= total:
-                print(f"\n  ✓ 所有步骤完成！")
+                runtime.msg.ok("所有步骤完成！")
                 runtime.logger.log_event("phase_completed", detail="Dev 执行全部完成")
             else:
-                print(f"\n  ✓ Step {step_idx + 1} 通过，进入 Step {new_idx + 1}")
+                runtime.msg.ok(f"Step {step_idx + 1} 通过，进入 Step {new_idx + 1}")
             return {"phase": "dev_exec_done" if new_idx >= total else "step_pass",
                     "judge_result": "dev_commit"}
         else:
@@ -966,13 +964,13 @@ class DevReviewStep:
                 detail=f"Step {step_idx + 1} 未通过（fail_count={count}）")
 
             if count >= escalation_threshold:
-                print(f"\n  ⚠ Step {step_idx + 1} 失败 {count} 次，升级人工决策")
+                runtime.msg.warn(f"Step {step_idx + 1} 失败，升级人工决策")
                 return {"phase": "step_escalate", "judge_result": "dev_escalate"}
             elif count >= rollback_threshold:
-                print(f"\n  ⚠ Step {step_idx + 1} 失败 {count} 次，触发回滚")
+                runtime.msg.warn(f"Step {step_idx + 1} 失败，触发回滚")
                 return {"phase": "step_rollback", "judge_result": "dev_rollback"}
             else:
-                print(f"\n  ✗ Step {step_idx + 1} 未通过（fail_count={count}），重新执行")
+                runtime.msg.fail(f"Step {step_idx + 1} 未通过，重新执行")
                 return {"phase": "step_fail", "judge_result": "step_retry"}
 
     @classmethod
@@ -997,7 +995,7 @@ class DevCommit:
         step_idx = int(runtime.context.get_ctx("dev_step_index") or "0")
         total = int(runtime.context.get_ctx("dev_total_steps") or "0")
 
-        print(f"\n  ── Dev 提交 Step {step_idx} 的代码 ──")
+        runtime.msg.step(f"Dev 提交 Step {step_idx} 的代码")
 
         call_agent(runtime, "dev", dev_conv,
             f"你的 Step {step_idx} 已通过审查，请将改动提交到 Git：\n"
@@ -1138,7 +1136,7 @@ class DevRollback:
         dev_conv = runtime.context.get_ctx("dev_conv")
         step_idx = int(runtime.context.get_ctx("dev_step_index") or "0")
 
-        print(f"\n{'='*60}\n  ==> Dev Step {step_idx + 1} 回滚中...\n{'='*60}")
+        runtime.msg.phase(f"Dev Step {step_idx + 1} 回滚中")
 
         call_agent(runtime, "dev", dev_conv,
             f"当前 Step {step_idx + 1} 已失败多次，执行以下操作：\n"
@@ -1173,9 +1171,7 @@ class DevEscalate:
         step_idx = int(runtime.context.get_ctx("dev_step_index") or "0")
         total = int(runtime.context.get_ctx("dev_total_steps") or "0")
 
-        print(f"\n{'='*50}")
-        print(f"【Dev Step {step_idx + 1}/{total} 多次失败，进入人工对话】")
-        print(f"{'='*50}")
+        runtime.msg.phase(f"Dev Step {step_idx + 1}/{total} 多次失败，进入人工对话")
 
         dev_summary = call_agent(runtime, "dev", dev_conv,
             "请用简短的篇幅向用户说明以下信息：\n"
@@ -1184,7 +1180,6 @@ class DevEscalate:
             "3. 最近一次审查反馈中指出的问题\n"
             "4. 你认为可能的原因是什么\n\n"
             "用户将与你对话帮助你解决问题。保持简洁。")
-        print(f"\n── Dev 的简述 ──\n{dev_summary}\n")
 
         return {"phase": "step_summarized", "judge_result": ""}
 
@@ -1233,7 +1228,6 @@ class DevEscalate:
             "3. 是否需要修改其他文档？\n\n"
             "输出决策总结。")
 
-        print(f"\n── Dev 决策总结 ──\n{decision}\n")
         runtime.context.set_ctx("dev_escalation_decision", decision)
         runtime.logger.log_event("phase_escalated",
             detail=f"Dev Step {step_idx + 1} 升级人工对话")

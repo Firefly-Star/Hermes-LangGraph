@@ -73,7 +73,7 @@ class PMAlign:
             runtime.context.set_ctx("pm_conv", pm_conv)
 
         runtime.logger.log_event("phase_started", detail="PM 对齐理解")
-        print(f"\n  ── PM 对齐理解（第 {round_num + 1} 轮）──")
+        runtime.msg.step(f"PM 对齐理解（第 {round_num + 1} 轮）")
 
         pm_reply_path = letter_path(runtime, "pm-reply")
 
@@ -187,7 +187,7 @@ class JudgeMasterReply:
         runtime = JudgeMasterReply._runtime
         master_reply = runtime.context.get_ctx("master_reply")
 
-        print("  ── judge: Master 回复 ──")
+        runtime.msg.step("judge: Master 回复")
         result = judge_reply(runtime, "Master", master_reply, [
             "A. Master 明确声明「无需转发，PM已完全正确」，且无任何需要再向PM说明或向用户提问的内容 → 进入下一阶段",
             "B. Master 明确声明「需要转发给PM」，或有任何对 PM 的答复或纠正需要转发 → 回 pm_align",
@@ -217,7 +217,8 @@ class ClarifyInject:
         master_conv = runtime.context.get_ctx("master_conv")
         master_reply = runtime.context.get_ctx("master_reply")
 
-        print(f"\n  ── Master 需要向用户确认 ──\n{master_reply}")
+        runtime.msg.step("Master 需要向用户确认")
+        print(master_reply)
 
         reason = clarify_loop(runtime, master_conv, "== 向用户确认 ==", "请回答 Master 的疑问")
         runtime.context.set_ctx("clarify_reason", reason)
@@ -308,7 +309,7 @@ class PMWriteDoc:
             raise RuntimeError("clarify conversation 不存在")
 
         runtime.logger.log_event("phase_started", detail="PM 出方案")
-        print(f"\n  ── PM 出方案 ──")
+        runtime.msg.step("PM 出方案")
 
         pm_dir = os.path.join(runtime.paths.workspace, "PM")
         os.makedirs(pm_dir, exist_ok=True)
@@ -420,8 +421,8 @@ class PMWriteDoc:
                     "编写测试脚本时必须遵守以下规范：\n"
                     + PLAYWRIGHT_TEST_TIPS)
 
-        print(f"  ✓ {os.path.join(pm_dir, 'PRD.md')}")
-        print(f"  ✓ {proto_path}")
+        runtime.msg.ok(os.path.join(pm_dir, 'PRD.md'))
+        runtime.msg.ok(proto_path)
 
         runtime.context.set_phase_node(["PM 出方案"], "done")
         runtime.logger.log_event("phase_completed", detail="PM 方案完成")
@@ -453,7 +454,7 @@ class ReviewPMOutput:
     def run(state) -> dict:
         """Reviewer reviews PM's PRD and prototype against criteria."""
         runtime = ReviewPMOutput._runtime
-        print(f"\n{'='*60}\n  ==> Reviewer 审查 PM 产出\n{'='*60}")
+        runtime.msg.phase("Reviewer 审查 PM 产出")
 
         criteria_path = os.path.join(runtime.paths.workspace, "criteria-pm.md")
         prd_path = os.path.join(runtime.paths.workspace, "PM", "PRD.md")
@@ -511,7 +512,10 @@ class ReviewPMOutput:
 
         runtime.context.set_ctx("review_result", reply)
         runtime.logger.log_event("review_completed", detail=f"审查{'通过' if passed else '不通过'}")
-        print(f"  {'✓ Reviewer 审查通过' if passed else '✗ Reviewer 审查不通过'}")
+        if passed:
+            runtime.msg.ok("Reviewer 审查通过")
+        else:
+            runtime.msg.fail("Reviewer 审查不通过")
         return {"phase": "review_done", "judge_result": "human_review" if passed else "pm_write_doc"}
 
     @classmethod
@@ -537,7 +541,7 @@ class HumanReview:
         proto_path = os.path.join(runtime.paths.workspace, "PM", "prototype.html")
         criteria_path = os.path.join(runtime.paths.workspace, "criteria-pm.md")
 
-        print(f"\n{'='*60}\n  ==> 人工审核 PM 产出\n{'='*60}")
+        runtime.msg.phase("人工审核 PM 产出")
         print(f"  PM 产出位置：")
         print(f"    PRD:       {prd_path}")
         print(f"    Prototype: {proto_path}")
@@ -554,7 +558,7 @@ class HumanReview:
         feedback = cp.message.strip()
 
         if not feedback:
-            print("  ✓ 人工审核通过")
+            runtime.msg.ok("人工审核通过")
             runtime.logger.log_event("human_review_passed")
             return {"phase": "done", "judge_result": END}
 
@@ -566,7 +570,7 @@ class HumanReview:
         runtime.context.set_ctx("human_feedback",
                                 prev + "\n\n---\n\n" + entry if prev else entry)
         runtime.logger.log_event("human_review_rejected", detail=feedback)
-        print(f"  ⚠ 人工审核不通过，反馈已记录")
+        runtime.msg.warn("人工审核不通过，反馈已记录")
         return {"phase": "human_review_rejected", "judge_result": "pm_write_doc"}
 
     @classmethod

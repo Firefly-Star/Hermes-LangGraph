@@ -346,7 +346,7 @@ class HermesClient(ConversationClient):
                         agent=agent, conversation=conversation,
                         input_text=input_text, output_text=text,
                         input_tokens=it, output_tokens=ot, latency_ms=latency,
-                        success=True,
+                        success=True, raw_data=data,
                     )
                     # 追踪 conversation 到 registry
                     self._track_conversation(agent, conversation)
@@ -480,7 +480,7 @@ class HermesClient(ConversationClient):
                 input_text=input_text, output_text=full_text,
                 input_tokens=usage.get("input_tokens", 0),
                 output_tokens=usage.get("output_tokens", 0),
-                latency_ms=latency, success=True,
+                latency_ms=latency, success=True, raw_data=raw_data,
             )
             self._track_conversation(agent, conversation)
             return CallResult(
@@ -505,7 +505,12 @@ class Logger:
 
     def log_call(self, agent: str, conversation: str, input_text: str, output_text: str,
                  input_tokens: int, output_tokens: int, latency_ms: int,
-                 success: bool, error: str = None):
+                 success: bool, error: str = None, raw_data: dict = None):
+        tools = []
+        if raw_data:
+            for item in raw_data.get("output", []):
+                if item.get("type") == "function_call":
+                    tools.append({"name": item.get("name", ""), "arguments": item.get("arguments", "")})
         record = {
             "timestamp": _iso_now(),
             "agent": agent,
@@ -520,6 +525,7 @@ class Logger:
             "total_tokens": input_tokens + output_tokens,
             "success": success,
             "error": error,
+            "tools": tools,
         }
         _append_jsonl(self._calls_path, record)
 
@@ -869,6 +875,59 @@ class OutputLayer:
                 sink.close()
 
 
+class Message:
+    """工作流执行状态的结构化输出。
+
+    提供一致的视觉格式，输出到 sys.stdout（已被 OutputLayer 接管）。
+    不取代流式 chunk print 和特殊交互提示。
+    """
+
+    def phase(self, title: str):
+        print(f"\n{'─'*20} {title} {'─'*20}")
+
+    def node(self, name: str):
+        print(f"\n  ── {name} ──")
+
+    def step(self, title: str):
+        print(f"\n    ◆ {title}")
+
+    def ok(self, msg: str):
+        print(f"    ✓ {msg}")
+
+    def fail(self, msg: str):
+        print(f"    ✗ {msg}")
+
+    def warn(self, msg: str):
+        print(f"    ⚠ {msg}")
+
+    def call(self, agent: str, conversation: str):
+        print(f"    → {agent}/{conversation}")
+
+    def tool(self, name: str, args: dict):
+        print(f"\n      ◇ {name}")
+        for k, v in args.items():
+            if isinstance(v, str) and len(v) > 200:
+                v = v[:200] + "..."
+            print(f"        {k}: {v}")
+
+    def call_ok(self, elapsed: float, tokens: int = 0, tools: list[str] = None):
+        parts = [f"{elapsed:.0f}s"]
+        if tokens:
+            parts.append(f"{tokens} tokens")
+        if tools:
+            parts.append("tools:" + ",".join(tools))
+        print(f"    ✓ ({', '.join(parts)})")
+
+    def call_fail(self, elapsed: float):
+        print(f"    ✗ ({elapsed:.0f}s)")
+
+    def divider(self, title: str):
+        print(f"\n    {'═'*20} {title} {'═'*20}")
+
+    def sep(self):
+        print()
+
+
 @dataclass
 class OutputConfig:
     """对应 config output 节。"""
@@ -924,6 +983,9 @@ class AgentRuntime:
         self.context = ContextManager(self.paths.runtime_dir)
         self.conversations = conversation_client or HermesClient(self.agents, self.logger, self.config, self.paths.runtime_dir)
         self.checkpoint = Checkpoint()
+
+        # ── Message — 结构化输出 ──
+        self.msg = Message()
 
         # ── OutputLayer — 替换 sys.stdout ──
         output_cfg = cfg.get("output", {}) if config_path else {}
