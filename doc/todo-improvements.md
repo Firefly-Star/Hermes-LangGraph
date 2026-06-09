@@ -28,18 +28,12 @@
 
 ---
 
-## 3. Dev 步骤失败处理机制改造
+## 3. [已完成] Dev 步骤失败处理机制改造
 
-**现状**：DevExecStep 有 fail_rollback_threshold（默认 3 次触发 git reset）和 fail_escalation_threshold（默认 5 次触发人工对话）。这些阈值写死在代码里，且自动执行破坏性操作（git reset --hard）。
-
-**问题**：
-- 自动 reset 可能丢失修改
-- 到达阈值后自动执行回滚/升级，用户没有被通知和决定的机会
-
-**方向**：
-- 失败处理改为可配置策略（通知 → 等待指令 / 自动回滚 / 跳过）
-- 默认策略改为：达到阈值后暂停并通知用户，由用户决定下一步
-- 与第 2 项的通知机制统一
+**已于 2026-06-09 完成。** 改动：
+- `DevReviewStep` 失败后全部路由到 `step_retry`，不再走 `DevRollback`（git reset）或 `DevEscalate`（阻塞对话）
+- 到达 `fail_rollback_threshold` / `fail_escalation_threshold` 时弹出 Windows MessageBox 通知用户，不阻塞、不破坏
+- `DevRollback` 类和 `DevEscalate` 类已删除
 
 ---
 
@@ -54,9 +48,9 @@
 | 子图 | 出现次数 | 结构一致性 | 优先级 |
 |:-----|:---------|:-----------|:-------|
 | HandoffSubgraph | 3 次（PM/Dev/QA） | 100% 一致 | 高 |
-| CriteriaReviewSubgraph | 3 次（PM/Dev/QA） | 100% 一致 | 高 |
+| CriteriaDefinitionSubgraph | 3 次（PM/Dev/QA） | 100% 一致 | 高 |
 | ArtifactReviewSubgraph | 5 次（PRD/Proto/Design/Plan/TestPlan/TestCode） | 100% 一致 | 高 |
-| FlushSubgraph | 4 次（Clarify/PM/Dev/QA） | 90% 一致 | 高 |
+| MasterFlushSubgraph | 4 次（Clarify/PM/Dev/QA） | 90% 一致 | 高 |
 | AlignLoopSubgraph | 3 次（PM/Dev/QA） | 结构不同 | 中 |
 | ExecReviewLoopSubgraph | 1 次（仅 Dev） | 模式通用但单一实现 | 低 |
 | TestJudgeFixLoopSubgraph | 1 次（仅 QA） | 模式通用但单一实现 | 低 |
@@ -72,58 +66,39 @@ HandoffSubgraph:
   entry → [Master 写信] → exit
 ```
 
-**配置接口**：
+**配置接口**（已实现于 `src/workflow/subgraphs/handoff.py`）：
 
 ```python
 @dataclass
 class HandoffConfig:
-    """Handoff 子图配置。"""
-    sender: str                         # "master"
     receiver: str                       # "pm" | "dev" | "qa"
     letter_title: str                   # 信件标题
-    letter_prompt_template: str         # 信件内容模板，可引用 {workspace}, {project_context}, 各文档路径
-    context_letter_key: str             # 信件路径存入 context 的 key
-    conversation: str                   # 使用的对话 (如 "master_conv")
+    letter_prompt: str                  # 信件模板，可用 {workspace} {project_context} 占位
+    context_letter_key: str             # 信件路径存 context 的 key
+    domain: Optional[str] = None        # 节点名前缀，默认 {receiver}
+    sender: str = "master"              # 发信人 agent
+    conversation_key: str = "master_conv"  # 发信人对话的 context key
+    create_dirs: tuple[str, ...] = ()   # 写信前创建的目录（相对 workspace）
+    next_phase: Optional[str] = None    # 返回的 phase，默认 "{receiver}_handoff_done"
 ```
 
-**注册接口**：
+**调用方式**：
 
 ```python
-# 返回 (entries, exits)，节点名自动以 receiver 为前缀防冲突
-handoff_entries, handoff_exits = HandoffSubgraph.register(graph, runtime, config)
-# 使用例：
-graph.add_edge(pre_flush_exit, handoff_entries["run"])
-# exit 总是 {"run": "{receiver}_handoff"}
-```
-
-**跨阶段复用**：
-
-```python
-pm_handoff = HandoffConfig(
-    sender="master", receiver="pm", letter_title="Master 给 PM 的信",
-    letter_prompt_template=PM_HANDOFF_PROMPT,
-    context_letter_key="pmletter_path", conversation="master_conv",
-)
-dev_handoff = HandoffConfig(
-    sender="master", receiver="dev", letter_title="Master 给 Dev 的信",
-    letter_prompt_template=DEV_HANDOFF_PROMPT,
-    context_letter_key="devletter_path", conversation="master_conv",
-)
-qa_handoff = HandoffConfig(
-    sender="master", receiver="qa", letter_title="Master 给 QA 的信",
-    letter_prompt_template=QA_HANDOFF_PROMPT,
-    context_letter_key="qaletter_path", conversation="master_conv",
-)
+handoff_def = HandoffSubgraph.define(config)       # 创建 Def 实例
+handoff = handoff_def.register(graph, runtime)     # 注入 runtime + 注册节点
+# handoff.entries["run"] / handoff.exits["run"]
+graph.add_edge(prev, handoff.entries["run"])
 ```
 
 ---
 
-#### 4.2.2 CriteriaReviewSubgraph
+#### 4.2.2 CriteriaDefinitionSubgraph
 
 **职责**：Master 写审核标准 → Reviewer 审查 → PASS/FAIL。
 
 ```
-CriteriaReviewSubgraph:
+CriteriaDefinitionSubgraph:
   entry → [Master 写标准] → [Reviewer 审查] → exit
                                        │
                                   FAIL ─┘ (loop back)
@@ -133,46 +108,49 @@ CriteriaReviewSubgraph:
 
 ```python
 @dataclass
-class CriteriaReviewConfig:
-    domain: str                         # "pm" | "dev" | "qa" — 用作节点名前缀
-    criteria_title: str                 # 审核标准标题
-    criteria_prompt: str                # 引导 Master 写标准的 prompt
-    criteria_file_path: str             # 标准文件写入路径 (含文件名)
-    context_file_key: str               # 标准文件路径存 context 的 key
-    review_task: str                    # Reviewer 审查任务描述
-    pass_phase: str                     # 审查通过后的 phase 值
+class CriteriaDefinitionConfig:
+    domain: str                             # 节点名前缀，"pm" | "dev" | "qa"
+    criteria_title: str                     # 审核标准标题（显示用）
+    criteria_prompt: str                    # 写标准的 prompt，支持 {workspace} {project_context} 占位
+    criteria_filename: str                  # 标准文件名，如 "criteria-pm.md"
+    context_key: str                        # context 中存标准文件路径的 key 前缀，如 "pm_criteria"
+    review_conv: str                        # Reviewer 审查对话名，如 "review-pm-criteria"
+    pass_judge_result: str                  # PASS 时 judge_result（给 graph.py 路由用）
+    feedback_conv: str = ""                 # 反馈信对话名，默认 "{review_conv}-feedback"
+    fail_judge_result: str = ""             # FAIL 时 judge_result，默认 "{domain}write_criteria"
+    judge_tag: str = ""                     # judge 日志标签，默认 "judge-{domain}-criteria"
 ```
 
 **注册接口**：
 
 ```python
-entries, exits = CriteriaReviewSubgraph.register(graph, runtime, config)
-# entries: {"run": "{domain}_criteria"}
-# exits: {"to_artifact": "{domain}_criteria_pass", "write_feedback": "{domain}_criteria_fail"}
-# 内部已处理 FAIL 回退边，外部只需要连 exit → 下一节点
+result = CriteriaDefinitionSubgraph.define(config).register(graph, runtime)
+# result.entries: {"run": "{domain}write_criteria"}
+# result.exits: {"pass": "review_to_{domain}_artifact"}
+# 内部已处理 FAIL 回退边（feedback → write 回环）
 ```
 
 **节点内部结构**：
 
 ```
-criteria_{domain}_write ↔ criteria_{domain}_review
+{domain}write_criteria ↔ review_{domain}_criteria
                                 │
                            PASS ─┤
                                 │
-                           FAIL ─┘ (内部已连回 write)
+                           FAIL ─┘ (→ review_{domain}_criteria_feedback → 回写)
 ```
 
 ---
 
 #### 4.2.3 ArtifactReviewSubgraph
 
-**职责**：agent 产出文档/代码 → reviewer 审查 → PASS/FAIL。
+**职责**：Reviewer 审查已有产出 → Judge 判读 → PASS 或写反馈信。
 
 ```
 ArtifactReviewSubgraph:
-  entry → [agent 产出] → [reviewer 审查 + judge] → exit
-                                          │
-                                    FAIL ──┘ (loop back)
+  entry → [Reviewer 审查 + Judge 判读] → exit
+                                  │
+                            FAIL ──┘ (写反馈信)
 ```
 
 **配置接口**：
@@ -180,74 +158,70 @@ ArtifactReviewSubgraph:
 ```python
 @dataclass
 class ArtifactReviewConfig:
-    domain: str                         # 节点名前缀
-    producer: str                       # 产出者 agent 名 (如 "pm", "dev", "qa")
-    reviewer: str                       # 审查者 agent 名 (如 "reviewer", "master")
-    conversation: str                   # 产出者使用的对话 context key
-    production_prompt: str              # 引导产出者写产出的 prompt
-    production_file_path: str           # 产出文件路径
-    review_task: str                    # 审查任务描述
-    context_output_key: str             # 产出路径存 context 的 key
-    pass_phase: str                     # 审查通过的 phase
-    has_internal_steps: bool = False    # 产出是否分多步（如 PM 要写 PRD + prototype）
-    internal_steps: list[Step] = None   # 多步时的子步骤列表
+    domain: str                             # 节点名前缀
+    review_title: str                       # 显示用标题
+    review_prompt: str                      # 审查 prompt，支持 {workspace} {project_context} 占位
+    review_conv: str                        # 审查对话名（review_conv_key 为空时使用）
+    pass_judge_result: str                  # PASS 时 judge_result
+    fail_judge_result: str                  # FAIL 时 judge_result
+    review_text_key: str                    # 存审查意见的 context key
+    feedback_path_key: str                  # 存反馈信路径的 context key
+    review_conv_key: str = ""               # 对话名从 context 读取，优先级高于 review_conv
+    agent_role: str = "reviewer"            # call_agent 的角色名
+    feedback_sender: str = "reviewer"       # 写反馈信的 sender
+    feedback_letter_title: str = "审查反馈"  # 反馈信标题
+    criteria_path_key: str = ""             # 审核标准文件的 context key（可选）
+    judge_tag: str = ""                     # judge 日志标签
+    feedback_conv: str = ""                 # 反馈信对话名，默认 "{domain}_feedback"
+    feedback_conv_key: str = ""             # 反馈信对话从 context 读取
+    on_pass: Optional[Callable] = None      # 通过时调用 (state, runtime) → dict
 ```
 
 **注册接口**：
 
 ```python
-entries, exits = ArtifactReviewSubgraph.register(graph, runtime, config)
-# entries: {"run": "{domain}_produce"}
-# exits: {"to_next": "{domain}_produce_pass", "write_feedback": "{domain}_produce_fail"}
-# 内部已处理 FAIL 回退边
+result = ArtifactReviewSubgraph.define(config).register(graph, runtime)
+# result.entries: {"run": "{domain}_review"}
+# result.exits: {"pass": "{domain}_review_pass", "fail": "{domain}_review_feedback"}
+# 内部已处理 FAIL → write_feedback 边
 ```
 
-**对比当前实现中的差异处理**：
-
-- **单步产出**（Design、Plan、TestPlan、TestCode）：`[write_letter] → [read_letter + judge_reply]`
-- **多步产出**（PM 的 PRD + Prototype）：`[write PRD] → [read PRD] → [write Proto] → [read Proto] → [review + judge]`
-- 还支持 **HumanReview** 作为可选的 review 后置门控
-
-子图通过 `has_internal_steps` 和可选的 `human_review` 参数来覆盖这些变体：
-
-```python
-@dataclass
-class ArtifactReviewConfig:
-    ...
-    human_review: bool = False          # 审查通过后是否还需人工确认
-```
+**注意**：本子图只负责"审查"环节，不包含产出环节。产出（PRD、Prototype、Design、Plan、TestPlan、TestCode 等）由各 phase 的独立节点或外部子图负责，审查节点引用已产出的文件路径。
 
 ---
 
-#### 4.2.4 FlushSubgraph
+#### 4.2.4 MasterFlushSubgraph
 
-**职责**：phase 边界写总结 + 重建 Master 对话 + 保存 checkpoint。
+**职责**：phase 边界写总结 → 重建 Master 对话 + 保存 checkpoint。
 
 ```
-FlushSubgraph:
-  entry → [write_summary] → [flush_conv + save_checkpoint] → exit
+MasterFlushSubgraph:
+  entry (write_summary) → (flush_conv + save_checkpoint) → exit
 ```
 
 **配置接口**：
 
 ```python
 @dataclass
-class FlushConfig:
-    domain: str                         # "clarify" | "pm" | "dev" | "qa"
-    phase_name: str                     # 阶段中文名 (如 "需求澄清")
-    summary_title: str                  # 总结 prompt
+class MasterFlushConfig:
+    domain: str                         # "clarify" | "pm" | "dev" | "dev_step" | "qa"
+    phase_name: str                     # 显示用阶段名
+    next_step: str                      # 下一步描述（给 agent 看）
+    artifacts: tuple[str, ...]          # 产物路径列表（支持 {workspace} 占位）
     resume_node: str                    # checkpoint 的 resume_node (如 "pm_handoff")
-    next_handoff: str                   # 下一个 HandoffConfig 的 receiver
+    summary_filename: str = ""          # 默认 "phase-summary-{domain}.md"
 ```
 
 **注册接口**：
 
 ```python
-entries, exits = FlushSubgraph.register(graph, runtime, config)
-# entries: {"write_summary": "flush_{domain}_summary", "flush_conv": "flush_{domain}_conv"}
-# exits: {"write_summary": "flush_{domain}_summary", "flush_conv": "flush_{domain}_conv"}
+result = MasterFlushSubgraph.define(config).register(graph, runtime)
+# result.entries: {"write_summary": "master_flush_{domain}_summary"}
+# result.exits: {"flush_conv": "master_flush_{domain}_conv"}
 # 内部已连接 write_summary → flush_conv
 ```
+
+**调用方式**：graph.add_edge(prev_node, result.entries["write_summary"])
 
 ---
 
@@ -277,9 +251,11 @@ class ExecReviewConfig:
     reviewer: str                       # 审查者 agent  
     plan_source: str                    # 计划文件路径
     total_steps: int                    # 总步数
-    rollback_threshold: int = 3         # 回滚阈值
-    escalation_threshold: int = 5       # 升级阈值
+    fail_rollback_threshold: int = 3    # 连续失败此阈值 → 弹窗提醒（不阻塞）
+    fail_escalation_threshold: int = 5  # 连续失败此阈值 → 弹窗提醒（不阻塞）
 ```
+
+**注意**：两个阈值当前仅触发 Windows MessageBox 异步弹窗通知用户，不执行 destructive 操作（无 git reset / 无阻塞对话）。所有失败路径均路由到 `step_retry`。
 
 当前仅用于 Dev 阶段，待出现第二个使用者时提取。
 

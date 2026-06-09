@@ -41,7 +41,7 @@ src/workflow/
 ├── utils.py          # 工具函数：call_agent, register_nodes, clarify_loop 等
 ├── phase0.py         # PreFlightClarify — 需求澄清
 ├── phase1.py         # PMHandoff ~ HumanReview — PM 出方案
-├── phase2.py         # DevHandoff ~ DevEscalate — Dev 设计 + 编码
+├── phase2.py         # DevHandoff ~ DevCommit — Dev 设计 + 编码
 ├── phase3.py         # QA 测试全流程（计划→代码→运行→修 bug）
 ├── phase4.py         # ConsistencyAudit + WriteMaintenanceDocs + DeliverySummary — 交付
 ├── flush.py          # MasterFlushClarify/PM/Dev/QA — phase 边界 flush
@@ -308,25 +308,21 @@ DevHandoff → DevAlign.dev → 循环 → judge_exit
                        │
                        ▼
                   DevReviewStep
-                  ┌────┼────┬────┬────┐
-                  │PASS│    │    │    │
-                  ▼    │    │    │    │
-             DevCommit │    │    │    │
-           │ PASS│ FAIL│    │    │    │
-           └──┬──┘     │    │    │    │
-         continue  done│    │    │    │
-             │      │  │    │    │    │
-             │      ▼  │    │    │    │
-             │  Master │    │    │    │
-             │  Flush  │    │    │    │
-             │  Dev    │    │    │    │
-             │   │     │    │    │    │
-             └───┘  step_  dev_  dev_
-                    retry rollback escalate
-                      │     │      │
-                      └──┬──┘      │
-                         └─────────┘
-                        (全部回到 DevExecStep)
+                  ┌────┼──────────┐
+                  │PASS│          │
+                  ▼    │          │
+             DevCommit │          │
+           │ PASS│ FAIL│          │
+           └──┬──┘     │          │
+         continue  done│          │
+             │      │  │          │
+             │      ▼  │          │
+             │  Master │          │
+             │  Flush  │          │
+             │  Dev    │          │
+             │   │     │          │
+             └───┘  step_retry ───┘
+                    (弹窗提醒后回到 DevExecStep)
 ```
 
 ### Phase 3: QA 测试
@@ -397,9 +393,9 @@ qa_handoff → QAAlign（9 节点对齐循环）→ align done
 | QAWriteCriteria | Master | 1（write_criteria） | criteria-qa.md |
 | ReviewQACriteria | Reviewer | 2（review + judge_reply） | 通过/反馈 |
 | QAWriteTestPlan | QA | 1（read_letter） | QA/test-plan.md |
-| MasterReviewPlan | Master | 1（judge_reply） | 通过/反馈 |
+| MasterReviewPlan（ArtifactReviewSubgraph 实例） | Master | 1（judge_reply） | 通过/反馈 |
 | QAWriteTestCase | QA | 1（read_letter） | QA/tests/ |
-| ReviewerReviewCode | Reviewer | 2（review + judge_reply） | 通过/反馈 |
+| ReviewerReviewCode（ArtifactReviewSubgraph 实例） | Reviewer | 2（review + judge_reply） | 通过/反馈 |
 | QARunTests | QA | 1（call_agent） | 测试结果 |
 | JudgeTestResult | Judge | 1（judge_reply） | pass / bug 列表 |
 | DevFix | Dev | 1（read_letter） | 修复代码 |
@@ -482,11 +478,13 @@ PM 的疑问、Dev 的执行问题都可能回溯到初始需求。Master 单一
 
 条件边从 graph.py 移入各 class 的 `register()` 内部，graph.py 只做跨组简单边。组内加空节点作为外部出口，让所有条件目标都在组内。
 
-### 4. Dev 的失败回滚与升级
+### 4. Dev 的失败处理
 
-三档阈值体系：
-- `fail_rollback_threshold`：默认 3，触发 git 回滚
-- `fail_escalation_threshold`：默认 5，触发人工对话
+两档通知阈值（不再做破坏性回滚或阻塞式干预）：
+- `fail_rollback_threshold`：默认 3，弹窗提醒用户关注
+- `fail_escalation_threshold`：默认 5，弹窗提醒用户关注
+
+无论哪档阈值，失败后统一回到 `step_retry` 重新执行，审查反馈会注入下一轮执行。`DevRollback` 和 `DevEscalate` 已删除。
 
 ### 5. Dev 对话 flush
 
@@ -503,7 +501,7 @@ PM 的疑问、Dev 的执行问题都可能回溯到初始需求。Master 单一
 | Phase 2→3 边界 | `qa_handoff` | MasterFlushDev.flush_conv |
 | Phase 3→4 边界 | `consistency_audit` | MasterFlushQA.flush_conv |
 | Dev 开始执行前 | `dev_exec_step` | DevGitInit.flush_context |
-| Dev 每步提交后 | `dev_exec_step` | DevCommit.flush_context |
+| Dev 每步提交后 | `dev_exec_step` | MasterFlushDevStep.flush_conv |
 
 ### 7. 一致性审计只审计不修改
 

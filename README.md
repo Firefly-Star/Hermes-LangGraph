@@ -13,15 +13,15 @@ src/workflow/
 ├── utils.py          # Utilities: call_agent, register_nodes, clarify_loop, etc.
 ├── phase0.py         # PreFlightClarify: requirement clarification
 ├── phase1.py         # PMHandoff ~ HumanReview: PM produces PRD + prototype
-├── phase2.py         # DevHandoff ~ DevEscalate: Dev design, code, commit
+├── phase2.py         # DevHandoff ~ DevCommit: Dev design, code, commit
 ├── phase3.py         # QA full pipeline: criteria → plan → code → run → fix loop
 ├── phase4.py         # ConsistencyAudit → WriteMaintenanceDocs → DeliverySummary
 ├── flush.py          # MasterFlushClarify/PM/Dev/QA: phase boundary context flush
 ├── checkpoint.py     # ResumeRouter: checkpoint save/load and resume routing
 └── subgraphs/
-    ├── artifact_review.py      # Artifact review subgraph (Phase 1)
-    ├── criteria_definition.py  # QA criteria definition subgraph (Phase 3)
-    ├── handoff.py              # Handoff letter communication
+    ├── artifact_review.py      # Artifact review subgraph (pass/fail with feedback)
+    ├── criteria_definition.py  # Criteria definition & review subgraph (pass/fail loop)
+    ├── handoff.py              # Handoff letter communication subgraph
     └── master_flush.py         # Master context flush subgraph
 ```
 
@@ -46,7 +46,7 @@ ResumeRouter → [Phase 0: Clarify] → Flush → [Phase 1: PM] → Flush → [P
 
 - **Phase 0**: User ↔ Master clarification, writes project_context.md
 - **Phase 1**: PM writes PRD + prototype, reviewed by Reviewer and human
-- **Phase 2**: Dev designs, codes, commits per step plan; includes rollback and escalation
+- **Phase 2**: Dev designs, codes, commits per step plan; step failures retry with popup notification
 - **Phase 3**: QA full pipeline: criteria → test plan → test code → run → bug fix loop
 - **Phase 4**: Consistency audit → maintenance docs → delivery summary
 

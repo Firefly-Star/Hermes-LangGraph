@@ -47,12 +47,12 @@
 
 | Key | 默认值 | 用途 | 代码引用 |
 |:----|:--------|:-----|:---------|
-| `call_timeout` | 120 | Hermes API 单次调用超时（秒） | `agent_runtime.py:303` — `ConversationManager.call()` 传给 `requests.post(timeout=...)` |
+| `call_timeout` | 120 | Hermes API 单次调用超时（秒） | `agent_runtime.py` — `HermesClient.call()` 传给 `requests.post(timeout=...)` |
 | `max_retry` | 3 | Hermes API 调用失败时的重试次数 | `agent_runtime.py:323` — `for attempt in range(1 + max_retry)` |
 | `max_plan_loop` | 5 | **未使用**。在 DEFAULTS 中定义但在代码中无任何引用 | — |
 | `max_bug_loop` | 5 | **未使用**。同上 | — |
-| `fail_rollback_threshold` | 3 | Dev 执行步骤连续失败达到此阈值 → 触发回滚（重新实现） | `phase2.py:879-880` — 读取阈值；`phase2.py:894` — `return {"phase": "step_rollback"}` |
-| `fail_escalation_threshold` | 5 | Dev 执行步骤连续失败达到此阈值 → 升级人工决策 | `phase2.py:879-880` — 读取阈值；`phase2.py:891` — `return {"phase": "step_escalate"}` |
+| `fail_rollback_threshold` | 3 | Dev 执行步骤连续失败达到此阈值 → 弹窗提醒用户关注 | `phase2.py:982` — 读取阈值；`phase2.py:986` — 弹窗 `win_popup`；均路由到 `step_retry` |
+| `fail_escalation_threshold` | 5 | Dev 执行步骤连续失败达到此阈值 → 弹窗提醒用户关注 | `phase2.py:978` — 读取阈值；`phase2.py:981` — 弹窗 `win_popup`；均路由到 `step_retry` |
 | `gateway_start_timeout` | 30 | Gateway 进程启动后等待 health check 就绪的超时（秒），冷启动需要更长时间 | `agent_runtime.py:241` — `for _ in range(timeout)`；`runtime_config.json` 设为 60 |
 
 ---
@@ -61,7 +61,7 @@
 
 | Key | 默认值 | 用途 | 代码引用 |
 |:----|:--------|:-----|:---------|
-| `input_end_word` | `"EOF"` | `runtime.checkpoint.wait()` 的结束词，用户输入此词视为空输入/结束 | `utils.py:98` — `interrupt_dialog`；`utils.py:341` — `clarify_loop`；`phase1.py:523` — `HumanReview`；`phase2.py:1141` — escalate 对话 |
+| `input_end_word` | `"EOF"` | `runtime.checkpoint.wait()` 的结束词，用户输入此词视为空输入/结束 | `utils.py:98` — `interrupt_dialog`；`utils.py:341` — `clarify_loop`；`phase1.py:523` — `HumanReview` |
 | `interrupt_hotkey` | `"ctrl+u"` | 中断 agent 调用的热键（弹出介入对话框） | `graph.py:195` — 传入 `start_interrupt_listener(hotkey, skip_hotkey)`；`utils.py:14` — `HOTKEY_MAP` 定义 |
 | `skip_hotkey` | `""` | 跳过 agent 回复的热键（停止 agent 输出，改由用户手动输入回复） | `agent_runtime.py:980` — `InteractionConfig`；`utils.py:248` — `call_agent` 中处理 `_skip_requested` |
 

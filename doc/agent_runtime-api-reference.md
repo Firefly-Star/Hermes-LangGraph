@@ -93,6 +93,16 @@
 | `action` | `str` | `"continue"` / `"modify"` / `"reject"` |
 | `message` | `str` | 用户输入的文字 |
 
+### `ProgressReport`
+| 字段 | 类型 | 说明 |
+|:-----|:-----|:------|
+| `project_info` | `dict` | 项目信息 |
+| `current_phase` | `str` | 当前阶段名称 |
+| `completed_steps` | `list` | 已完成步骤列表 |
+| `plans` | `dict` | 计划数据 |
+| `current_position` | `dict` | 当前位置信息 |
+| `contexts` | `dict` | 上下文数据 |
+
 ### `PathsConfig`
 | 字段 | 类型 | 说明 |
 |:-----|:-----|:------|
@@ -111,8 +121,8 @@
 | `max_retry` | `int` | 3 | 失败重试次数 |
 | `max_plan_loop` | `int` | 5 | 计划审核最大循环次数 |
 | `max_bug_loop` | `int` | 5 | Bug 修复最大循环次数 |
-| `fail_rollback_threshold` | `int` | 3 | Dev 失败回滚阈值 |
-| `fail_escalation_threshold` | `int` | 5 | Dev 失败升级阈值 |
+| `fail_rollback_threshold` | `int` | 3 | Dev 连续失败达到此阈值 → 弹窗提醒（不再回滚） |
+| `fail_escalation_threshold` | `int` | 5 | Dev 连续失败达到此阈值 → 弹窗提醒（不再阻塞） |
 | `gateway_start_timeout` | `int` | 30 | Gateway 启动等待超时（秒） |
 
 ### `InteractionConfig`
@@ -201,16 +211,32 @@
 
 ---
 
-## 2. ConversationManager
+## 2. ConversationClient / HermesClient
 
-负责对话调用、初始化、关闭。
+`ConversationClient` 是抽象基类，`HermesClient` 是其 Hermes Gateway 生产实现。`MockClient` 是测试 mock 实现。
+
+### `ConversationClient(ABC)` — 抽象接口
+
+```python
+class ConversationClient(ABC):
+    @abstractmethod
+    def call(self, agent: str, conversation: str, input_text: str,
+             timeout: int = None, stream_callback: callable = None,
+             tool_callback: callable = None,
+             poll_callback: callable = None) -> CallResult: ...
+
+    @abstractmethod
+    def close(self, agent: str, conversation: str): ...
+```
+
+### `HermesClient(ConversationClient)`
 
 ### `__init__(agent_mgr, logger, config, runtime_dir)`
 - **参数：** `agent_mgr` — AgentManager 实例，`logger` — Logger 实例，`config` — Config 实例，`runtime_dir` — 数据目录
 
-### `call(agent, conversation, input_text, timeout=None, stream_callback=None, tool_callback=None) -> CallResult`
+### `call(agent, conversation, input_text, timeout=None, stream_callback=None, tool_callback=None, poll_callback=None) -> CallResult`
 向指定 agent 的指定对话发送消息。
-- **参数：** `stream_callback` — 可选，每收到一个文本块回调 `callback(chunk)`；`tool_callback(name, args)` — 可选，SSE 事件 `response.output_item.added(function_call)` 时实时回调
+- **参数：** `stream_callback` — 可选，每收到一个文本块回调 `callback(chunk)`；`tool_callback(name, args)` — 可选，SSE 事件 `response.output_item.added(function_call)` 时实时回调；`poll_callback` — 可选，轮询模式回调
 - **行为：**
   1. 从 registry 读取 port/api_key
   2. 对 `input_text` 执行 `_resolve_file_refs`——将 `{文件路径}` 替换为文件内容
@@ -461,7 +487,7 @@ class OutputConfig:
      - `self.paths` — `PathsConfig`（所有路径）
      - `self.limits` — `LimitsConfig`（超时/重试/阈值）
      - `self.interaction` — `InteractionConfig`（输入结束词/中断快捷键）
-  5. 实例化各子模块：`Logger`、`AgentManager`、`GatewayManager`、`ContextManager`、`ConversationManager`、`Checkpoint`
+  5. 实例化各子模块：`Logger`、`AgentManager`、`GatewayManager`、`ContextManager`、`HermesClient`、`Checkpoint`
   6. 若配置中有 `output.targets`，创建 `OutputLayer` 并替换 `sys.stdout`
 
 ### `run_all(configs: dict)`
@@ -507,7 +533,7 @@ AgentRuntime
 ├── GatewayManager(hermes_home)    # gateway 进程生命周期
 │   └── health / detect / run / stop
 ├── ContextManager(runtime_dir)    # 读写 context.json（三段式）
-├── ConversationManager(agents, logger, config, runtime_dir)
+├── HermesClient(agent_mgr, logger, config, runtime_dir)
 │   ├── 读写 registry.json（_track_conversation / close_conversation）
 │   ├── _resolve_file_refs（{路径} → 文件内容）
 │   └── _call_stream（SSE 事件解析）
