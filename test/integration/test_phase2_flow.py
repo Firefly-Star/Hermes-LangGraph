@@ -10,8 +10,7 @@ from workflow.phase2 import (DevExecStep, DevReviewStep, DevCommit,
                              DEV_CRITERIA_DEF, DevWriteDesign,
                              DEV_DESIGN_REVIEW_DEF, WriteDesignSummary,
                              DevWritePlan,
-                             DEV_PLAN_REVIEW_DEF, DevGitInit,
-                             DevRollback, DevEscalate)
+                             DEV_PLAN_REVIEW_DEF, DevGitInit)
 from workflow.flush import MASTER_FLUSH_DEV_STEP_DEF
 
 

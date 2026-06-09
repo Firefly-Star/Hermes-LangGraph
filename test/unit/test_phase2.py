@@ -1,6 +1,6 @@
 """Phase 2 节点测试：DevAlign / DEV_CRITERIA_DEF / DevWriteDesign。"""
 from __future__ import annotations
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 import os
 import pytest
 from agent_runtime import AgentRuntime
@@ -10,7 +10,7 @@ from workflow.phase2 import (DEV_HANDOFF_DEF, DevAlign, DEV_CRITERIA_DEF,
                              DevWritePlan,
                              DEV_PLAN_REVIEW_DEF, DevGitInit,
                              DevExecStep, DevReviewStep,
-                             DevCommit, DevRollback, DevEscalate)
+                             DevCommit)
 from workflow.utils import count_steps
 
 
@@ -1298,132 +1298,3 @@ class TestDevCommitExit:
         """state 不做修改直接返回。"""
         state = {"phase": "test"}
         assert DevCommit.exit_pass(state) == state
-
-
-# ── DevRollback ──
-
-class TestDevRollback:
-    """dev_rollback — Dev 回滚到上一个 commit（Type A）。"""
-
-    @pytest.fixture(autouse=True)
-    def _rt(self, mock_client, test_config):
-        self.mock = mock_client
-        self.rt = AgentRuntime(config_path=test_config, conversation_client=mock_client)
-        DevRollback._runtime = self.rt
-        self.rt.context.set_ctx("dev_conv", "dev-test")
-
-    def test_calls_dev_agent(self):
-        """回滚调 Dev agent。"""
-        DevRollback.run({})
-        assert self.mock.call_history[0][0] == "dev"
-
-    def test_returns_rollback_phase(self):
-        """phase 应为 step_rollback，judge 为 dev_exec_step。"""
-        result = DevRollback.run({})
-        assert result["phase"] == "step_rollback"
-        assert result["judge_result"] == "dev_exec_step"
-
-
-# ── DevEscalate ──
-
-class TestDevEscalateSummarize:
-    """dev_escalate_summarize — Dev 写问题简述（Type A）。"""
-
-    @pytest.fixture(autouse=True)
-    def _rt(self, mock_client, test_config):
-        self.mock = mock_client
-        self.rt = AgentRuntime(config_path=test_config, conversation_client=mock_client)
-        DevEscalate._runtime = self.rt
-        self.rt.context.set_ctx("dev_conv", "dev-test")
-        self.rt.context.set_ctx("dev_step_index", "2")
-        self.rt.context.set_ctx("dev_total_steps", "5")
-
-    def test_calls_dev_agent(self):
-        """简述调 Dev agent。"""
-        DevEscalate.summarize({})
-        assert self.mock.call_history[0][0] == "dev"
-
-    def test_prompt_contains_step_info(self):
-        """prompt 包含当前步骤编号。"""
-        DevEscalate.summarize({})
-        prompt = self.mock.call_history[0][2]
-        assert "Step 3" in prompt  # step_idx=2 → Step 3
-
-    def test_returns_summarized_phase(self):
-        """phase 应为 step_summarized。"""
-        result = DevEscalate.summarize({})
-        assert result["phase"] == "step_summarized"
-
-
-class TestDevEscalateDialogue:
-    """dev_escalate_dialogue — 与用户对话（Type D，Mocked checkpoint.wait）。"""
-
-    @pytest.fixture(autouse=True)
-    def _rt(self, mock_client, test_config):
-        self.mock = mock_client
-        self.rt = AgentRuntime(config_path=test_config, conversation_client=mock_client)
-        DevEscalate._runtime = self.rt
-        self.rt.context.set_ctx("dev_conv", "dev-test")
-        self.rt.context.set_ctx("dev_step_index", "0")
-
-    def test_returns_dialogue_done_when_empty_input(self):
-        """空输入（EOF）直接结束对话。"""
-        self.rt.checkpoint.wait = MagicMock(return_value=MagicMock(message=""))
-        result = DevEscalate.dialogue({})
-        assert result["phase"] == "step_dialogue_done"
-        # 没有 agent 调用
-        assert len(self.mock.call_history) == 0
-
-    def test_calls_dev_agent_on_user_input(self):
-        """有输入时调 Dev agent 回复。"""
-        # 第一次返回用户输入，第二次返回空（结束循环）
-        self.rt.checkpoint.wait = MagicMock(
-            side_effect=[
-                MagicMock(message="修改设计"),
-                MagicMock(message=""),
-            ]
-        )
-        DevEscalate.dialogue({})
-        assert len(self.mock.call_history) == 1
-        assert self.mock.call_history[0][0] == "dev"
-        assert "修改设计" in self.mock.call_history[0][2]
-
-    def test_handles_multiple_rounds(self):
-        """多轮对话，每轮调一次 agent。"""
-        self.rt.checkpoint.wait = MagicMock(
-            side_effect=[
-                MagicMock(message="第一轮"),
-                MagicMock(message="第二轮"),
-                MagicMock(message=""),
-            ]
-        )
-        DevEscalate.dialogue({})
-        assert len(self.mock.call_history) == 2
-
-
-class TestDevEscalateConclude:
-    """dev_escalate_conclude — Dev 总结决策（Type A）。"""
-
-    @pytest.fixture(autouse=True)
-    def _rt(self, mock_client, test_config):
-        self.mock = mock_client
-        self.rt = AgentRuntime(config_path=test_config, conversation_client=mock_client)
-        DevEscalate._runtime = self.rt
-        self.rt.context.set_ctx("dev_conv", "dev-test")
-        self.rt.context.set_ctx("dev_step_index", "0")
-
-    def test_calls_dev_agent(self):
-        """总结调 Dev agent。"""
-        DevEscalate.conclude({})
-        assert self.mock.call_history[0][0] == "dev"
-
-    def test_stores_decision_in_context(self):
-        """决策总结存入 dev_escalation_decision。"""
-        DevEscalate.conclude({})
-        assert self.rt.context.get_ctx("dev_escalation_decision") is not None
-
-    def test_returns_escalated_phase(self):
-        """phase 应为 step_escalated，judge 为 dev_exec_step。"""
-        result = DevEscalate.conclude({})
-        assert result["phase"] == "step_escalated"
-        assert result["judge_result"] == "dev_exec_step"
