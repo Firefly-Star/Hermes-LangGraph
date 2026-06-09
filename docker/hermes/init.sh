@@ -8,8 +8,8 @@ WORKFLOW_DIR="/opt/workflow"
 TEMPLATES="$WORKFLOW_DIR/docker/hermes/templates"
 MARKER="$HERMES_HOME/.workflow-initialized"
 
-PORTS=(8642 8643 8644 8645)
-PROFILES=(cg pm dev qa)
+PORTS=(8642 8643 8644 8645 8646 8647)
+PROFILES=(master judge reviewer pm dev qa)
 
 render() {
     python3 -c "
@@ -34,6 +34,7 @@ if [ ! -f "$MARKER" ]; then
         fi
         API_SERVER_PORT=$port render "$TEMPLATES/profile.env" > "$HERMES_HOME/profiles/$p/.env"
         render "$TEMPLATES/config.yaml" > "$HERMES_HOME/profiles/$p/config.yaml"
+        cp "$TEMPLATES/SOUL-$p.md" "$HERMES_HOME/profiles/$p/SOUL.md"
         echo "  $p → port $port"
     done
     touch "$MARKER"
@@ -67,7 +68,7 @@ echo "All gateways ready."
 
 # ── 安装工作流依赖 ──
 echo "Installing workflow dependencies..."
-pip install -q -r "$WORKFLOW_DIR/requirements.txt"
+python3 -m pip install -q -r "$WORKFLOW_DIR/requirements.txt"
 
 # ── 运行工作流 ──
 echo "Starting workflow..."

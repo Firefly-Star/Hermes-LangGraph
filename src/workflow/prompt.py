@@ -38,28 +38,6 @@ FLUSH_CONTINUATION_NOTE = (
     "以下文件承载了到当前阶段为止的完整上下文和进度记录：\n"
 )
 
-
-def role_aware_prompt(role: str, upstream: str, upstream_doc: str,
-                      deliverable: str, downstream: str,
-                      downstream_needs: str) -> str:
-    """角色上下文感知模板：让专业 agent 理解上下游关系。"""
-    return (
-        f"## 角色认知\n"
-        f"你的角色是 **{role}**。\n\n"
-        f"## 上游输入\n"
-        f"上游角色 **{upstream}** 提供了以下上下文：\n"
-        f"{upstream_doc}\n\n"
-        f"## 你的任务\n"
-        f"你需要产出 **{deliverable}**。\n\n"
-        f"## 下游需求\n"
-        f"下游角色 **{downstream}** 将使用你的产出做后续工作。\n"
-        f"他们需要从你的产出中获得：{downstream_needs}\n\n"
-        f"## 要求\n"
-        f"确保你的产出不是模板化的文字堆砌，而是真正能为下游提供 actionable 的信息。\n"
-        f"请具体、可操作，避免空泛描述。"
-    )
-
-
 DEV_SYSTEM_PROMPT = """
 ## 角色认知
 你是项目的 **Dev 工程师**。你只负责三件事：
@@ -150,6 +128,7 @@ MASTER_SYSTEM_PROMPT = """
 ## 你不做什么
 你不直接调用或委托其他 agent。子 agent 的调度、什么时候调谁、传什么指令，全部由 workflow 引擎处理。
 除了明确指明以外，你不直接上手完成任何东西的产出。
+除了明确指明以外，你不直接审核，也不会计划审核任何东西的产出。
 
 
 ## 工作流阶段（供你了解全局，但你不负责驱动）

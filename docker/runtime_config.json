@@ -9,12 +9,12 @@
     "checkpoint": "/workspace/.agent_runtime/checkpoint.json"
   },
   "agents": {
-    "master":   {"profile": "cg", "port": 8642},
-    "judge":    {"profile": "cg", "port": 8642},
-    "reviewer": {"profile": "cg", "port": 8642},
-    "pm":       {"profile": "pm", "port": 8643},
-    "dev":      {"profile": "dev", "port": 8644},
-    "qa":       {"profile": "qa", "port": 8645}
+    "master":   {"profile": "master",   "port": 8642},
+    "judge":    {"profile": "judge",    "port": 8643},
+    "reviewer": {"profile": "reviewer", "port": 8644},
+    "pm":       {"profile": "pm",       "port": 8645},
+    "dev":      {"profile": "dev",      "port": 8646},
+    "qa":       {"profile": "qa",       "port": 8647}
   },
   "limits": {
     "call_timeout": 120,

@@ -742,6 +742,9 @@ class DevGitInit:
             "在Master给你下达命令之前，你只能阅读上下文，不能进行任何产"
             "出，包括修改、创建任何文件，后续Master会给你下达任务。"
             "不要询问你是否要执行这些操作，直接去做。"
+            "## 注意\n"
+            "现在你只需要理解你正在做什么项目，不需要产出任何东西，直到等一会儿 "
+            "Master 显式地写信件下达代码实施的指令。"
         )
         call_agent(runtime, "dev", new_conv, injected)
         runtime.context.set_ctx("dev_conv", new_conv)

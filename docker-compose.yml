@@ -6,10 +6,12 @@ services:
     stdin_open: true
     tty: true
     ports:
-      - "8642:8642"
-      - "8643:8643"
-      - "8644:8644"
-      - "8645:8645"
+      - "${MASTER_PORT:-8642}:8642"
+      - "${JUDGE_PORT:-8643}:8643"
+      - "${REVIEWER_PORT:-8644}:8644"
+      - "${PM_PORT:-8645}:8645"
+      - "${DEV_PORT:-8646}:8646"
+      - "${QA_PORT:-8647}:8647"
     environment:
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:?err}
     volumes:
