@@ -42,36 +42,34 @@ for i in "${!PROFILES[@]}"; do
         hermes profile create "$p"
     fi
     API_SERVER_PORT=$port render "$TEMPLATES/profile.env" > "$HERMES_HOME/profiles/$p/.env"
+    # API_SERVER_KEY: 已有有效值时不覆盖，除非用户显式传入
+    if [ -n "$API_SERVER_KEY" ]; then
+        sed -i "s|^API_SERVER_KEY=.*|API_SERVER_KEY=$API_SERVER_KEY|" "$HERMES_HOME/profiles/$p/.env"
+    else
+        existing_val=$(sed -n 's/^API_SERVER_KEY=//p' "$HERMES_HOME/profiles/$p/.env" 2>/dev/null | head -1)
+        case "$existing_val" in
+            ''|'${API_SERVER_KEY}'|kaguya)
+                API_SERVER_KEY="$(python3 -c "import secrets; print(secrets.token_hex(32))")"
+                sed -i "s|^API_SERVER_KEY=.*|API_SERVER_KEY=$API_SERVER_KEY|" "$HERMES_HOME/profiles/$p/.env"
+                ;;
+        esac
+    fi
     render "$TEMPLATES/config.yaml" > "$HERMES_HOME/profiles/$p/config.yaml"
     cp "$TEMPLATES/SOUL-$p.md" "$HERMES_HOME/profiles/$p/SOUL.md" 2>/dev/null || true
     echo "  $p → port $port"
 done
 
-# ── 启动 gateways ──
-echo "Starting gateway processes..."
+echo "=== Starting all gateways ==="
 for i in "${!PROFILES[@]}"; do
     p="${PROFILES[$i]}"
-    echo "  $p (port ${PORTS[$i]})..."
+    port="${PORTS[$i]}"
+    echo "  $p (port $port)..."
     hermes -p "$p" gateway run &
     sleep 2
 done
 
-# ── 等待 gateways 就绪 ──
-echo "Waiting for gateways to be ready..."
-for port in "${PORTS[@]}"; do
-    for i in $(seq 1 30); do
-        if curl -sf "http://127.0.0.1:$port/health" > /dev/null 2>&1; then
-            break
-        fi
-        if [ "$i" -eq 30 ]; then
-            echo "  ERROR: gateway on port $port not ready"
-            exit 1
-        fi
-        sleep 1
-    done
-done
-echo "All gateways ready."
+echo "=== All gateways started ==="
+echo "Profiles: master(8642) judge(8643) reviewer(8644) pm(8645) dev(8646) qa(8647)"
 
-# ── 保持容器运行 ──
-echo "Gateway container running. Workflow connects via host."
-tail -f /dev/null
+# 保持容器运行
+wait

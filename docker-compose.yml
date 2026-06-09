@@ -3,20 +3,25 @@ services:
     image: nousresearch/hermes-agent:latest
     container_name: hermes-gateway
     restart: unless-stopped
+    command: bash /opt/init.sh
+    stdin_open: true
+    tty: true
     ports:
-      - "${MASTER_PORT:-8642}:8642"
-      - "${JUDGE_PORT:-8643}:8643"
-      - "${REVIEWER_PORT:-8644}:8644"
-      - "${PM_PORT:-8645}:8645"
-      - "${DEV_PORT:-8646}:8646"
-      - "${QA_PORT:-8647}:8647"
+      - "127.0.0.1:${MASTER_PORT:-8642}:8642"
+      - "127.0.0.1:${JUDGE_PORT:-8643}:8643"
+      - "127.0.0.1:${REVIEWER_PORT:-8644}:8644"
+      - "127.0.0.1:${PM_PORT:-8645}:8645"
+      - "127.0.0.1:${DEV_PORT:-8646}:8646"
+      - "127.0.0.1:${QA_PORT:-8647}:8647"
     environment:
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:?err}
+      - API_SERVER_KEY=${API_SERVER_KEY:-}
       - TERMINAL_ENV=${TERMINAL_ENV:-local}
       - SSH_HOST=${SSH_HOST:-}
       - SSH_USER=${SSH_USER:-}
     volumes:
       - hermes-data:/opt/data
+      - ./docker/hermes/init.sh:/opt/init.sh:ro
       - ./docker/hermes/templates:/opt/data/templates:ro
       - ~/.ssh/id_hermes-gateway:/home/hermes/.ssh/id_hermes-gateway:ro
     extra_hosts:
