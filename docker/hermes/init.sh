@@ -69,7 +69,8 @@ echo "All gateways ready."
 
 # ── 安装工作流依赖 ──
 echo "Installing workflow dependencies..."
-python3 -m ensurepip --upgrade -q 2>/dev/null || true
+# pip 在 Hermes venv 中可能缺失，通过 ensurepip 或 get-pip 补装
+python3 -m ensurepip -q 2>/dev/null || python3 -c "import urllib.request; exec(urllib.request.urlopen('https://bootstrap.pypa.io/get-pip.py').read())"
 python3 -m pip install -q -r "$WORKFLOW_DIR/requirements.txt"
 
 # ── 运行工作流 ──
