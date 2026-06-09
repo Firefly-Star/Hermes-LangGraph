@@ -19,27 +19,28 @@ with open('${1}') as f:
 "
 }
 
-# ── 初始化 Hermes profiles（仅首次） ──
+# ── 初始化全局配置（仅首次） ──
 if [ ! -f "$MARKER" ]; then
-    echo "=== Initializing Hermes profiles ==="
+    echo "=== Initializing Hermes config ==="
     render "$TEMPLATES/config.yaml" > "$HERMES_HOME/config.yaml"
     render "$TEMPLATES/global.env" > "$HERMES_HOME/.env"
-
-    for i in "${!PROFILES[@]}"; do
-        p="${PROFILES[$i]}"
-        port="${PORTS[$i]}"
-        if [ ! -d "$HERMES_HOME/profiles/$p" ]; then
-            echo "  Creating profile: $p"
-            hermes profile create "$p"
-        fi
-        API_SERVER_PORT=$port render "$TEMPLATES/profile.env" > "$HERMES_HOME/profiles/$p/.env"
-        render "$TEMPLATES/config.yaml" > "$HERMES_HOME/profiles/$p/config.yaml"
-        cp "$TEMPLATES/SOUL-$p.md" "$HERMES_HOME/profiles/$p/SOUL.md"
-        echo "  $p → port $port"
-    done
     touch "$MARKER"
-    echo "=== Initialization done ==="
+    echo "=== Global config initialized ==="
 fi
+
+# ── 确保所有 profile 存在（每次启动都检查，新增 profile 自动创建） ──
+for i in "${!PROFILES[@]}"; do
+    p="${PROFILES[$i]}"
+    port="${PORTS[$i]}"
+    if [ ! -d "$HERMES_HOME/profiles/$p" ]; then
+        echo "  Creating profile: $p"
+        hermes profile create "$p"
+    fi
+    API_SERVER_PORT=$port render "$TEMPLATES/profile.env" > "$HERMES_HOME/profiles/$p/.env"
+    render "$TEMPLATES/config.yaml" > "$HERMES_HOME/profiles/$p/config.yaml"
+    cp "$TEMPLATES/SOUL-$p.md" "$HERMES_HOME/profiles/$p/SOUL.md"
+    echo "  $p → port $port"
+done
 
 # ── 启动 gateways ──
 echo "Starting gateway processes..."
@@ -68,6 +69,7 @@ echo "All gateways ready."
 
 # ── 安装工作流依赖 ──
 echo "Installing workflow dependencies..."
+python3 -m ensurepip --upgrade -q 2>/dev/null || true
 python3 -m pip install -q -r "$WORKFLOW_DIR/requirements.txt"
 
 # ── 运行工作流 ──
