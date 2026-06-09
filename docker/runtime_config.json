@@ -1,0 +1,38 @@
+{
+  "paths": {
+    "runtime_dir": "/workspace/.agent_runtime",
+    "workspace": "/workspace",
+    "hermes_home": "/opt/data",
+    "handoffs": "/workspace/.agent_runtime/handoffs",
+    "phases": "/workspace/.agent_runtime/phases",
+    "artifacts": "/workspace/.agent_runtime/artifacts",
+    "checkpoint": "/workspace/.agent_runtime/checkpoint.json"
+  },
+  "agents": {
+    "master":   {"profile": "cg", "port": 8642},
+    "judge":    {"profile": "cg", "port": 8642},
+    "reviewer": {"profile": "cg", "port": 8642},
+    "pm":       {"profile": "pm", "port": 8643},
+    "dev":      {"profile": "dev", "port": 8644},
+    "qa":       {"profile": "qa", "port": 8645}
+  },
+  "limits": {
+    "call_timeout": 120,
+    "max_retry": 3,
+    "max_plan_loop": 5,
+    "max_bug_loop": 5,
+    "fail_rollback_threshold": 3,
+    "fail_escalation_threshold": 5,
+    "gateway_start_timeout": 60
+  },
+  "interaction": {
+    "input_end_word": "EOF",
+    "interrupt_hotkey": "",
+    "skip_hotkey": ""
+  },
+  "output": {
+    "targets": [
+      {"type": "console", "enabled": true}
+    ]
+  }
+}

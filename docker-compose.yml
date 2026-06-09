@@ -1,0 +1,24 @@
+services:
+  workflow:
+    image: nousresearch/hermes-agent:latest
+    container_name: workflow
+    restart: no
+    stdin_open: true
+    tty: true
+    ports:
+      - "8642:8642"
+      - "8643:8643"
+      - "8644:8644"
+      - "8645:8645"
+    environment:
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:?err}
+    volumes:
+      - .:/opt/workflow:ro
+      - ${WORKSPACE_DIR:-./sandbox/test}:/workspace
+      - workflow-data:/opt/data
+    command:
+      - bash
+      - /opt/workflow/docker/hermes/init.sh
+
+volumes:
+  workflow-data:
