@@ -13,12 +13,12 @@ services:
     environment:
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:?err}
       - TERMINAL_ENV=${TERMINAL_ENV:-local}
-      - SSH_HOST=${SSH_HOST}
-      - SSH_USER=${SSH_USER}
+      - SSH_HOST=${SSH_HOST:-}
+      - SSH_USER=${SSH_USER:-}
     volumes:
       - hermes-data:/opt/data
       - ./docker/hermes/templates:/opt/data/templates:ro
-      - ~/.ssh/id_ed25519:/home/hermes/.ssh/id_ed25519:ro
+      - ~/.ssh/id_hermes-gateway:/home/hermes/.ssh/id_hermes-gateway:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

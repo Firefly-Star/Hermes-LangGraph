@@ -30,6 +30,7 @@ terminal:
   timeout: 180
   ssh_host: ${SSH_HOST:-}
   ssh_user: ${SSH_USER:-}
+  ssh_key: /home/hermes/.ssh/id_hermes-gateway
   env_passthrough: []
   shell_init_files: []
   auto_source_bashrc: true

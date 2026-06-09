@@ -17,17 +17,18 @@ else
     sudo service ssh start 2>/dev/null || sudo /etc/init.d/ssh start 2>/dev/null || echo "  ⚠ 请手动启动 SSH server"
 fi
 
-# 3. 生成 SSH key
-if [ ! -f ~/.ssh/id_ed25519 ]; then
+# 3. 生成 SSH key（专用密钥，不覆盖已有文件）
+SSH_KEY="$HOME/.ssh/id_hermes-gateway"
+if [ ! -f "$SSH_KEY" ]; then
     echo "  生成 SSH 密钥..."
-    ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -q
+    ssh-keygen -t ed25519 -f "$SSH_KEY" -N "" -q
 fi
 
 # 4. 公钥加入 authorized_keys
 mkdir -p ~/.ssh && chmod 700 ~/.ssh
-if ! grep -qF "$(cat ~/.ssh/id_ed25519.pub)" ~/.ssh/authorized_keys 2>/dev/null; then
+if ! grep -qF "$(cat "$SSH_KEY.pub")" ~/.ssh/authorized_keys 2>/dev/null; then
     echo "  添加公钥到 authorized_keys..."
-    cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
+    cat "$SSH_KEY.pub" >> ~/.ssh/authorized_keys
 fi
 chmod 600 ~/.ssh/authorized_keys
 
