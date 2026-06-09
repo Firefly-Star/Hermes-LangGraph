@@ -84,20 +84,38 @@ See [test-framework.md](doc/test-framework.md) for details.
 ## Requirements
 
 - Python 3.10+
-- Hermes Gateway (agent gateway service)
+- Hermes Gateway (agent gateway service) — via Docker (recommended) or local installation
 
 ## Quick Start
 
+### 1. Start Hermes Gateway
+
+**Option A: Docker (recommended)**
+
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# Copy environment template and fill in your DeepSeek API key
+cp .env.example .env
+# Edit .env with your API key and SSH user
 
-# Configure runtime (edit runtime_config.json)
-# Run the workflow
-python -m src.workflow
-
-# Use a custom config file
-python -m src.workflow --config /path/to/custom_config.json
+# Start Hermes Gateway
+docker compose up -d
 ```
 
-Configuration is managed in `runtime_config.json` (default). Use `--config` to specify an alternative path. See [config-reference.md](doc/config-reference.md) for details.
+**Option B: Local installation**
+
+Start Hermes Gateway manually, then ensure the ports in `runtime_config.json` match your gateway setup.
+
+### 2. Run the workflow
+
+```bash
+# Install Python dependencies
+pip install -r requirements.txt
+
+# Run the workflow (uses runtime_config.json by default)
+python -m src.workflow
+
+# Use a custom config file (e.g., Docker SSH backend)
+python -m src.workflow --config docker/runtime_config-ssh.json
+```
+
+Configuration is managed in `runtime_config.json` (default). Use `--config` to specify an alternative path. See [config-reference.md](doc/config-reference.md) for details. Docker-specific configs are in `docker/`.
