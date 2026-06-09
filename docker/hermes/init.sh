@@ -4,12 +4,17 @@ set -e
 source /opt/hermes/.venv/bin/activate
 
 HERMES_HOME="${HERMES_HOME:-/opt/data}"
-WORKFLOW_DIR="/opt/workflow"
-TEMPLATES="$WORKFLOW_DIR/docker/hermes/templates"
+TEMPLATES="/opt/data/templates"
 MARKER="$HERMES_HOME/.workflow-initialized"
 
 PORTS=(8642 8643 8644 8645 8646 8647)
 PROFILES=(master judge reviewer pm dev qa)
+
+# SSH_HOST 未设置时自动检测宿主机 IP
+if [ -z "${SSH_HOST:-}" ]; then
+    SSH_HOST=$(ip route | grep default | awk '{print $3}' 2>/dev/null || echo "")
+fi
+export SSH_HOST
 
 render() {
     python3 -c "
@@ -28,7 +33,7 @@ if [ ! -f "$MARKER" ]; then
     echo "=== Global config initialized ==="
 fi
 
-# ── 确保所有 profile 存在（每次启动都检查，新增 profile 自动创建） ──
+# ── 确保所有 profile 存在 ──
 for i in "${!PROFILES[@]}"; do
     p="${PROFILES[$i]}"
     port="${PORTS[$i]}"
@@ -38,7 +43,7 @@ for i in "${!PROFILES[@]}"; do
     fi
     API_SERVER_PORT=$port render "$TEMPLATES/profile.env" > "$HERMES_HOME/profiles/$p/.env"
     render "$TEMPLATES/config.yaml" > "$HERMES_HOME/profiles/$p/config.yaml"
-    cp "$TEMPLATES/SOUL-$p.md" "$HERMES_HOME/profiles/$p/SOUL.md"
+    cp "$TEMPLATES/SOUL-$p.md" "$HERMES_HOME/profiles/$p/SOUL.md" 2>/dev/null || true
     echo "  $p → port $port"
 done
 
@@ -67,19 +72,6 @@ for port in "${PORTS[@]}"; do
 done
 echo "All gateways ready."
 
-# ── 安装工作流依赖 ──
-echo "Installing workflow dependencies..."
-# pip 在 Hermes venv 中可能缺失，通过 ensurepip 或 get-pip 补装
-python3 -m ensurepip -q 2>/dev/null || python3 -c "import urllib.request; exec(urllib.request.urlopen('https://bootstrap.pypa.io/get-pip.py').read())"
-python3 -m pip install -q -r "$WORKFLOW_DIR/requirements.txt"
-
-# ── 运行工作流 ──
-echo "Starting workflow..."
-cd "$WORKFLOW_DIR"
-python -m src.workflow --config "$WORKFLOW_DIR/docker/runtime_config.json"
-
-# ── 工作流结束，清理 ──
-echo "Workflow finished. Shutting down gateways..."
-kill $(jobs -p) 2>/dev/null
-wait
-echo "Container stopped."
+# ── 保持容器运行 ──
+echo "Gateway container running. Workflow connects via host."
+tail -f /dev/null

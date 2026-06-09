@@ -24,10 +24,12 @@ agent:
   verbose: false
   reasoning_effort: medium
 terminal:
-  backend: local
+  backend: ${TERMINAL_ENV:-local}
   modal_mode: auto
-  cwd: /opt/data/workspace
+  cwd: /home/${SSH_USER:-hermes}
   timeout: 180
+  ssh_host: ${SSH_HOST:-}
+  ssh_user: ${SSH_USER:-}
   env_passthrough: []
   shell_init_files: []
   auto_source_bashrc: true

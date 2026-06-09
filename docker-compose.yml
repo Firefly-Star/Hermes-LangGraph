@@ -1,10 +1,8 @@
 services:
-  workflow:
+  hermes-gateway:
     image: nousresearch/hermes-agent:latest
-    container_name: workflow
-    restart: no
-    stdin_open: true
-    tty: true
+    container_name: hermes-gateway
+    restart: unless-stopped
     ports:
       - "${MASTER_PORT:-8642}:8642"
       - "${JUDGE_PORT:-8643}:8643"
@@ -14,13 +12,15 @@ services:
       - "${QA_PORT:-8647}:8647"
     environment:
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:?err}
+      - TERMINAL_ENV=${TERMINAL_ENV:-local}
+      - SSH_HOST=${SSH_HOST}
+      - SSH_USER=${SSH_USER}
     volumes:
-      - .:/opt/workflow:ro
-      - ${WORKSPACE_DIR:-./sandbox/test}:/workspace
-      - workflow-data:/opt/data
-    command:
-      - bash
-      - /opt/workflow/docker/hermes/init.sh
+      - hermes-data:/opt/data
+      - ./docker/hermes/templates:/opt/data/templates:ro
+      - ~/.ssh/id_ed25519:/home/hermes/.ssh/id_ed25519:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 volumes:
-  workflow-data:
+  hermes-data:
