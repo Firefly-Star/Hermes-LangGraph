@@ -16,6 +16,18 @@ from .subgraphs import (HandoffConfig, HandoffSubgraph,
 from langgraph.graph import END
 
 
+def win_popup(title, text):
+    """Windows 弹窗（非阻塞）。非 Windows 环境静默忽略。"""
+    import platform, subprocess
+    if platform.system() != "Windows":
+        return
+    subprocess.Popen([
+        "powershell.exe", "-Command",
+        f"Add-Type -AssemblyName System.Windows.Forms; "
+        f"[System.Windows.Forms.MessageBox]::Show('{text}', '{title}')"
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 DEV_HANDOFF_LETTER = (
     "介绍项目上下文。信件需包含：\n"
     "1. 开宗明义：这是 Master 给 Dev 的信\n"
@@ -970,14 +982,17 @@ class DevReviewStep:
                 detail=f"Step {step_idx + 1} 未通过（fail_count={count}）")
 
             if count >= escalation_threshold:
-                runtime.msg.warn(f"Step {step_idx + 1} 失败，升级人工决策")
-                return {"phase": "step_escalate", "judge_result": "dev_escalate"}
+                runtime.msg.warn(f"Step {step_idx + 1} 连续失败 {count} 次，已达人工介入阈值")
+                win_popup("工作流提醒",
+                    f"Dev Step {step_idx + 1}/{total} 已连续失败 {count} 次，请关注。")
             elif count >= rollback_threshold:
-                runtime.msg.warn(f"Step {step_idx + 1} 失败，触发回滚")
-                return {"phase": "step_rollback", "judge_result": "dev_rollback"}
+                runtime.msg.warn(f"Step {step_idx + 1} 连续失败 {count} 次，请关注")
+                win_popup("工作流提醒",
+                    f"Dev Step {step_idx + 1}/{total} 已连续失败 {count} 次，请关注。")
             else:
                 runtime.msg.fail(f"Step {step_idx + 1} 未通过，重新执行")
-                return {"phase": "step_fail", "judge_result": "step_retry"}
+            # 所有失败统一 retry，不做破坏性回滚或阻塞式干预
+            return {"phase": "step_fail", "judge_result": "step_retry"}
 
     @classmethod
     def register(cls, graph, runtime):

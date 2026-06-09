@@ -280,12 +280,12 @@ class TestResumeDevExec:
         assert not os.path.exists(handoffs)
 
     def test_restores_dev_conv(self):
-        """调用 _restore_dev_conv，创建新的 dev 执行对话。"""
+        """调用 _restore_dev_conv，先重建 Master 对话再创建 Dev 对话。"""
         save_checkpoint(self.rt, "dev_exec_step", "Dev 执行", step_idx=2)
         ResumeRouter.resume_dev_exec({})
-        # _restore_dev_conv 中调用了 call_agent，记录在 call_history
+        # 先调 open_master_conv (master)，再调 _restore_dev_conv (dev)
         assert len(self.mock.call_history) > 0
-        assert self.mock.call_history[0][0] == "dev"
+        assert self.mock.call_history[0][0] == "master"
 
     def test_sets_dev_step_index_in_context(self):
         """从 checkpoint 恢复 step_idx 到 context。"""

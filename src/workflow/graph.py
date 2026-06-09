@@ -12,7 +12,7 @@ from .phase2 import (DEV_HANDOFF_DEF, DEV_CRITERIA_DEF, DevAlign,
                      DevWriteDesign, DEV_DESIGN_REVIEW_DEF,
                      WriteDesignSummary,
                      DevWritePlan, DEV_PLAN_REVIEW_DEF, DevGitInit, DevExecStep,
-                     DevReviewStep, DevCommit, DevRollback, DevEscalate)
+                     DevReviewStep, DevCommit)
 from .phase3 import (QA_HANDOFF_DEF, QA_CRITERIA_DEF, QAAlign,
                      QAWriteTestPlan, MASTER_PLAN_REVIEW_DEF, QAWriteTestCase,
                      REVIEWER_CODE_REVIEW_DEF, QARunTests, JudgeTestResult, DevFix)
@@ -62,8 +62,6 @@ def build_graph(runtime) -> StateGraph:
     DevExecStep.register(graph, runtime)
     DevReviewStep.register(graph, runtime)
     DevCommit.register(graph, runtime)
-    DevRollback.register(graph, runtime)
-    DevEscalate.register(graph, runtime)
     master_flush_clarify = MASTER_FLUSH_CLARIFY_DEF.register(graph, runtime)
     master_flush_pm = MASTER_FLUSH_PM_DEF.register(graph, runtime)
     master_flush_dev = MASTER_FLUSH_DEV_DEF.register(graph, runtime)
@@ -134,16 +132,12 @@ def build_graph(runtime) -> StateGraph:
     graph.add_conditional_edges(DevReviewStep.exits["run"], lambda s: s.get("judge_result", ""), {
         "dev_commit": DevCommit.entries["run"],
         "step_retry": DevExecStep.entries["run"],
-        "dev_rollback": DevRollback.entries["run"],
-        "dev_escalate": DevEscalate.entries["run"],
     })
     graph.add_conditional_edges(DevCommit.exits["run"], lambda s: s.get("judge_result", ""), {
         "dev_exec_step": master_flush_dev_step.entries["write_summary"],
         "done": master_flush_dev.entries["write_summary"],
     })
     graph.add_edge(master_flush_dev_step.exits["flush_conv"], DevExecStep.entries["run"])
-    graph.add_edge(DevRollback.exits["run"], DevExecStep.entries["run"])
-    graph.add_edge(DevEscalate.exits["run"], DevExecStep.entries["run"])
 
     # ── Phase 3: QA ──
     graph.add_edge(master_flush_dev.exits["flush_conv"], qa_handoff.entries["run"])

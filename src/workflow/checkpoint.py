@@ -250,12 +250,13 @@ class ResumeRouter:
 
     @staticmethod
     def resume_dev_exec(state) -> dict:
-        """恢复 dev 执行：清 handoffs + git reset + 重建 Dev 对话，不碰 Master。"""
+        """恢复 dev 执行：清 handoffs + 重建 Master 对话 + git reset + 重建 Dev 对话。"""
         runtime = ResumeRouter._runtime
         _clean_targets(runtime, [
             runtime.paths.handoffs,
         ])
         cp = load_checkpoint(runtime)
+        open_master_conv(runtime, cp.get("summary_path", "") if cp else "")
         _restore_dev_conv(runtime, cp.get("step_idx", 0) if cp else 0)
         runtime.msg.ok("从 Dev 执行继续")
         return {"phase": "dev_exec_step"}

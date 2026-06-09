@@ -1146,21 +1146,21 @@ class TestDevReviewStep:
 
     @patch("workflow.phase2.judge_reply", return_value="F")
     def test_rollback_when_exceeds_rollback_threshold(self, mock_judge):
-        """失败次数达 rollback 阈值时返回 step_rollback。"""
+        """失败次数达 rollback 阈值时走 step_fail/step_retry（不再回滚）。"""
         self.rt.context.set_ctx("dev_step_has_failed", "true")
         self.rt.context.set_ctx("dev_step_fail_count", "2")
         result = DevReviewStep.run({})
-        assert result["phase"] == "step_rollback"
-        assert result["judge_result"] == "dev_rollback"
+        assert result["phase"] == "step_fail"
+        assert result["judge_result"] == "step_retry"
 
     @patch("workflow.phase2.judge_reply", return_value="F")
     def test_escalate_when_exceeds_escalation_threshold(self, mock_judge):
-        """失败次数达 escalate 阈值时返回 step_escalate。"""
+        """失败次数达 escalate 阈值时走 step_fail/step_retry（不再阻塞）。"""
         self.rt.context.set_ctx("dev_step_has_failed", "true")
         self.rt.context.set_ctx("dev_step_fail_count", "4")
         result = DevReviewStep.run({})
-        assert result["phase"] == "step_escalate"
-        assert result["judge_result"] == "dev_escalate"
+        assert result["phase"] == "step_fail"
+        assert result["judge_result"] == "step_retry"
 
     def test_returns_error_when_no_plan(self):
         """plan.md 不存在时返回 error 阶段。"""
