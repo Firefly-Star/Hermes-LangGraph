@@ -465,6 +465,20 @@ def setup_runtime(config_path: str = None) -> ap.AgentRuntime:
     if not agent_configs:
         raise RuntimeError("runtime_config.json 缺少 agents 配置")
     runtime.run_all(agent_configs)
+
+    # 等待所有 Gateway 就绪（最多 60s）
+    ports = set(c["port"] for c in agent_configs.values())
+    runtime.msg.step("等待 Gateway 就绪...")
+    for port in sorted(ports):
+        for _ in range(60):
+            if runtime._gateway.health(port):
+                break
+            time.sleep(1)
+        else:
+            agent_names = [n for n, c in agent_configs.items() if c["port"] == port]
+            raise RuntimeError(f"Gateway 超时未就绪 (port {port}): {', '.join(agent_names)}")
+    runtime.msg.ok("所有 Gateway 已就绪")
+
     runtime.logger.log_event("workflow_started")
 
     runtime.context.set_bg("master_principles", MASTER_SYSTEM_PROMPT.format(workspace=runtime.paths.workspace).strip())
