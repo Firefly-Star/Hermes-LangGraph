@@ -22,6 +22,9 @@ load_env() {
 }
 load_env
 
+# 检测 Python 命令（Ubuntu/WSL 用 python3，Windows 用 python）
+PYTHON=$(command -v python3 || command -v python || echo "python")
+
 # ── 工具函数 ──
 
 # 判断密钥是否"可用"（对应 Hermes has_usable_secret）
@@ -113,7 +116,7 @@ input_ask() {
     fi
     read -p "  密钥（留空自动生成）: " input_ask
     if [ -z "$input_ask" ]; then
-        API_SERVER_KEY="$(python3 -c "import secrets; print(secrets.token_hex(32))" 2>/dev/null || echo "")"
+        API_SERVER_KEY="$($PYTHON -c "import secrets; print(secrets.token_hex(32))" 2>/dev/null || echo "")"
         echo -e "  ${GREEN}✓ 已自动生成: $API_SERVER_KEY${NC}"
     elif is_usable_secret "$input_ask"; then
         API_SERVER_KEY="$input_ask"
@@ -449,7 +452,7 @@ case "$input_start" in
         echo -e "  ${GREEN}✓ 容器已启动${NC}"
         echo ""
         echo "  查看日志: docker compose logs -f"
-        echo "  测试连接: curl http://127.0.0.1:\${MASTER_PORT:-8642}/health"
+        echo "  测试连接: curl http://127.0.0.1:${MASTER_PORT:-8642}/health"
         ;;
 esac
 
@@ -465,11 +468,11 @@ read -p "  现在启动工作流? [Y/n]: " input_run
 case "$input_run" in
     n|N|no)
         echo "  跳过，手动运行:"
-        echo "  python -m src.workflow --config $CONFIG_FILE"
+        echo "  $PYTHON -m src.workflow --config $CONFIG_FILE"
         ;;
     *)
         echo "  启动工作流..."
         cd "$SCRIPT_DIR"
-        python -m src.workflow --config "$SCRIPT_DIR/$CONFIG_FILE"
+        $PYTHON -m src.workflow --config "$SCRIPT_DIR/$CONFIG_FILE"
         ;;
 esac
