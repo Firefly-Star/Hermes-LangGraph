@@ -315,6 +315,8 @@ generate_runtime_configs() {
 
     _render_template() {
         local src="$1" dst="$2"
+        # API_SERVER_KEY: hex 字符 ([a-f0-9])，对 sed 安全；用户自定义 key 含特殊字符时需转义
+        local akey="${API_SERVER_KEY:-kaguya}"
         sed -e "s|__WORKSPACE__|$ws|g" \
             -e "s|__MASTER_PORT__|$port_master|g" \
             -e "s|__JUDGE_PORT__|$port_judge|g" \
@@ -322,6 +324,7 @@ generate_runtime_configs() {
             -e "s|__PM_PORT__|$port_pm|g" \
             -e "s|__DEV_PORT__|$port_dev|g" \
             -e "s|__QA_PORT__|$port_qa|g" \
+            -e "s|__API_SERVER_KEY__|$akey|g" \
             "$src" > "$dst"
     }
 

@@ -9,12 +9,12 @@
     "checkpoint": "__WORKSPACE__/.agent_runtime/checkpoint.json"
   },
   "agents": {
-    "master":   {"profile": "master",   "port": __MASTER_PORT__},
-    "judge":    {"profile": "judge",    "port": __JUDGE_PORT__},
-    "reviewer": {"profile": "reviewer", "port": __REVIEWER_PORT__},
-    "pm":       {"profile": "pm",       "port": __PM_PORT__},
-    "dev":      {"profile": "dev",      "port": __DEV_PORT__},
-    "qa":       {"profile": "qa",       "port": __QA_PORT__}
+    "master":   {"profile": "master",   "port": __MASTER_PORT__,   "api_key": "__API_SERVER_KEY__"},
+    "judge":    {"profile": "judge",    "port": __JUDGE_PORT__,    "api_key": "__API_SERVER_KEY__"},
+    "reviewer": {"profile": "reviewer", "port": __REVIEWER_PORT__, "api_key": "__API_SERVER_KEY__"},
+    "pm":       {"profile": "pm",       "port": __PM_PORT__,       "api_key": "__API_SERVER_KEY__"},
+    "dev":      {"profile": "dev",      "port": __DEV_PORT__,      "api_key": "__API_SERVER_KEY__"},
+    "qa":       {"profile": "qa",       "port": __QA_PORT__,       "api_key": "__API_SERVER_KEY__"}
   },
   "limits": {
     "call_timeout": 120,

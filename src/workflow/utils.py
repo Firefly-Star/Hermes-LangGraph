@@ -38,7 +38,8 @@ def _keyboard_listener(hotkeys: dict[str, int]):
 
         fd = sys.stdin.fileno()
         old = termios.tcgetattr(fd)
-        tty.setraw(fd)
+        # setcbreak 只关输入处理、不回显，保留输出转换（ONLCR → \n 正常换行）
+        tty.setcbreak(fd)
 
         def _poll():
             if select.select([sys.stdin], [], [], 0)[0]:
