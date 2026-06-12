@@ -1002,56 +1002,81 @@ class AgentRuntime:
         if output_targets:
             sys.stdout = OutputLayer(output_targets)
 
+    def _register_config(self, configs: dict):
+        """写入 registry，供 HermesClient 查询 agent 端口和 api_key。"""
+        for name, cfg in configs.items():
+            self.agents._data.setdefault("agents", {})[name] = {
+                "profile": cfg["profile"],
+                "port": cfg["port"],
+                "api_key": cfg.get("api_key", "kaguya"),
+                "status": "running",
+                "pid": None,
+                "conversations": [],
+            }
+        self.agents._save()
+
     def run_all(self, configs: dict):
-        """注册所有 agent，并行检测/启动 gateway（文件写操作在串行段完成）。"""
-        if not self.config.get("manage_gateway"):
-            return
-        for name, cfg in configs.items():
-            self.agents.register(name, cfg["profile"], cfg["port"],
-                                api_key=cfg.get("api_key", "kaguya"))
+        """注册所有 agent，检测/启动 gateway，等待就绪。"""
+        if self.config.get("manage_gateway"):
+            for name, cfg in configs.items():
+                self.agents.register(name, cfg["profile"], cfg["port"],
+                                    api_key=cfg.get("api_key", "kaguya"))
 
-        ports = {}
-        for name, cfg in configs.items():
-            port = cfg["port"]
-            ports.setdefault(port, []).append(name)
+            ports = {}
+            for name, cfg in configs.items():
+                port = cfg["port"]
+                ports.setdefault(port, []).append(name)
 
-        # ── 并行检测/启动（不碰文件 I/O）──
-        results = {}
-        lock = threading.Lock()
+            # ── 并行检测/启动（不碰文件 I/O）──
+            results = {}
+            lock = threading.Lock()
 
-        def _ensure(port, names):
-            try:
+            def _ensure(port, names):
+                try:
+                    if self._gateway.health(port):
+                        status, detail = self._gateway.detect(port, "kaguya", configs[names[0]]["profile"])
+                        if status != "running":
+                            raise RuntimeError(f"端口 {port} 已被占用但不是 Hermes Gateway: {detail}")
+                        msg = f"{', '.join(names)} gateway 就绪（已有）"
+                        with lock: results[port] = (True, msg, None)
+                    else:
+                        profile = configs[names[0]]["profile"]
+                        ok, msg, pid = self._gateway.run(profile, port, "kaguya",
+                                                         timeout=self.limits.gateway_start_timeout)
+                        if not ok:
+                            raise RuntimeError(f"启动 {names[0]} gateway 失败: {msg}")
+                        with lock: results[port] = (True, f"{', '.join(names)} gateway {msg}", pid)
+                except Exception as e:
+                    with lock: results[port] = (False, str(e), None)
+
+            threads = [threading.Thread(target=_ensure, args=(p, ns))
+                       for p, ns in ports.items()]
+            for t in threads: t.start()
+            for t in threads: t.join()
+
+            for port, names in ports.items():
+                ok, msg, pid = results[port]
+                if not ok:
+                    raise RuntimeError(msg)
+                print(f"  {msg}")
+                self.agents.set_port_status(port, "running")
+                if pid is not None:
+                    for n in names:
+                        self.agents.set_pid(n, pid)
+        else:
+            self._register_config(configs)
+
+        # 无论 manage_gateway 与否，都等待 Gateway 就绪
+        ports = set(c["port"] for c in configs.values())
+        for port in sorted(ports):
+            for _ in range(60):
                 if self._gateway.health(port):
-                    status, detail = self._gateway.detect(port, "kaguya", configs[names[0]]["profile"])
-                    if status != "running":
-                        raise RuntimeError(f"端口 {port} 已被占用但不是 Hermes Gateway: {detail}")
-                    msg = f"{', '.join(names)} gateway 就绪（已有）"
-                    with lock: results[port] = (True, msg, None)
-                else:
-                    profile = configs[names[0]]["profile"]
-                    ok, msg, pid = self._gateway.run(profile, port, "kaguya",
-                                                     timeout=self.limits.gateway_start_timeout)
-                    if not ok:
-                        raise RuntimeError(f"启动 {names[0]} gateway 失败: {msg}")
-                    with lock: results[port] = (True, f"{', '.join(names)} gateway {msg}", pid)
-            except Exception as e:
-                with lock: results[port] = (False, str(e), None)
-
-        threads = [threading.Thread(target=_ensure, args=(p, ns))
-                   for p, ns in ports.items()]
-        for t in threads: t.start()
-        for t in threads: t.join()
-
-        # ── 串行写入 registry ──
-        for port, names in ports.items():
-            ok, msg, pid = results[port]
-            if not ok:
-                raise RuntimeError(msg)
-            print(f"  {msg}")
-            self.agents.set_port_status(port, "running")
-            if pid is not None:
-                for n in names:
-                    self.agents.set_pid(n, pid)
+                    break
+                time.sleep(1)
+            else:
+                names = [n for n, c in configs.items() if c["port"] == port]
+                raise RuntimeError(f"Gateway 超时未就绪 (port {port}): {', '.join(names)}")
+        print("  ✓ 所有 Gateway 已就绪")
 
     @staticmethod
     def _load_config(config_path: str) -> dict:

@@ -28,10 +28,27 @@ class WorkflowInterrupted(Exception):
 
 def _keyboard_listener(hotkeys: dict[str, int]):
     """后台线程：监听键盘，检测到热键时设置对应全局标志。"""
-    import msvcrt
-    while True:
-        if msvcrt.kbhit():
-            ch = msvcrt.getch()
+    import sys, select
+
+    if sys.platform == "win32":
+        import msvcrt
+        _poll = lambda: msvcrt.getch() if msvcrt.kbhit() else None
+    else:
+        import termios, tty
+
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        tty.setraw(fd)
+
+        def _poll():
+            if select.select([sys.stdin], [], [], 0)[0]:
+                ch = sys.stdin.read(1)
+                return ch.encode() if isinstance(ch, str) else ch
+            return None
+
+    try:
+        while True:
+            ch = _poll()
             if isinstance(ch, bytes) and len(ch) == 1:
                 for action, code in hotkeys.items():
                     if ch[0] == code:
@@ -41,7 +58,10 @@ def _keyboard_listener(hotkeys: dict[str, int]):
                         elif action == "skip":
                             global _skip_requested
                             _skip_requested = True
-        time.sleep(0.05)
+            time.sleep(0.05)
+    finally:
+        if sys.platform != "win32":
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
 def start_interrupt_listener(interrupt_hotkey: str, skip_hotkey: str = ""):
@@ -465,20 +485,6 @@ def setup_runtime(config_path: str = None) -> ap.AgentRuntime:
     if not agent_configs:
         raise RuntimeError("runtime_config.json 缺少 agents 配置")
     runtime.run_all(agent_configs)
-
-    # 等待所有 Gateway 就绪（最多 60s）
-    ports = set(c["port"] for c in agent_configs.values())
-    runtime.msg.step("等待 Gateway 就绪...")
-    for port in sorted(ports):
-        for _ in range(60):
-            if runtime._gateway.health(port):
-                break
-            time.sleep(1)
-        else:
-            agent_names = [n for n, c in agent_configs.items() if c["port"] == port]
-            raise RuntimeError(f"Gateway 超时未就绪 (port {port}): {', '.join(agent_names)}")
-    runtime.msg.ok("所有 Gateway 已就绪")
-
     runtime.logger.log_event("workflow_started")
 
     runtime.context.set_bg("master_principles", MASTER_SYSTEM_PROMPT.format(workspace=runtime.paths.workspace).strip())
