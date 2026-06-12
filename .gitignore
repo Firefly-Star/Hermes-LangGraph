@@ -21,3 +21,5 @@ test/write_mvp.py
 test/prototype.html
 sandbox/
 CLAUDE.md
+docker/runtime_config.json
+docker/runtime_config-ssh.json

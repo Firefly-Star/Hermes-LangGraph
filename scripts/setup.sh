@@ -313,88 +313,24 @@ generate_runtime_configs() {
     local port_dev="${DEV_PORT:-8646}"
     local port_qa="${QA_PORT:-8647}"
 
-    # docker/runtime_config.json（local 模式）
-    cat > "$SCRIPT_DIR/docker/runtime_config.json" << RUNTIMECFG
-{
-  "paths": {
-    "runtime_dir": "$ws/.agent_runtime",
-    "workspace": "$ws",
-    "hermes_home": "/opt/data",
-    "handoffs": "$ws/.agent_runtime/handoffs",
-    "phases": "$ws/.agent_runtime/phases",
-    "artifacts": "$ws/.agent_runtime/artifacts",
-    "checkpoint": "$ws/.agent_runtime/checkpoint.json"
-  },
-  "agents": {
-    "master":   {"profile": "master",   "port": $port_master},
-    "judge":    {"profile": "judge",    "port": $port_judge},
-    "reviewer": {"profile": "reviewer", "port": $port_reviewer},
-    "pm":       {"profile": "pm",       "port": $port_pm},
-    "dev":      {"profile": "dev",      "port": $port_dev},
-    "qa":       {"profile": "qa",       "port": $port_qa}
-  },
-  "limits": {
-    "call_timeout": 120,
-    "max_retry": 3,
-    "fail_rollback_threshold": 3,
-    "fail_escalation_threshold": 5,
-    "gateway_start_timeout": 60
-  },
-  "interaction": {
-    "input_end_word": "EOF",
-    "interrupt_hotkey": "ctrl+u",
-    "skip_hotkey": "ctrl+k"
-  },
-  "manage_gateway": false,
-  "output": {
-    "targets": [
-      {"type": "console", "enabled": true}
-    ]
-  }
-}
-RUNTIMECFG
+    _render_template() {
+        local src="$1" dst="$2"
+        sed -e "s|__WORKSPACE__|$ws|g" \
+            -e "s|__MASTER_PORT__|$port_master|g" \
+            -e "s|__JUDGE_PORT__|$port_judge|g" \
+            -e "s|__REVIEWER_PORT__|$port_reviewer|g" \
+            -e "s|__PM_PORT__|$port_pm|g" \
+            -e "s|__DEV_PORT__|$port_dev|g" \
+            -e "s|__QA_PORT__|$port_qa|g" \
+            "$src" > "$dst"
+    }
+
+    _render_template "$SCRIPT_DIR/docker/runtime_config.json.template" \
+                     "$SCRIPT_DIR/docker/runtime_config.json"
     echo -e "  ${GREEN}✓ docker/runtime_config.json 已生成（local 模式）${NC}"
 
-    # docker/runtime_config-ssh.json（SSH 模式）
-    cat > "$SCRIPT_DIR/docker/runtime_config-ssh.json" << RUNTIMECFGSSH
-{
-  "paths": {
-    "runtime_dir": "$ws/.agent_runtime",
-    "workspace": "$ws",
-    "hermes_home": "",
-    "handoffs": "$ws/.agent_runtime/handoffs",
-    "phases": "$ws/.agent_runtime/phases",
-    "artifacts": "$ws/.agent_runtime/artifacts",
-    "checkpoint": "$ws/.agent_runtime/checkpoint.json"
-  },
-  "agents": {
-    "master":   {"profile": "master",   "port": $port_master},
-    "judge":    {"profile": "judge",    "port": $port_judge},
-    "reviewer": {"profile": "reviewer", "port": $port_reviewer},
-    "pm":       {"profile": "pm",       "port": $port_pm},
-    "dev":      {"profile": "dev",      "port": $port_dev},
-    "qa":       {"profile": "qa",       "port": $port_qa}
-  },
-  "limits": {
-    "call_timeout": 120,
-    "max_retry": 3,
-    "fail_rollback_threshold": 3,
-    "fail_escalation_threshold": 5,
-    "gateway_start_timeout": 60
-  },
-  "interaction": {
-    "input_end_word": "EOF",
-    "interrupt_hotkey": "ctrl+u",
-    "skip_hotkey": "ctrl+k"
-  },
-  "manage_gateway": false,
-  "output": {
-    "targets": [
-      {"type": "console", "enabled": true}
-    ]
-  }
-}
-RUNTIMECFGSSH
+    _render_template "$SCRIPT_DIR/docker/runtime_config-ssh.json.template" \
+                     "$SCRIPT_DIR/docker/runtime_config-ssh.json"
     echo -e "  ${GREEN}✓ docker/runtime_config-ssh.json 已生成（SSH 模式）${NC}"
 }
 
