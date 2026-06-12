@@ -32,12 +32,9 @@ check_system_deps() {
     if ! command -v "$PYTHON" &>/dev/null; then
         missing+=("python3")
     fi
-    # Python venv 所需
-    if ! "$PYTHON" -c "import venv" &>/dev/null 2>&1; then
+    # Python venv + ensurepip（Ubuntu 上 python3-venv 包提供）
+    if ! "$PYTHON" -c "import ensurepip" &>/dev/null 2>&1; then
         missing+=("python3-venv")
-    fi
-    if ! command -v pip3 &>/dev/null && ! command -v pip &>/dev/null; then
-        missing+=("python3-pip")
     fi
     # Docker
     if ! command -v docker &>/dev/null; then
@@ -348,6 +345,7 @@ generate_runtime_configs() {
     "interrupt_hotkey": "ctrl+u",
     "skip_hotkey": "ctrl+k"
   },
+  "manage_gateway": false,
   "output": {
     "targets": [
       {"type": "console", "enabled": true}
@@ -389,6 +387,7 @@ RUNTIMECFG
     "interrupt_hotkey": "ctrl+u",
     "skip_hotkey": "ctrl+k"
   },
+  "manage_gateway": false,
   "output": {
     "targets": [
       {"type": "console", "enabled": true}
@@ -509,7 +508,7 @@ echo -e "${BOLD}[10] 运行工作流${NC}"
 VENV_DIR="$SCRIPT_DIR/.venv"
 if [ ! -f "$VENV_DIR/bin/activate" ]; then
     echo -e "  ${DIM}创建 Python 虚拟环境...${NC}"
-    $PYTHON -m venv "$VENV_DIR" || { echo -e "  ${YELLOW}⚠ 安装 python3-venv...${NC}"; sudo apt install -y python3-venv; $PYTHON -m venv "$VENV_DIR"; }
+    $PYTHON -m venv "$VENV_DIR"
 fi
 source "$VENV_DIR/bin/activate"
 if [ ! -f "$VENV_DIR/.deps_installed" ]; then

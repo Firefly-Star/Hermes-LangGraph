@@ -30,6 +30,7 @@
     "interrupt_hotkey": "ctrl+u",
     "skip_hotkey": "ctrl+k"
   },
+  "manage_gateway": false,
   "output": {
     "targets": [
       {"type": "console", "enabled": true}

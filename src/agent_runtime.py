@@ -693,6 +693,7 @@ class Config:
         "max_retry": 3,
         "max_plan_loop": 5,
         "max_bug_loop": 5,
+        "manage_gateway": True,
     }
 
     def __init__(self, config_path: str):
@@ -1003,6 +1004,8 @@ class AgentRuntime:
 
     def run_all(self, configs: dict):
         """注册所有 agent，并行检测/启动 gateway（文件写操作在串行段完成）。"""
+        if not self.config.get("manage_gateway"):
+            return
         for name, cfg in configs.items():
             self.agents.register(name, cfg["profile"], cfg["port"],
                                 api_key=cfg.get("api_key", "kaguya"))
