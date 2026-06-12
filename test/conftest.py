@@ -63,6 +63,61 @@ def test_config(tmp_path):
     return str(config_path)
 
 
+class InteractiveClient(ConversationClient):
+    """交互式测试桩 — 替换 ConversationClient.call()，每次调用让用户手动输入回复。
+
+    call_agent 的日志/计时/中断机制均不受影响，仅接管 LLM 调用层。
+
+    用法:
+        client = InteractiveClient()
+        runtime = AgentRuntime(config_path=config, conversation_client=client)
+        # 运行节点，每遇到 runtime.conversations.call() 会等待输入
+    """
+
+    def __init__(self, default_reply: str = "默认 mock 回复"):
+        self.call_history: list[tuple[str, str, str]] = []
+        self.default_reply = default_reply
+        self.responses: dict[str, str] = {}
+
+    def set_response(self, prompt_start: str, reply: str):
+        self.responses[prompt_start] = reply
+
+    def call(self, agent, conversation, input_text, timeout=None,
+             stream_callback=None, tool_callback=None,
+             poll_callback=None) -> CallResult:
+        self.call_history.append((agent, conversation, input_text))
+
+        # 先查预设回复
+        text = ""
+        match_len = -1
+        for key, reply in self.responses.items():
+            if input_text.startswith(key) and len(key) > match_len:
+                match_len = len(key)
+                text = reply
+        if text:
+            return CallResult(True, text, 0, 0, 0)
+
+        # 交互输入
+        print(f"\n[交互输入] {agent} | {conversation}")
+        print("输入回复，空行结束。↓")
+
+        user_lines = []
+        while True:
+            try:
+                line = input("> ")
+                if not line:
+                    break
+                user_lines.append(line)
+            except (EOFError, KeyboardInterrupt):
+                break
+
+        reply = "\n".join(user_lines) or self.default_reply
+        return CallResult(True, reply, 0, 0, 0)
+
+    def close(self, agent, conversation):
+        self.call_history.append((f"close:{agent}", conversation, ""))
+
+
 @pytest.fixture
 def mock_client():
     return MockClient()

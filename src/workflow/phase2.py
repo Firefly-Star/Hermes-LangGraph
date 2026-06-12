@@ -856,7 +856,9 @@ class DevExecStep:
                     "按信中要求实现当前步骤。所有代码产出必须放在 Dev/ 目录下，"
                     "不要将文件生成到项目根目录或其他地方。"
                     "完成实现后，运行该步骤的验收方法确认通过。"
-                    "如果验收涉及前端 UI，使用 Playwright 编写 E2E 测试并遵守 Playwright 测试规范。\n\n"
+                    "如果验收涉及前端 UI，使用 Playwright 编写 E2E 测试并遵守以下规范：\n"
+                    + "\n".join("   " + l for l in PLAYWRIGHT_TEST_TIPS.strip().split("\n"))
+                    + "\n\n"
                     "## 参考文件\n"
                     f"设计概要（整体认知）：{runtime.paths.workspace}/Dev/design-summary.md\n"
                     f"设计索引（查阅指引）：{runtime.paths.workspace}/Dev/design-index.md\n"
