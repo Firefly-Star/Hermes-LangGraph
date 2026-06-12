@@ -25,6 +25,47 @@ load_env
 # 检测 Python 命令（Ubuntu/WSL 用 python3，Windows 用 python）
 PYTHON=$(command -v python3 || command -v python || echo "python")
 
+# ── 系统依赖检查 ──
+check_system_deps() {
+    local missing=()
+    # Python 本体
+    if ! command -v "$PYTHON" &>/dev/null; then
+        missing+=("python3")
+    fi
+    # Python venv 所需
+    if ! "$PYTHON" -c "import venv" &>/dev/null 2>&1; then
+        missing+=("python3-venv")
+    fi
+    if ! command -v pip3 &>/dev/null && ! command -v pip &>/dev/null; then
+        missing+=("python3-pip")
+    fi
+    # Docker
+    if ! command -v docker &>/dev/null; then
+        missing+=("docker.io")
+    fi
+    # curl（容器健康检查用）
+    if ! command -v curl &>/dev/null; then
+        missing+=("curl")
+    fi
+
+    if [ ${#missing[@]} -gt 0 ]; then
+        echo ""
+        echo -e "${YELLOW}⚠ 缺少系统依赖：${missing[*]}${NC}"
+        echo -e "  ${DIM}将执行: sudo apt install -y ${missing[*]}${NC}"
+        read -p "  是否安装？[Y/n]: " input_install
+        case "$input_install" in
+            n|N|no)
+                echo -e "${RED}请手动安装后重新运行${NC}"
+                exit 1
+                ;;
+            *)
+                sudo apt update -qq && sudo apt install -y "${missing[@]}"
+                echo -e "${GREEN}✓ 系统依赖已安装${NC}"
+                ;;
+        esac
+    fi
+}
+
 # ── 工具函数 ──
 
 # 判断密钥是否"可用"（对应 Hermes has_usable_secret）
@@ -374,6 +415,10 @@ check_docker() {
 echo "============================================"
 echo "  Hermes Gateway 配置向导"
 echo "============================================"
+
+# 前置系统依赖检查
+check_system_deps
+
 echo ""
 
 input_dk
@@ -464,7 +509,7 @@ echo -e "${BOLD}[10] 运行工作流${NC}"
 VENV_DIR="$SCRIPT_DIR/.venv"
 if [ ! -f "$VENV_DIR/bin/activate" ]; then
     echo -e "  ${DIM}创建 Python 虚拟环境...${NC}"
-    $PYTHON -m venv "$VENV_DIR"
+    $PYTHON -m venv "$VENV_DIR" || { echo -e "  ${YELLOW}⚠ 安装 python3-venv...${NC}"; sudo apt install -y python3-venv; $PYTHON -m venv "$VENV_DIR"; }
 fi
 source "$VENV_DIR/bin/activate"
 if [ ! -f "$VENV_DIR/.deps_installed" ]; then
