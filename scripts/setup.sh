@@ -459,6 +459,21 @@ esac
 # ── [10] 运行工作流 ──
 echo ""
 echo -e "${BOLD}[10] 运行工作流${NC}"
+
+# 自动创建 .venv + 安装依赖
+VENV_DIR="$SCRIPT_DIR/.venv"
+if [ ! -f "$VENV_DIR/bin/activate" ]; then
+    echo -e "  ${DIM}创建 Python 虚拟环境...${NC}"
+    $PYTHON -m venv "$VENV_DIR"
+fi
+source "$VENV_DIR/bin/activate"
+if [ ! -f "$VENV_DIR/.deps_installed" ]; then
+    echo -e "  ${DIM}安装依赖...${NC}"
+    pip install -r "$SCRIPT_DIR/requirements.txt" -q
+    touch "$VENV_DIR/.deps_installed"
+    echo -e "  ${GREEN}✓ 依赖已安装${NC}"
+fi
+
 CONFIG_FILE="docker/runtime_config-ssh.json"
 if [ "$TERMINAL_ENV" = "local" ]; then
     CONFIG_FILE="docker/runtime_config.json"
@@ -468,11 +483,12 @@ read -p "  现在启动工作流? [Y/n]: " input_run
 case "$input_run" in
     n|N|no)
         echo "  跳过，手动运行:"
-        echo "  $PYTHON -m src.workflow --config $CONFIG_FILE"
+        echo "  source .venv/bin/activate"
+        echo "  python -m src.workflow --config $CONFIG_FILE"
         ;;
     *)
         echo "  启动工作流..."
         cd "$SCRIPT_DIR"
-        $PYTHON -m src.workflow --config "$SCRIPT_DIR/$CONFIG_FILE"
+        python -m src.workflow --config "$SCRIPT_DIR/$CONFIG_FILE"
         ;;
 esac
