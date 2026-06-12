@@ -26,7 +26,9 @@
     "gateway_start_timeout": 60
   },
   "interaction": {
-    "input_end_word": "EOF"
+    "input_end_word": "EOF",
+    "interrupt_hotkey": "ctrl+u",
+    "skip_hotkey": "ctrl+k"
   },
   "output": {
     "targets": [

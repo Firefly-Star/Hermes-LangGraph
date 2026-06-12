@@ -248,6 +248,113 @@ input_ports() {
     done
 }
 
+# ── [6] 工作目录 ──
+input_workspace() {
+    echo ""
+    echo -e "${BOLD}[6] 工作目录${NC}"
+    echo -e "  ${DIM}工作流的工作目录（产出文件存放位置）。留空默认当前目录。${NC}"
+    local current_ws="${WORKSPACE_DIR:-$PWD}"
+    echo -e "  ${DIM}当前: $current_ws${NC}"
+    read -p "  工作目录（留空保持）: " input_ws
+    WORKSPACE_DIR="${input_ws:-$current_ws}"
+    # 统一正斜杠
+    WORKSPACE_DIR="${WORKSPACE_DIR//\\//}"
+    echo -e "  ${GREEN}✓ 工作目录: $WORKSPACE_DIR${NC}"
+}
+
+# ── 生成 Docker Runtime Config ──
+generate_runtime_configs() {
+    local ws="$WORKSPACE_DIR"
+    local port_master="${MASTER_PORT:-8642}"
+    local port_judge="${JUDGE_PORT:-8643}"
+    local port_reviewer="${REVIEWER_PORT:-8644}"
+    local port_pm="${PM_PORT:-8645}"
+    local port_dev="${DEV_PORT:-8646}"
+    local port_qa="${QA_PORT:-8647}"
+
+    # docker/runtime_config.json（local 模式）
+    cat > "$SCRIPT_DIR/docker/runtime_config.json" << RUNTIMECFG
+{
+  "paths": {
+    "runtime_dir": "$ws/.agent_runtime",
+    "workspace": "$ws",
+    "hermes_home": "/opt/data",
+    "handoffs": "$ws/.agent_runtime/handoffs",
+    "phases": "$ws/.agent_runtime/phases",
+    "artifacts": "$ws/.agent_runtime/artifacts",
+    "checkpoint": "$ws/.agent_runtime/checkpoint.json"
+  },
+  "agents": {
+    "master":   {"profile": "master",   "port": $port_master},
+    "judge":    {"profile": "judge",    "port": $port_judge},
+    "reviewer": {"profile": "reviewer", "port": $port_reviewer},
+    "pm":       {"profile": "pm",       "port": $port_pm},
+    "dev":      {"profile": "dev",      "port": $port_dev},
+    "qa":       {"profile": "qa",       "port": $port_qa}
+  },
+  "limits": {
+    "call_timeout": 120,
+    "max_retry": 3,
+    "fail_rollback_threshold": 3,
+    "fail_escalation_threshold": 5,
+    "gateway_start_timeout": 60
+  },
+  "interaction": {
+    "input_end_word": "EOF",
+    "interrupt_hotkey": "ctrl+u",
+    "skip_hotkey": "ctrl+k"
+  },
+  "output": {
+    "targets": [
+      {"type": "console", "enabled": true}
+    ]
+  }
+}
+RUNTIMECFG
+    echo -e "  ${GREEN}✓ docker/runtime_config.json 已生成（local 模式）${NC}"
+
+    # docker/runtime_config-ssh.json（SSH 模式）
+    cat > "$SCRIPT_DIR/docker/runtime_config-ssh.json" << RUNTIMECFGSSH
+{
+  "paths": {
+    "runtime_dir": "$ws/.agent_runtime",
+    "workspace": "$ws",
+    "hermes_home": "",
+    "handoffs": "$ws/.agent_runtime/handoffs",
+    "phases": "$ws/.agent_runtime/phases",
+    "artifacts": "$ws/.agent_runtime/artifacts",
+    "checkpoint": "$ws/.agent_runtime/checkpoint.json"
+  },
+  "agents": {
+    "master":   {"profile": "master",   "port": $port_master},
+    "judge":    {"profile": "judge",    "port": $port_judge},
+    "reviewer": {"profile": "reviewer", "port": $port_reviewer},
+    "pm":       {"profile": "pm",       "port": $port_pm},
+    "dev":      {"profile": "dev",      "port": $port_dev},
+    "qa":       {"profile": "qa",       "port": $port_qa}
+  },
+  "limits": {
+    "call_timeout": 120,
+    "max_retry": 3,
+    "fail_rollback_threshold": 3,
+    "fail_escalation_threshold": 5,
+    "gateway_start_timeout": 60
+  },
+  "interaction": {
+    "input_end_word": "EOF",
+    "interrupt_hotkey": "ctrl+u",
+    "skip_hotkey": "ctrl+k"
+  },
+  "output": {
+    "targets": [
+      {"type": "console", "enabled": true}
+    ]
+  }
+}
+RUNTIMECFGSSH
+    echo -e "  ${GREEN}✓ docker/runtime_config-ssh.json 已生成（SSH 模式）${NC}"
+}
+
 # ── 检查 Docker ──
 check_docker() {
     if ! command -v docker &>/dev/null; then
@@ -273,10 +380,11 @@ if [ "$TERMINAL_ENV" = "ssh" ]; then
     setup_ssh
 fi
 input_ports
+input_workspace
 
 # ── 写入 .env ──
 echo ""
-echo -e "${BOLD}[6] 写入配置${NC}"
+echo -e "${BOLD}[7] 写入配置${NC}"
 
 # 保留旧 .env 中不由本脚本管理的行
 old_extra=""
@@ -303,6 +411,12 @@ if [ -n "$old_extra" ]; then
     echo "$old_extra" >> "$ENV_FILE"
 fi
 echo -e "  ${GREEN}✓ .env 已写入${NC}"
+
+# ── [8] 生成 Runtime Config ──
+echo ""
+echo -e "${BOLD}[8] 生成 Docker Runtime Config${NC}"
+generate_runtime_configs
+
 echo ""
 echo -e "  ${DIM}DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:0:8}...${NC}"
 echo -e "  ${DIM}API_SERVER_KEY:   ${API_SERVER_KEY:0:8}...${NC}"
@@ -320,7 +434,8 @@ echo -e "  ${DIM}QA_PORT:          ${QA_PORT:-8647}${NC}"
 
 # ── 启动容器 ──
 echo ""
-echo -e "${BOLD}[7] 启动容器${NC}"
+echo -e "${BOLD}[9] 启动容器${NC}"
+check_docker
 read -p "  现在启动 Hermes Gateway? [Y/n]: " input_start
 case "$input_start" in
     n|N|no)
@@ -335,5 +450,26 @@ case "$input_start" in
         echo ""
         echo "  查看日志: docker compose logs -f"
         echo "  测试连接: curl http://127.0.0.1:\${MASTER_PORT:-8642}/health"
+        ;;
+esac
+
+# ── [10] 运行工作流 ──
+echo ""
+echo -e "${BOLD}[10] 运行工作流${NC}"
+CONFIG_FILE="docker/runtime_config-ssh.json"
+if [ "$TERMINAL_ENV" = "local" ]; then
+    CONFIG_FILE="docker/runtime_config.json"
+fi
+echo -e "  ${DIM}使用配置: $CONFIG_FILE${NC}"
+read -p "  现在启动工作流? [Y/n]: " input_run
+case "$input_run" in
+    n|N|no)
+        echo "  跳过，手动运行:"
+        echo "  python -m src.workflow --config $CONFIG_FILE"
+        ;;
+    *)
+        echo "  启动工作流..."
+        cd "$SCRIPT_DIR"
+        python -m src.workflow --config "$SCRIPT_DIR/$CONFIG_FILE"
         ;;
 esac
